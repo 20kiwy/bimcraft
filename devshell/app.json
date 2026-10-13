@@ -1,0 +1,30 @@
+{
+    "format": "cadcraft-devshell",
+    "version": 1,
+    "app": {
+        "slug": "bimcraft",
+        "name": "BimCraft",
+        "layer": "blue",
+        "role": "BIM authoring",
+        "tagline": "One model. Every plan, section and schedule.",
+        "short": "Parametric walls, doors and windows on levels and grids, with views, schedules, sheets and clash checks from one model."
+    },
+    "others": {
+        "cadcraft": "CadCraft",
+        "modelcraft": "ModelCraft",
+        "markupcraft": "MarkupCraft",
+        "takeoffcraft": "TakeoffCraft",
+        "civilcraft": "CivilCraft",
+        "detailcraft": "DetailCraft",
+        "partcraft": "PartCraft"
+    },
+    "vendor": {
+        "manifold-3d": "3.5.4",
+        "three": "0.186.1"
+    },
+    "origin": "https://getcadcraft.com",
+    "packed": {
+        "at": "2026-10-13T20:37:14Z",
+        "build": "0.4"
+    }
+}

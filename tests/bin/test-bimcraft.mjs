@@ -1,0 +1,2423 @@
+#!/usr/bin/env node
+/* SPDX-License-Identifier: Apache-2.0 */
+/**
+ * BimCraft reader test: runs every .ifc / .rvt / .rfa / .rte / .rft in a folder through the
+ * SAME modules the browser UI uses (public_html/assets/apps/bimcraft/<dev|version>/ifc-model.js
+ * and rvt-reader.js) and prints what each file yields. Use it to "test through" a set of drawings.
+ *
+ *   node bin/test-bimcraft.mjs                      # fixtures/ (public) + ../testfiles (deploy root) when present, recursively
+ *   node bin/test-bimcraft.mjs /path/to/drawings    # any folder or single file
+ *   node bin/test-bimcraft.mjs --json               # one JSON line per file
+ *   node bin/test-bimcraft.mjs --build 0.1          # a frozen release instead of dev
+ *   node bin/test-bimcraft.mjs --folder <dir>       # "Open a folder": the folder scan, as the browser does it
+ *   node bin/test-bimcraft.mjs --edit [file.ifc…]   # IFC editing: copy-on-write, save, reopen, undo
+ *   node bin/test-bimcraft.mjs --clipboard          # Edit menu logic: clipboard.js (clips, storage, validation), copy /
+ *                                                   #   paste / paste in place / duplicate of placements, undo + redo
+ *   node bin/test-bimcraft.mjs --dwg3d              # DWG/DXF in 3D: readDwg (dwg/) + dwg-compile3d.js on the ezdxf fixture with
+ *                                                   #   every 3D type (tools/bimcraft-test/fixtures, AutoCAD 2000 + 2018),
+ *                                                   #   counts and bounds; m3d/ copies; every sample DWG compiles in 3D
+ *   node bin/test-bimcraft.mjs --library            # library items: adapters, validateItem, place/swap/update in IFC,
+ *                                                   #   the IFC equipment schedule, tools/library/convert.mjs (spec §7 B)
+ *   node bin/test-bimcraft.mjs --vis                # 0.4 B12 hide / isolate / see-through: element runs per batch (ifc-model.js),
+ *                                                   #   ifc-vis.js index buffers, per-element edges, bounds, keys of a second model;
+ *                                                   #   on the generated fixture (tools/bimcraft-test/ifc-fixture.mjs) + public samples
+ *   node bin/test-bimcraft.mjs --elements           # 0.4 B1 delete / cut / copy / paste of any IFC element (ifc-elements.js via
+ *                                                   #   IfcEditor): parts, openings, relations, undo / redo, storeys, turns; every
+ *                                                   #   saved file reopened and checked for references to missing lines
+ *   node bin/test-bimcraft.mjs --tree               # 0.4 B13 model tree data (ifc-tree.js): spatial levels, class groups, parts,
+ *                                                   #   elements in nothing, leaves, checkbox states, paths; public samples
+ *   node bin/test-bimcraft.mjs --color              # 0.4 B15 property index (ifc-props.js: built-ins, sets, type sets, materials,
+ *                                                   #   quantities) and colorBy (fixed order, Other, ranges, no value, themes)
+ *   node bin/test-bimcraft.mjs --federation         # 0.4 B16 several models in one scene: keys, placement in the first model's
+ *                                                   #   coordinates (a site shifted 100 m lands 100 m away), offsets, edits
+ *                                                   #   on one model only, both saved and reopened; public samples together
+ *   node bin/test-bimcraft.mjs --measure            # 0.4 B6 measure.js: face regions and areas, feature edges, snapping, IFC deltas
+ *   node bin/test-bimcraft.mjs --bcf                # 0.4 B9 bcf.js: BCF 2.1 written and validated against the buildingSMART XSDs
+ *                                                   #   (tools/markupcraft-test/bcf_check.py when its venv exists), read back, a
+ *                                                   #   deflated zip, cameras through a coordination matrix, refusals
+ *   node bin/test-bimcraft.mjs --find               # 0.4 B14 ifc-find.js: every operator on the fixture's index, all / any, sets
+ *   node bin/test-bimcraft.mjs --agent              # 0.4 X.7 bim-agent.js: the live tools through host.js's dispatcher on the
+ *                                                   #   fixture (permissions, filters, paging, isolate, properties, refusals)
+ *   node bin/test-bimcraft.mjs --clash              # 0.4 B17 clash.js: triangle pairs, the fixture's corners and slab, tolerance, sets
+ *   node bin/test-bimcraft.mjs --checks             # 0.4 B19 ifc-checks.js on the fixture with problems: required, GlobalIds, storey, stacked
+ *   node bin/test-bimcraft.mjs --qto                # 0.4 B20 ifc-qto.js: totals by storey / class / property, sums, CSV
+ *   node bin/test-bimcraft.mjs --compare            # 0.4 B21 ifc-compare.js: the fixture against its revision b (also moved 100 m)
+ *   node bin/test-bimcraft.mjs --handoff            # 0.4 1.5 handoff.js: every app's copy byte-identical, ids, sendHandoff refusals
+ *   node bin/test-bimcraft.mjs --4d                 # 0.4 B22 ifc-4d.js: task CSV parsing and refusals, matching, status on a date
+ *   node bin/test-bimcraft.mjs --partial            # cut-off RVT/RFA: sample files cut at many offsets must recover exactly
+ *                                                   #   the streams whose bytes and index are all present (byte-equal to the
+ *                                                   #   original), never more; no complete file is reported partial. Also runs
+ *                                                   #   after the default (no folder) run. A cut-off file found in the folder
+ *                                                   #   passes only as a correct partial open (checkPartialOpen).
+ *
+ * Drawings live OUTSIDE the repo (/var/www/CADCRAFT/testfiles): client work never goes in git.
+ * IFC is read by cc-ifc, the build's own engine (dev/ifc/api.js; lib/ifc/api.js for a frozen release, which shipped web-ifc),
+ * with manifold-3d (assets/vendor) for openings. `--web-ifc` runs the same checks on web-ifc instead — a test-only oracle,
+ * never shipped: setup once (cd tools/bimcraft-test && npm install).
+ * Exit code 1 if any file fails to open.
+ */
+import { createRequire, register } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// The machine's own test files, OUTSIDE the repo (public samples, a corpus, client drawings that never go in git). A clean
+// clone of the app's repo has none: every check that needs one skips with a line saying so. BIMCRAFT_TESTFILES points
+// elsewhere (a missing folder simulates a clean clone).
+const TESTFILES = process.env.BIMCRAFT_TESTFILES || path.join(ROOT, '..', 'testfiles');
+const SAMPLE_DIR = path.join(TESTFILES, 'samples');
+/** Is this public sample here? Prints a skip line when not. */
+function hasSample(name) {
+  const here = fs.existsSync(path.join(SAMPLE_DIR, name));
+  if (!here) console.log('  (skipped: ' + name + ' — the public samples are not in this checkout)');
+  return here;
+}
+// --build <version> tests a frozen release instead of the dev working copy.
+const buildArg = process.argv.indexOf('--build');
+const BUILD = buildArg > 0 ? process.argv[buildArg + 1] : 'dev';
+const APP = path.join(ROOT, 'public_html/assets/apps/bimcraft', BUILD);
+// The build's language file: DOM-free modules speak through t() (docs/LANG.md); a build without one keeps its English.
+if (fs.existsSync(path.join(APP, 'lang/en.json'))) (await import(pathToFileURL(path.join(APP, 'i18n.js')).href)).init({ strings: JSON.parse(fs.readFileSync(path.join(APP, 'lang/en.json'), 'utf8')) });
+const require = createRequire(path.join(ROOT, 'tools/bimcraft-test/package.json'));
+
+// cc-ifc's IfcAPI.Init() imports 'manifold-3d' by name (the page maps it in the manifest); Node gets the vendored build.
+register('data:text/javascript,' + encodeURIComponent(`export async function resolve(spec, ctx, next) {
+  if (spec === 'manifold-3d') return { url: ${JSON.stringify(pathToFileURL(path.join(ROOT, 'public_html/assets/vendor/manifold-3d/current/manifold.js')).href)}, shortCircuit: true };
+  return next(spec, ctx);
+}`), import.meta.url);
+let WebIFC;
+if (process.argv.includes('--web-ifc')) {
+  try {
+    WebIFC = require('web-ifc');
+  } catch (e) {
+    console.error('--web-ifc needs the oracle. Run: (cd tools/bimcraft-test && npm install)');
+    process.exit(2);
+  }
+} else {
+  const own = path.join(APP, 'ifc/api.js');
+  WebIFC = await import(fs.existsSync(own) ? own : path.join(ROOT, 'lib/ifc/api.js'));
+}
+const { IfcModel } = await import(path.join(APP, 'ifc-model.js'));
+const { readRevit, isOleFile } = await import(path.join(APP, 'rvt-reader.js'));
+
+const args = process.argv.slice(2);
+const asJson = args.includes('--json');
+const folderArg = args.indexOf('--folder');
+// --folder alone: the public folder fixture (fixtures/folder/Cad), checked against fixtures/facts.json
+if (folderArg >= 0) process.exit(await folderMode(args[folderArg + 1] && !args[folderArg + 1].startsWith('--') ? path.resolve(args[folderArg + 1]) : path.join(ROOT, 'fixtures/folder/Cad')));
+if (args.includes('--library')) process.exit(await libraryMode());
+if (args.includes('--clipboard')) process.exit(await clipboardMode());
+if (args.includes('--dwg3d')) process.exit(await dwg3dMode());
+if (args.includes('--partial')) process.exit(await partialMode());
+if (args.includes('--vis')) process.exit(await visMode());
+if (args.includes('--elements')) process.exit(await elementsMode());
+if (args.includes('--tree')) process.exit(await treeMode());
+if (args.includes('--color')) process.exit(await colorMode());
+if (args.includes('--federation')) process.exit(await federationMode());
+if (args.includes('--measure')) process.exit(await measureMode());
+if (args.includes('--bcf')) process.exit(await bcfMode());
+if (args.includes('--find')) process.exit(await findMode());
+if (args.includes('--agent')) process.exit(await agentMode());
+if (args.includes('--clash')) process.exit(await clashMode());
+if (args.includes('--checks')) process.exit(await checksMode());
+if (args.includes('--qto')) process.exit(await qtoMode());
+if (args.includes('--compare')) process.exit(await compareMode());
+if (args.includes('--handoff')) process.exit(await handoffMode());
+if (args.includes('--4d')) process.exit(await fourDMode());
+if (args.includes('--edit')) process.exit(await editMode(args.filter((a) => !a.startsWith('--')).map((a) => path.resolve(a))));
+const explicitTarget = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--build');
+// Default: the repo's public fixtures, plus the machine's own test files when this checkout has them (a clean clone
+// of the app's repo has only fixtures/; CC_DEVSHELL=1).
+const targets = explicitTarget ? [path.resolve(explicitTarget)] : [path.join(ROOT, 'fixtures'), TESTFILES].filter((p) => fs.existsSync(p));
+const target = targets[0];
+const EXT = /\.(ifc|rvt|rfa|rte|rft|dwg|dxf)$/i;
+
+const files = [];
+for (const t of targets) (function walk(p) {
+  if (!fs.existsSync(p)) return;
+  const st = fs.statSync(p);
+  // _truth: the cc-dwg harness's ODA DXF + JSON (tools/dwg-test)
+  // fixtures/folder and testfiles/folder-fixture are "Open a folder" fixtures (--folder; a shell IFC without geometry on purpose)
+  if (st.isDirectory()) { if (path.basename(p) === 'folder-fixture' || path.basename(p) === '_truth' || p === path.join(ROOT, 'fixtures/folder')) return; for (const n of fs.readdirSync(p).sort()) walk(path.join(p, n)); }
+  else if (EXT.test(p)) files.push(p);
+})(t);
+if (!files.length) { console.error('No .ifc/.rvt/.rfa files under ' + targets.join(', ')); process.exit(2); }
+
+// web-ifc logs parse warnings to the console; keep the report readable.
+function quiet(fn) {
+  return async (...a) => {
+    const log = console.log, warn = console.warn, err = console.error;
+    console.log = console.warn = console.error = () => {};
+    try { return await fn(...a); } finally { console.log = log; console.warn = warn; console.error = err; }
+  };
+}
+
+let ifc = null;
+let failed = 0, partials = 0;
+const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
+
+for (const f of files) {
+  const rel = path.relative(f.startsWith(ROOT + '/') ? ROOT : path.dirname(ROOT), f) || path.basename(f);
+  const bytes = new Uint8Array(fs.readFileSync(f));
+  const t0 = Date.now();
+  let r;
+  try {
+    if (/\.(dwg|dxf)$/i.test(f)) {
+      r = await readDrawing(bytes, f, rel);
+    } else if (isOleFile(bytes) && indexPastEnd(bytes)) {
+      // Cut off (its own index points past its end — found from the bytes, not the name): it must open
+      // partially with only what is really there. checkPartialOpen throws on any wrong claim.
+      r = { file: rel, ok: true, ...await checkPartialOpen(bytes, path.basename(f)) };
+      partials++;
+    } else if (isOleFile(bytes)) {
+      const info = await readRevit(bytes, path.basename(f), { partial: true });
+      if (info.partial) throw new Error('a complete file was reported as partial');
+      const param = (n) => { for (const g of info.project?.groups || []) for (const p of g.params) if (p.name === n && p.value) return p.value; return null; };
+      r = {
+        file: rel, ok: true, kind: info.kind, size: mb(info.size), release: info.release, build: info.basic.build || null,
+        worksharing: info.basic.worksharing || null,
+        project: param('Project Name'), number: param('Project Number'), client: param('Client Name'),
+        family: info.family ? (info.family.title + (info.family.categories.length ? ' [' + info.family.categories.join(', ') + ']' : '')) : null,
+        references: info.references.filter((x) => x.path || x.absolute).length,
+        preview: info.preview ? info.preview.width + '×' + info.preview.height : 'none',
+      };
+      if (!info.release) throw new Error('no release found in BasicFileInfo');
+    } else {
+      if (!ifc) ifc = await quiet(IfcModel.create)(WebIFC, null);
+      const m = await quiet((b) => ifc.load(b))(bytes);
+      const firstId = m.batches.find((b) => !b.space)?.triIds[0];
+      const props = firstId ? await quiet((id) => ifc.properties(id))(firstId) : null;
+      r = {
+        file: rel, ok: true, kind: 'IFC', size: mb(bytes.length), schema: m.schema,
+        project: [m.project.name, m.project.longName].filter(Boolean).join(', ') || null,
+        from: m.project.application, storeys: m.storeys.length, elements: m.elements, triangles: m.triangles,
+        batches: m.batches.length, top: m.types.slice(0, 4).map((t) => t.name.replace(/^Ifc/, '') + ' ' + t.count).join(', '),
+        sample: props ? props.cls + ' "' + (props.name || '') + '" with ' + props.sets.length + ' property sets' : null,
+      };
+      if (!m.elements && hasProductBody(bytes)) throw new Error('no geometry');
+      if (!m.elements) r.note = 'nothing to draw: no element has a Body shape (curves or loose geometry only — the schema examples)';
+    }
+  } catch (e) {
+    failed++;
+    r = { ...(r || {}), file: rel, ok: false, error: e.message || String(e) };
+  }
+  r.ms = Date.now() - t0;
+  if (asJson) { console.log(JSON.stringify(r)); continue; }
+  console.log((r.ok ? 'ok   ' : 'FAIL ') + r.file + '  (' + r.ms + ' ms)');
+  for (const [k, v] of Object.entries(r)) {
+    if (['file', 'ok', 'ms'].includes(k) || v === null || v === '' || v === undefined) continue;
+    console.log('       ' + k.padEnd(12) + String(v));
+  }
+}
+if (!asJson) console.log('\n' + (files.length - failed) + ' of ' + files.length + ' files opened'
+  + (partials ? ' (' + partials + ' cut off, opened partially as expected)' : '') + (failed ? ', ' + failed + ' failed' : ''));
+/** Does any IfcProductDefinitionShape hold a 'Body' representation? (Text scan, test-only: a file with none has nothing to draw.) */
+function hasProductBody(bytes) {
+  const text = Buffer.from(bytes).toString('latin1');
+  const line = new Map();
+  for (const mm of text.matchAll(/#(\d+)\s*=\s*([A-Z0-9_]+)\s*\(([^;]*)\);/g)) line.set(mm[1], [mm[2], mm[3]]);
+  for (const [type, args] of line.values()) {
+    if (type !== 'IFCPRODUCTDEFINITIONSHAPE') continue;
+    for (const ref of args.matchAll(/#(\d+)/g)) {
+      const rep = line.get(ref[1]);
+      if (rep && /SHAPEREPRESENTATION$/.test(rep[0]) && /^\s*#\d+\s*,\s*'Body'/.test(rep[1])) return true;
+    }
+  }
+  return false;
+}
+// With no folder given: partial mode on cut copies of complete samples, and no complete file reported partial.
+const partialBad = explicitTarget || asJson ? 0 : await partialMode();
+process.exit(failed || partialBad ? 1 : 0);
+
+/** --folder: scanFolder() over a real directory (files as Blobs, read by byte range like the browser). */
+async function folderMode(dir) {
+  const { scanFolder, resolveLink, indexFiles, normalizePath, HOUSEKEEPING_DIR } = await import(path.join(APP, 'folder-scan.js'));
+
+  // Link matching rules, on the path shapes Revit writes.
+  const idx = indexFiles(['X-Refs/BASE/ELECTRICAL.dwg', 'Mech/Q1305320.dwg', 'Links/Arch Central.rvt', 'Sub/Model.rvt'].map((p) => ({ path: p, file: { size: 0 } })));
+  const cases = [
+    [{ type: 'CAD Link', path: 'X-Refs\\BASE\\ELECTRICAL.dwg' }, '', 'found', 'X-Refs/BASE/ELECTRICAL.dwg'],
+    [{ type: 'CAD Link', path: '..\\BASE\\ELECTRICAL.dwg' }, 'X-Refs/Sub', 'found', 'X-Refs/BASE/ELECTRICAL.dwg'],
+    [{ type: 'CAD Link', path: '\\\\fileserver1\\SHARE\\Proj\\Cad\\X-Refs\\BASE\\electrical.DWG' }, '', 'found', 'X-Refs/BASE/ELECTRICAL.dwg'],
+    [{ type: 'CAD Link', path: '..\\Manufacturer Info\\thermokool\\Q1305320.dwg' }, '', 'found_by_name', 'Mech/Q1305320.dwg'],
+    [{ type: 'Revit Link', path: 'Arch Central.rvt' }, 'Sub', 'found_by_name', 'Links/Arch Central.rvt'],
+    [{ type: 'Keynote Table', path: 'RevitKeynotes_Imperial_2004.txt' }, '', 'library', null],
+    [{ type: 'CAD Link', path: 'X-Refs\\BASE\\PLUMBING.dwg' }, '', 'missing', null],
+  ];
+  let bad = 0;
+  for (const [ref, dirOfModel, want, wantPath] of cases) {
+    const r = resolveLink(ref, dirOfModel, idx);
+    const ok = r.status === want && (r.match ? r.match.path : null) === wantPath;
+    if (!ok) { bad++; console.log('FAIL link rule', ref.path, '→', r.status, r.match?.path); }
+  }
+  if (normalizePath('a/../../b') !== null || normalizePath('a\\b/../c') !== 'a/c') { bad++; console.log('FAIL normalizePath'); }
+  console.log(bad ? bad + ' link rule(s) failed' : 'ok   link rules (' + cases.length + ')');
+
+  const files = [], skipped = [];
+  (function walk(d, rel) {
+    for (const n of fs.readdirSync(d).sort()) {
+      const full = path.join(d, n), r = rel ? rel + '/' + n : n;
+      if (fs.statSync(full).isDirectory()) { if (HOUSEKEEPING_DIR.test(n)) skipped.push(r); else walk(full, r); }
+      else files.push({ path: r, full });
+    }
+  })(dir, '');
+  // A File (like the browser's) so lastModified is real; the Blob underneath is still read lazily.
+  for (const f of files) f.file = new File([await fs.openAsBlob(f.full)], path.basename(f.full), { lastModified: fs.statSync(f.full).mtimeMs });
+  const t0 = Date.now();
+  const scan = await scanFolder({ name: path.basename(dir), files, skipped });
+  const read = scan.models.reduce((n, g) => n + (g.info?.bytesRead || 0), 0);
+  console.log(`\n${scan.name}: ${scan.files} files, ${(scan.totalSize / 1048576).toFixed(1)} MB, scanned in ${Date.now() - t0} ms (${(read / 1024).toFixed(0)} KB read for model cards)`);
+  if (scan.focus) {
+    console.log('  START HERE  ' + scan.focus.group.name);
+    for (const r of scan.focus.reasons) console.log('              - ' + r);
+  } else console.log('  START HERE  (none)');
+  for (const g of scan.models) {
+    if (g.roles && g.roles.length) console.log(`  roles  ${g.name}: ${g.roles.join(', ')}`);
+    const copies = [g.main, ...g.backups].filter(Boolean);
+    console.log(`  model  ${g.dir ? g.dir + '/' : ''}${g.name}  — ${g.info ? 'read from ' + path.basename(g.best.entry.path) + ', Revit ' + g.info.release : 'unreadable'}; ${copies.length} cop${copies.length === 1 ? 'y' : 'ies'}`);
+    for (const c of copies) if (c.status !== 'ok') console.log(`         ! ${path.basename(c.entry.path)}: ${c.status}`);
+    for (const l of g.links || []) console.log(`         link ${l.status.padEnd(13)} ${l.type}: ${l.path || l.absolute}${l.match ? '  → ' + l.match.path : ''}`);
+  }
+  for (const c of scan.cad) console.log(`  cad    ${c.path}${c.usedBy.length ? '  (linked by ' + c.usedBy.join(', ') + ')' : ''}`);
+  for (const f of scan.ifc) console.log(`  ifc    ${f.path}`);
+  for (const h of scan.housekeeping) console.log(`  revit housekeeping (not read): ${h.path}`);
+  console.log(`  leftovers: ${scan.leftovers.map((f) => f.path).join(', ') || 'none'}`);
+  console.log(`  other: ${scan.other.map((f) => f.path).join(', ') || 'none'}`);
+  console.log(`  problems: ${scan.problems}`);
+  if (dir === path.join(ROOT, 'fixtures/folder/Cad')) {
+    // the public fixture: what bin/test-fixtures.mjs measured (fixtures/facts.json) — dates come from make-folder --touch
+    const F = JSON.parse(fs.readFileSync(path.join(ROOT, 'fixtures/facts.json'), 'utf8')).folder;
+    const check = (cond, label) => { if (!cond) bad++; console.log((cond ? 'ok   ' : 'FAIL ') + label); };
+    check(scan.focus && scan.focus.group.name === F.startHere, 'START HERE is ' + F.startHere + ' (' + (scan.focus?.group.name || 'none') + ')');
+    for (const [name, roles] of Object.entries(F.roles)) {
+      const g = scan.models.find((x) => x.name === name);
+      check(g && roles.every((r) => (g.roles || []).includes(r)), name + ': roles ' + roles.join(', ') + ' (' + (g?.roles || []).join(', ') + ')');
+    }
+    const dmg = scan.models.find((x) => x.name === F.damaged);
+    check(dmg && [dmg.main, ...dmg.backups].some((c) => c && c.status !== 'ok'), F.damaged + ': the cut-off copy is flagged, a complete backup is read');
+  }
+  return bad ? 1 : 0;
+}
+
+/** --edit: ifc-edit.js on real IFC files — edit shared values, check neighbours, save, reopen, undo. */
+async function editMode(list) {
+  const { IfcEditor } = await import(path.join(APP, 'ifc-edit.js'));
+  // the public samples when this checkout has them, else the generated fixture (written to a temporary file)
+  let files = list;
+  if (!files.length) {
+    files = fs.existsSync(SAMPLE_DIR) ? fs.readdirSync(SAMPLE_DIR).filter((n) => n.endsWith('.ifc')).map((n) => path.join(SAMPLE_DIR, n)) : [];
+    const fx = path.join(fs.mkdtempSync(path.join((await import('node:os')).tmpdir(), 'bimcraft-fixture-')), 'bimcraft-fixture.ifc');
+    fs.writeFileSync(fx, await fixtureBytes());
+    files.push(fx);
+  }
+  let bad = 0;
+  const ok = (cond, label) => { console.log((cond ? '  ok   ' : '  FAIL ') + label); if (!cond) bad++; };
+  const engine = await quiet(IfcModel.create)(WebIFC, null);
+  const engine2 = await quiet(IfcModel.create)(WebIFC, null);
+  const propOf = async (m, id, setName, propName) => {
+    const p = await quiet((x) => m.properties(x))(id);
+    for (const s of p.sets) if (s.name === setName) for (const r of s.rows) if (r.name === propName) return r;
+    return null;
+  };
+  for (const f of files) {
+    console.log('== ' + path.basename(f));
+    const model = await quiet((b) => engine.load(b))(new Uint8Array(fs.readFileSync(f)));
+    const { api, modelID: mid } = engine;
+    const ed = new IfcEditor(WebIFC, engine);
+
+    // An element in a property set shared with another element, with a text value to edit.
+    let target = null;
+    const rels = api.GetLineIDsWithType(mid, WebIFC.IFCRELDEFINESBYPROPERTIES);
+    for (let i = 0; i < rels.size() && !target; i++) {
+      const r = api.GetLine(mid, rels.get(i), false);
+      const objs = (r.RelatedObjects || []).map((h) => h.value);
+      if (objs.length < 2) continue;
+      const ps = api.GetLine(mid, r.RelatingPropertyDefinition.value, false);
+      if (!ps.HasProperties) continue;
+      for (const h of ps.HasProperties) {
+        const p = api.GetLine(mid, h.value, false);
+        if (p.NominalValue && /LABEL|TEXT|IDENTIFIER/.test(p.NominalValue.name || '')) { target = { a: objs[0], b: objs[1], set: ps.Name.value, prop: p.Name.value }; break; }
+      }
+    }
+    if (!target) { console.log('  (no shared text property in this file)'); continue; }
+    const before = await propOf(engine, target.b, target.set, target.prop);
+    const row = await propOf(engine, target.a, target.set, target.prop);
+    ok(row && row.edit, `shared value found: "${target.set}" / "${target.prop}" on #${target.a}, also on #${target.b}`);
+    ed.setProperty(target.a, row.edit, 'BimCraft edit');
+    ok((await propOf(engine, target.a, target.set, target.prop)).value === 'BimCraft edit', 'edited element shows the new value');
+    ok((await propOf(engine, target.b, target.set, target.prop)).value === before.value, 'the element sharing that set is unchanged (' + JSON.stringify(before.value) + ')');
+
+    // A number property, if there is one, and an attribute.
+    const pa = await quiet((x) => engine.properties(x))(target.a);
+    const numRow = pa.sets.flatMap((s) => s.rows).find((r) => r.edit && /REAL|MEASURE/.test(r.edit.valueType || ''));
+    if (numRow) {
+      let threw = false; try { ed.setProperty(target.a, numRow.edit, 'not a number'); } catch (e) { threw = true; }
+      ok(threw, 'a number property refuses text');
+      ed.setProperty(target.a, numRow.edit, '42.5');
+    }
+    const oldName = api.GetLine(mid, target.a, false).Name?.value ?? null;
+    ed.setAttribute(target.a, 'Name', 'BimCraft renamed');
+    ok(ed.changes.length === (numRow ? 3 : 2), ed.changes.length + ' changes recorded');
+
+    // Save, reopen in a second engine, compare.
+    const bytes = ed.save();
+    const re = await quiet((b) => engine2.load(b))(bytes);
+    ok(re.elements === model.elements && re.triangles === model.triangles, `reopened: same ${model.elements} elements and ${model.triangles} triangles`);
+    ok(engine2.api.GetLine(engine2.modelID, target.a, false).Name.value === 'BimCraft renamed', 'saved file has the new name');
+    ok((await propOf(engine2, target.a, target.set, target.prop)).value === 'BimCraft edit', 'saved file has the new value');
+    ok((await propOf(engine2, target.b, target.set, target.prop)).value === before.value, 'saved file leaves the neighbour unchanged');
+    if (numRow) ok((await propOf(engine2, target.a, numRow.edit.setName, numRow.name)).value === '42.5', 'saved file has the new number');
+
+    // Undo everything.
+    while (ed.changes.length) ed.undo();
+    ok((api.GetLine(mid, target.a, false).Name?.value ?? null) === oldName, 'undo restores the name');
+    ok((await propOf(engine, target.a, target.set, target.prop)).value === row.value, 'undo restores the value');
+  }
+  console.log(bad ? `\n${bad} check(s) failed` : '\nall edit checks passed');
+  return bad ? 1 : 0;
+}
+
+/** DWG/DXF bytes → the drawing model, with the build's own readers: dwg/read.js (cc-dwg) and dxf-model.js, as the browser. */
+async function parseDrawing(b, dxf) {
+  // Frozen releases up to 0.4 shipped the vendored libredwg-web instead (--build 0.x): use that build's own reader.
+  if (!fs.existsSync(path.join(APP, 'dwg/read.js'))) {
+    const dir = path.join(ROOT, 'public_html/assets/vendor/libredwg-web/current');
+    const mod = await import(path.join(dir, 'dist/libredwg-web.js'));
+    const lib = await quiet(() => mod.LibreDwg.create(path.join(dir, 'wasm') + '/'))();
+    const raw = await quiet(() => lib.dwg_read_data(b, dxf ? mod.Dwg_File_Type.DXF : mod.Dwg_File_Type.DWG))();
+    if (!raw) throw new Error('LibreDWG could not read this file');
+    try { return lib.convert(raw); } finally { lib.dwg_free(raw); }
+  }
+  if (dxf) {
+    const { readDxfModel } = await import(path.join(APP, 'dxf-model.js'));
+    let text = new TextDecoder('utf-8').decode(b);
+    if (text.includes('\ufffd')) text = new TextDecoder('windows-1252').decode(b);
+    return readDxfModel(text);
+  }
+  const { readDwg } = await import(path.join(APP, 'dwg/read.js'));
+  return readDwg(b);
+}
+
+/** DWG/DXF: the build's reader → dwg-compile.js, the same reader and compiler the browser uses. */
+async function readDrawing(bytes, f, rel) {
+  const { compileDrawing } = await import(path.join(APP, 'dwg-compile.js'));
+  const { equipmentList, equipmentCsv } = await import(path.join(APP, 'dwg-equipment.js'));
+  const isDxf = /\.dxf$/i.test(f);
+  const tag = isDxf ? '' : new TextDecoder().decode(bytes.subarray(0, 6));
+  const parse = parseDrawing;
+  const db = await parse(bytes, isDxf);
+  // Linked drawings (xrefs): looked for by name next to the drawing, as the browser does in a folder.
+  const xrefs = new Map();
+  for (const b of (db.blocks || []).filter((r) => r.flags & 4)) {
+    const cand = fs.readdirSync(path.dirname(f)).find((n) => n.toLowerCase() === (b.name + '.dwg').toLowerCase());
+    if (cand) xrefs.set(b.name.toLowerCase(), await parse(new Uint8Array(fs.readFileSync(path.join(path.dirname(f), cand))), false));
+  }
+  const d = compileDrawing(db, { versionTag: tag, xrefs });
+  const count = (s, k) => [...s.batches.values()].reduce((n, b) => n + b[k].length, 0);
+  const sheets = d.spaces.map((s) => `${s.name}${s.kind === 'paper' ? ' (sheet, ' + s.viewports.length + ' viewports)' : ''}: ${count(s, 'lines')} lines, ${count(s, 'fills')} fills, ${count(s, 'texts')} texts`);
+  const empty = !d.spaces.some((s) => s.batches.size);
+  if (empty && d.stats.entities > 0) throw new Error('nothing to draw from ' + d.stats.entities + ' entities');
+  const bad = d.spaces.flatMap((s) => [...s.batches.values()]).some((b) => b.lines.some((l) => l.some((v) => !Number.isFinite(v))));
+  if (bad) throw new Error('non-finite coordinates in output');
+  // Print view: every batch has a line weight in mm (AutoCAD's table, 0–2.11).
+  const lws = new Map();
+  for (const s of d.spaces) for (const b of s.batches.values()) {
+    if (!(b.lw >= 0 && b.lw <= 2.11)) throw new Error('batch without a valid line weight: ' + b.layer + ' ' + b.lw);
+    lws.set(b.lw, (lws.get(b.lw) || 0) + b.lines.length);
+  }
+  const noPlot = d.layers.filter((l) => l.plot === false).length;
+
+  // Equipment schedule from item tags (KCL-ITEM …): invariants, and the public kitchen fixture checked against the facts
+  // bin/test-fixtures.mjs measured (fixtures/facts.json: shelving tagged 5 + 3 is scheduled as 8, item 61 used twice).
+  const eq = equipmentList(db, d);
+  let equipment = null;
+  if (eq) {
+    for (const r of eq.rows) if (!r.no || !r.places.length) throw new Error('equipment row without a number or a place');
+    const on = eq.rows.filter((r) => r.sheets.length);
+    equipment = on.length + ' items on sheets (' + eq.sheets.map((x) => x.name + ' ' + x.count).join(', ') + '), ' + eq.offSheet + ' off sheets, from ' + eq.tags + ' tags';
+    if (path.basename(f) === 'kitchen-equipment.dwg' && path.dirname(f) === path.join(ROOT, 'fixtures/dwg')) {
+      const F = JSON.parse(fs.readFileSync(path.join(ROOT, 'fixtures/facts.json'), 'utf8')).dwg['kitchen-equipment.dwg'].equipment;
+      const rows = (no) => on.filter((x) => x.no === no);
+      const one = (no) => { const r = rows(no); if (r.length !== 1) throw new Error('fixture: item ' + no + ' on sheets ×' + r.length); return r[0]; };
+      if (on.length !== F.onSheets || eq.offSheet !== F.offSheet || eq.tags !== F.tags) throw new Error('fixture: ' + on.length + ' on sheets, ' + eq.offSheet + ' off, ' + eq.tags + ' tags');
+      if (eq.sheets.map((x) => x.name + ' ' + x.count).join() !== F.sheets.map((x) => x.name + ' ' + x.count).join()) throw new Error('fixture: sheets ' + eq.sheets.map((x) => x.name + ' ' + x.count));
+      if (one('54').qty !== '8' || one('54').category !== 'Shelving, Wire') throw new Error('fixture: item 54 is "' + one('54').qty + ' ' + one('54').category + '"');
+      if (rows('61').length !== 2 || !rows('61').every((r) => r.clash)) throw new Error('fixture: item 61 is not marked as used twice');
+      if (one('1').elecText !== F.item1[0].elec) throw new Error('fixture: item 1 electrical ' + one('1').elecText);
+      if (one('4').plumbText !== 'CW 1/2", HW 1/2", DD 1 1/2"') throw new Error('fixture: item 4 plumbing ' + one('4').plumbText);
+      const csv = equipmentCsv([{ ...one('1'), category: '=HYPERLINK("x")', remark: 'a "b", c' }], (k) => k);
+      if (!csv.includes(`"'=HYPERLINK(""x"")"`) || !csv.includes('"a ""b"", c"')) throw new Error('fixture: CSV escaping');
+      equipment += ' — matches fixtures/facts.json';
+    }
+  }
+  return {
+    file: rel, ok: true, kind: 'Drawing', size: (bytes.length / 1048576).toFixed(1) + ' MB',
+    release: d.release ? 'AutoCAD ' + d.release + ' (' + tag + ')' : tag || 'DXF', units: d.units || null,
+    layers: d.layers.length, entities: d.stats.entities,
+    spaces: sheets.join(' | '),
+    note: empty ? 'empty drawing: the file holds no entities (valid, nothing to show)' : null,
+    linked: d.xrefs.length ? d.xrefs.map((x) => x.name + (x.loaded ? ' (loaded)' : ' (NOT FOUND)')).join('; ') + (d.stats.xrefEntities ? ' — ' + d.stats.xrefEntities + ' entities drawn from links' : '') : null,
+    weights: [...lws].filter(([, n]) => n).sort((x, y) => x[0] - y[0]).map(([w, n]) => w.toFixed(2) + ' mm × ' + n).join(', ') + (noPlot ? ' | ' + noPlot + ' non-printing layers' : ''),
+    equipment,
+    images: d.images.length ? d.images.map((im) => im.name + ' ×' + im.uses).join(', ') : null,
+    notDrawn: Object.entries(d.stats.unsupported).map(([k, v]) => k + ' ' + v).join(', ') || null,
+    truncated: d.stats.truncated || null,
+  };
+}
+
+
+/** --clipboard: the Edit menu's DOM-free logic (clipboard.js + IfcEditor.placeLike / redo) on the sample models. */
+async function clipboardMode() {
+  const C = await import(path.join(APP, 'clipboard.js'));
+  const L = await import(path.join(APP, 'libitem.js'));
+  const { IfcPlacer, PSETS } = await import(path.join(APP, 'ifc-place.js'));
+  const { IfcEditor } = await import(path.join(APP, 'ifc-edit.js'));
+  const { ids } = await import(path.join(APP, 'ifc-util.js'));
+  const TF = TESTFILES;
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const near = (a, b, tol = 0.5) => Math.abs(a - b) <= tol;
+  const memStore = (limit = Infinity) => {
+    const m = new Map();
+    return { m, getItem: (k) => (m.has(k) ? m.get(k) : null), removeItem: (k) => m.delete(k),
+      setItem: (k, v) => { v = String(v); if (v.length > limit) { const e = new Error('QuotaExceededError'); e.name = 'QuotaExceededError'; throw e; } m.set(k, v); } };
+  };
+  const refusing = { getItem: () => { throw new Error('SecurityError'); }, setItem: () => { throw new Error('SecurityError'); }, removeItem: () => { throw new Error('SecurityError'); } };
+
+  // A full library item (as LibraryCraft hands it over) from the seed CSV.
+  const csv = L.itemsFromCsv(fs.readFileSync(path.join(ROOT, 'tools/library/seed.csv'), 'utf8'));
+  const item = { ...L.cleanItem(csv.items[0]), uuid: '11111111-1111-4111-8111-111111111111', version: 1, license: { id: 'CC0-1.0', holder: 'CadCraft', attribution: '', url: '' } };
+  const fileItem = L.cleanItem(csv.items[3]);
+  const fileSha = await L.itemHash(fileItem);
+
+  console.log('== clipboard.js: clips, storage, validation');
+  const row = { id: 501, name: item.name, storey: 39, x: 1200, y: 3400, rot: 90, itemNumber: '7', quantity: 2, notes: 'by the door', library: 'librarycraft', uuid: item.uuid, version: 1, sha256: '', equipment: { Name: item.name, Width: 1828.8, Depth: 762, Height: 863.6 } };
+  const clip = C.placementClip(row, { model: 'abc-123', file: 'House.ifc', storeyName: 'Ground floor', storeyElevation: 0, item, meta: { library: 'librarycraft', sha256: '', sourceFile: '' }, box: C.boxFromItem(item), now: '2026-10-11T10:00:00.000Z' });
+  ok(clip.kind === 'placement' && clip.key === item.uuid + '@1' && clip.itemNumber === '7' && clip.quantity === 2, 'placementClip: kind, key uuid@version, number and quantity from the placement');
+  ok(C.libKey({ uuid: '', sha256: fileSha }) === 'sha:' + fileSha, 'libKey: an item from a file is found by sha:<sha256>');
+  const v1 = C.validateClip(JSON.parse(JSON.stringify(clip)));
+  ok(v1.ok && v1.clip.item && v1.clip.box && v1.notes.length === 0, 'validateClip accepts it after a JSON round trip, item and box kept');
+  const st = memStore();
+  ok(C.writeClip(st, clip).stored && JSON.stringify(C.readClip(st)) === JSON.stringify(v1.clip), 'writeClip → readClip ("' + C.CLIP_KEY + '") gives back the same clip');
+  const tamper = (label, patch) => {
+    const o = JSON.parse(JSON.stringify(clip)); patch(o);
+    const s2 = memStore(); s2.setItem(C.CLIP_KEY, JSON.stringify(o));
+    ok(C.readClip(s2) === null, 'readClip refuses ' + label);
+  };
+  tamper('another format', (o) => { o.format = 'modelcraft-clip'; });
+  tamper('a newer version', (o) => { o.version = 2; });
+  tamper('an unknown kind', (o) => { o.kind = 'wall'; });
+  tamper('a coordinate given as text', (o) => { o.x = '1200'; });
+  tamper('a coordinate that was NaN (null in JSON)', (o) => { o.y = null; });
+  tamper('a coordinate beyond 10^9 mm', (o) => { o.x = 2e9; });
+  tamper('a quantity of 0', (o) => { o.quantity = 0; });
+  tamper('a fractional element id', (o) => { o.id = 1.5; });
+  tamper('a negative storey id', (o) => { o.storey = -4; });
+  tamper('a malformed item key', (o) => { o.key = '<script>@1'; });
+  tamper('notes over 200 characters', (o) => { o.notes = 'x'.repeat(201); });
+  tamper('a model tag with spaces', (o) => { o.model = 'a b'; });
+  tamper('a box with no width', (o) => { o.box.x1 = o.box.x0; });
+  tamper('meta with a bad sha256', (o) => { o.meta.sha256 = 'zz'; });
+  tamper('a bad copiedAt', (o) => { o.copiedAt = 'yesterday'; });
+  const s3 = memStore(); s3.setItem(C.CLIP_KEY, '{not json');
+  ok(C.readClip(s3) === null && C.readClip(memStore()) === null, 'readClip: broken JSON or nothing stored → null');
+  ok(C.readClip(refusing) === null && C.writeClip(refusing, clip).stored === false && C.writeClip(null, clip).stored === false, 'storage that throws (private window) → null / not stored, no exception');
+  const badItem = JSON.parse(JSON.stringify(clip)); badItem.item.category = 'foodservice/sinkz';
+  const vb = C.validateClip(badItem);
+  ok(vb.ok && vb.clip.item === null && /format check/.test(vb.notes[0]), 'an item that fails validateItem is dropped (noted); the clip still works in its own model');
+  const otherItem = JSON.parse(JSON.stringify(clip)); otherItem.item.uuid = '22222222-2222-4222-8222-222222222222';
+  ok(C.validateClip(otherItem).clip.item === null, 'an item that is not the one the clip names is dropped');
+  const big = memStore(JSON.stringify({ ...clip, item: null }).length + 50);
+  const w = C.writeClip(big, clip);
+  ok(w.stored && w.withoutItem && C.readClip(big).item === null && C.readClip(big).key === clip.key, 'too big for storage: kept without the item (this tab keeps the whole clip)');
+  const ec = C.elementClip({ id: 77, name: 'Basic Wall:Generic 200', cls: 'IfcWallStandardCase', guid: '2O2Fr$t4X7Zf8NOew3FLOH' }, { model: 'abc-123', file: 'House.ifc', now: '2026-10-11T10:00:01.000Z' });
+  const ve = C.validateClip(JSON.parse(JSON.stringify(ec)));
+  ok(ve.ok && ve.clip.kind === 'element' && ve.clip.cls === 'IfcWallStandardCase' && !('x' in ve.clip), 'elementClip: what the element was, no place (Paste says copying building elements is not built)');
+  const text = C.elementText({ cls: 'IfcWall', name: 'Wall 1', typeName: 'Generic 200', objectType: '', tag: '123', description: null, guid: 'G1', id: 9,
+    sets: [{ name: 'Pset_WallCommon', rows: [{ name: 'IsExternal', value: true }, { name: 'FireRating', value: '' }, { name: 'ThermalTransmittance', value: 0.35 }] }, { name: 'Empty', rows: [{ name: 'X', value: null }] }] });
+  ok(text === 'Wall: Wall 1\nType: Generic 200\nTag: 123\nGlobalId: G1\n\nPset_WallCommon\n  IsExternal: Yes\n  ThermalTransmittance: 0.35\n', 'elementText: name, type, tag, GlobalId, then each set with its filled values (Yes/No, no empty rows or sets)');
+  const b0 = C.boxFromEquipment({ Width: 1828.8, Depth: 762, Height: 863.6 }, 1), bm = C.boxFromEquipment({ Width: 1.8288, Depth: 0.762 }, 1000);
+  ok(near(b0.x1 - b0.x0, 1828.8) && b0.y1 === 0 && near(b0.y0, -762) && near(bm.x1, 914.4) && bm.z1 === 900 && C.boxFromEquipment({}, 1) === null, 'boxFromEquipment: back on y = 0, file units → mm, 900 mm stand-in height, null without sizes');
+  const g = C.ghostItem({ ...clip, item: null });
+  ok(g.body.type === 'box' && near(g.body.w, 1828.8) && near(g.body.d, 762) && C.ghostItem(clip) === item, 'ghostItem: a box from the clip for the ghost and wall snap, or the kept item itself');
+  const s0 = C.besideSpot({ ...clip, rot: 0, x: 1000, y: 2000 }), s90 = C.besideSpot({ ...clip, rot: 90, x: 1000, y: 2000 });
+  ok(near(s0.x, 1000 + 1828.8 + C.GAP_MM) && near(s0.y, 2000) && near(s90.x, 1000) && near(s90.y, 2000 + 1828.8 + C.GAP_MM) && s90.rot === 90, 'besideSpot: one item width + ' + C.GAP_MM + ' mm along the item\'s own X axis (turned with it)');
+  const storeys = [{ id: 10, name: 'Level 0', elevation: 0 }, { id: 11, name: 'Ground floor', elevation: 3000 }, { id: 12, name: 'Roof', elevation: 6000 }];
+  ok(C.pickStorey({ ...clip, storey: 12 }, storeys, true).how === 'same' && C.pickStorey({ ...clip, storey: 12 }, storeys, false).id === 11
+    && C.pickStorey({ ...clip, storeyName: 'Nope', storeyElevation: 5500 }, storeys, false).id === 12 && C.pickStorey({ ...clip, storeyName: '', storeyElevation: null }, storeys, false).how === 'first'
+    && C.pickStorey(clip, [], true) === null, 'pickStorey: same storey in its own model, else same name, else nearest elevation, else the lowest');
+
+  const engine = await quiet(IfcModel.create)(WebIFC, null);
+  const engine2 = await quiet(IfcModel.create)(WebIFC, null);
+  const api = engine.api;
+  for (const f of ['Ifc4_SampleHouse.ifc', 'Ifc2x3_Duplex_Architecture.ifc'].filter(hasSample)) {
+    console.log('== Copy, paste, duplicate, undo and redo in ' + f);
+    await quiet((b) => engine.load(b))(new Uint8Array(fs.readFileSync(path.join(TF, 'samples', f))));
+    const mid = engine.modelID;
+    const ed = new IfcEditor(WebIFC, engine);
+    const inf = ed.placer().info();
+    const storey = inf.storeys[0];
+    const a = ed.placeItem(item, { storey: storey.id, x: 1000, y: 1000, rot: 0, itemNumber: '1', quantity: 3, notes: 'by the window' });
+    const fileA = ed.placeItem(fileItem, { storey: storey.id, x: 5000, y: 1000, rot: 0, itemNumber: '2', library: 'file', sha256: fileSha, sourceFile: 'seed.csv' });
+    const pl = ed.placer();
+    const rowA = pl.placements().find((p) => p.id === a.id);
+    const theClip = C.placementClip(rowA, { model: 'm1', file: f, storeyName: storey.name, storeyElevation: storey.elevation, box: C.boxFromEquipment(rowA.equipment, pl.unitMm) });
+    ok(theClip.box && near(theClip.box.x1 - theClip.box.x0, 1828.8, 1), 'copy: the clip\'s box comes from the placement\'s own Width/Depth (' + Math.round(theClip.box.x1 - theClip.box.x0) + ' mm)');
+    // Paste with the pointer, like its source.
+    const n0 = ed.changes.length;
+    const next = ed.placer().nextItemNumber();
+    const b = ed.placeLike(a.id, { storey: storey.id, x: 3000, y: 2000, rot: 90, itemNumber: next, quantity: theClip.quantity, notes: theClip.notes }, { label: theClip.name });
+    const rows = ed.placer().placements();
+    const rowB = rows.find((p) => p.id === b.id);
+    ok(b.id !== a.id && b.typeId === a.typeId && ed.changes.length === n0 + 1 && ed.changes.at(-1).kind === 'place', 'paste: a new element of the same type (same geometry), recorded as one change');
+    ok(rowB && rowB.itemNumber === '3' && rowB.quantity === 3 && rowB.notes === 'by the window' && rowB.uuid === item.uuid && rowB.version === 1, 'paste: next free item number (3), quantity and notes from the copy, same library item');
+    ok(rowB && near(rowB.x, 3000, 1) && near(rowB.y, 2000, 1) && near(rowB.rot, 90, 0.01) && rowB.storey === storey.id, 'paste: at the clicked 3000, 2000 mm, turned 90°, on ' + storey.name);
+    ok(rowB && JSON.stringify(rowB.equipment) === JSON.stringify(rowA.equipment) && rowB.license === rowA.license && rowB.cls === rowA.cls, 'paste: equipment data, license and IFC class copied (' + rowB?.cls + ')');
+    const psB = ed.placer().psetsOf(b.id), psA = ed.placer().psetsOf(a.id);
+    ok(psB[PSETS.library].id !== psA[PSETS.library].id && psB[PSETS.equipment].id !== psA[PSETS.equipment].id, 'paste: its property sets are its own copies (editing one never changes the other)');
+    // Paste in place: beside the original.
+    const spot = C.besideSpot({ ...theClip });
+    const c2 = ed.placeLike(a.id, { storey: storey.id, ...spot, itemNumber: ed.placer().nextItemNumber(), quantity: 3, notes: '' });
+    const rowC = ed.placer().placements().find((p) => p.id === c2.id);
+    ok(rowC && near(rowC.x, 1000 + 1828.8 + C.GAP_MM, 1) && near(rowC.y, 1000, 1) && rowC.itemNumber === '4', 'paste in place beside the original: x + width + 100 mm, item 4');
+    // A file item (sha key) copies too.
+    const fileB = ed.placeLike(fileA.id, { storey: storey.id, x: 6000, y: 4000, rot: 180, itemNumber: '5', quantity: 1, notes: '' });
+    const rowFB = ed.placer().placements().find((p) => p.id === fileB.id);
+    ok(rowFB && rowFB.sha256 === fileSha && rowFB.library === 'file' && C.libKey(rowFB) === 'sha:' + fileSha && fileB.typeId === fileA.typeId, 'an item from a file (sha key) copies with its library data');
+    // Refusals leave nothing behind.
+    const wall = ids(api, mid, 'IFCWALL', true)[0] || ids(api, mid, 'IFCWALLSTANDARDCASE')[0];
+    const psCount = ids(api, mid, 'IFCPROPERTYSET').length;
+    let refused = '';
+    try { ed.placeLike(wall, { storey: storey.id, x: 0, y: 0, rot: 0, itemNumber: '9' }); } catch (e) { refused = e.message; }
+    ok(/Only placed library items/.test(refused) && ids(api, mid, 'IFCPROPERTYSET').length === psCount, 'placeLike refuses a wall ("' + refused + '") and writes nothing');
+    let refused2 = '';
+    const lines0 = api.GetMaxExpressID(mid);
+    try { ed.placeLike(a.id, { storey: wall, x: 0, y: 0, rot: 0, itemNumber: '9' }); } catch (e) { refused2 = e.message; }
+    const leftovers = [];
+    for (let id = lines0 + 1; id <= api.GetMaxExpressID(mid); id++) { try { if (api.GetLine(mid, id, false) && !ids(api, mid, 'IFCOWNERHISTORY').includes(id)) leftovers.push(id); } catch (e) { /* gone */ } }
+    ok(/storey/.test(refused2) && leftovers.length === 0 && ed.changes.length === n0 + 3, 'a paste onto a non-storey is refused and leaves no lines and no change');
+    // Undo and redo.
+    const nPl = () => ed.placer().placements().length;
+    const before = nPl();
+    ed.undo();   // file copy
+    ed.undo();   // paste in place
+    ok(nPl() === before - 2 && ed.canRedo && ed.undone.length === 2, 'undo takes back two pastes; both can be redone');
+    const r1 = ed.redo();
+    ok(r1 && r1.kind === 'place' && nPl() === before - 1 && ed.placer().placements().some((p) => p.id === r1.id && near(p.x, 1000 + 1828.8 + C.GAP_MM, 1)), 'redo puts the paste in place back (same place, id ' + r1?.id + ')');
+    ed.redo();
+    ok(nPl() === before && !ed.canRedo, 'redo again: the file item copy is back; nothing left to redo');
+    // Chain: undo the paste AND its source, redo both — the paste follows its source's new id.
+    for (let i = 0; i < 5; i++) ed.undo();
+    ok(!ed.placer().placements().some((p) => p.id === a.id), 'undo back past the first placement: the source is gone too');
+    ed.redo(); ed.redo();   // item 1 (new id), item 2
+    const redoneA = ed.now(a.id);
+    const r3 = ed.redo();   // the paste of item 1
+    const rowR3 = ed.placer().placements().find((p) => p.id === r3.id);
+    ok(redoneA !== a.id && rowR3 && rowR3.itemNumber === '3' && near(rowR3.x, 3000, 1) && r3.journal.created.length > 0, 'redo of a paste whose source was placed again follows the new id (' + a.id + ' → ' + redoneA + ')');
+    // A new change clears redo (two pastes are still waiting to be redone here).
+    ok(ed.canRedo && ed.undone.length === 2, 'two more pastes could still be redone');
+    ed.setAttribute(redoneA, 'Name', 'Renamed table');
+    ok(!ed.canRedo, 'a new change clears what could be redone');
+    ed.undo();
+    ok(api.GetLine(mid, redoneA, false).Name?.value === item.name && ed.canRedo, 'undo of a name change writes the old name back');
+    ed.redo();
+    ok(api.GetLine(mid, redoneA, false).Name?.value === 'Renamed table', 'redo of a name change writes the new name again');
+    // Duplicate = copy + paste: and save → reopen.
+    const dupe = ed.placeLike(redoneA, { storey: storey.id, x: 1000, y: 5000, rot: 0, itemNumber: ed.placer().nextItemNumber(), quantity: 1, notes: '' });
+    const bytes = ed.save();
+    const re = await quiet((x) => engine2.load(x))(bytes);
+    const back = new IfcPlacer(WebIFC, engine2.api, engine2.modelID).placements();
+    const geomIds = new Set(); for (const bb of re.batches) for (const t of bb.triIds) geomIds.add(t);
+    ok(back.length === 4 && back.map((p) => p.itemNumber).join() === '1,2,3,4' && geomIds.has(dupe.id) && geomIds.has(r3.id), 'saved and reopened: items 1–4, the pasted ones with geometry');
+    // Paste into ANOTHER model from the kept item (the clip went through storage and back).
+    const kept = C.placementClip(rowA, { model: 'm1', file: f, storeyName: storey.name, storeyElevation: storey.elevation, item, meta: { library: 'librarycraft', sha256: '', sourceFile: '' }, box: C.boxFromItem(item) });
+    const s4 = memStore(); C.writeClip(s4, kept);
+    const back4 = C.readClip(s4);
+    const other = f === 'Ifc4_SampleHouse.ifc' ? 'Ifc2x3_Duplex_Architecture.ifc' : 'Ifc4_SampleHouse.ifc';
+    await quiet((x) => engine2.load(x))(new Uint8Array(fs.readFileSync(path.join(TF, 'samples', other))));
+    const ed2 = new IfcEditor(WebIFC, engine2);
+    const inf2 = ed2.placer().info();
+    const pick = C.pickStorey(back4, inf2.storeys, false);
+    const x = ed2.placeItem(back4.item, { storey: pick.id, x: back4.x, y: back4.y, rot: back4.rot, itemNumber: ed2.placer().nextItemNumber(), quantity: back4.quantity, notes: back4.notes, library: back4.meta.library });
+    const rowX = ed2.placer().placements().find((p) => p.id === x.id);
+    ok(rowX && rowX.uuid === item.uuid && near(rowX.x, 1000, 1) && rowX.itemNumber === '1' && rowX.quantity === 3, 'paste in place into ' + other + ' from the stored clip\'s item: same X, Y, quantity 3, item 1 there (storey by ' + pick.how + ')');
+  }
+  console.log(`\n${good} passed, ${bad} failed`);
+  return bad ? 1 : 0;
+}
+
+/** --library: docs/LIBRARY-SPEC.md §7 B. */
+async function libraryMode() {
+  const { execFileSync } = await import('node:child_process');
+  const os = await import('node:os');
+  const L = await import(path.join(APP, 'libitem.js'));
+  const { itemsFromIfc } = await import(path.join(APP, 'libitem-ifc.js'));
+  const { IfcPlacer, snapToWall, PSETS, classesFor } = await import(path.join(APP, 'ifc-place.js'));
+  const { IfcEditor } = await import(path.join(APP, 'ifc-edit.js'));
+  const { readRevit } = await import(path.join(APP, 'rvt-reader.js'));
+  const TF = TESTFILES;
+  const KITCHEN = path.join(ROOT, 'fixtures/dwg/kitchen-equipment.dwg');   // public fixture (fixtures/README.md)
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const near = (a, b, tol = 0.5) => Math.abs(a - b) <= tol;
+  const valid = (it) => L.validateItem(L.cleanItem(it), { partial: true });
+
+  console.log('== validateItem / itemHash');
+  const csv = L.itemsFromCsv(fs.readFileSync(path.join(ROOT, 'tools/library/seed.csv'), 'utf8'));
+  const table = csv.items[0];
+  ok(csv.items.length === 6 && csv.items.every((i) => valid(i).ok), 'seed.csv: 6 generic items, all valid');
+  ok(near(table.body.w, 1828.8) && near(table.body.d, 762) && near(table.body.h, 863.6) && table.body.y === -762 && near(table.body.x, -914.4), 'work table 72 × 30 × 34 in → mm, back on y = 0, centred in x');
+  ok(csv.items.every((i) => !i.maker && !i.model && /^Generic /.test(i.name)), 'seed items: generic names, no maker or model');
+  const full = { ...L.cleanItem(table), uuid: '6f1c2a3b-1d2e-4f50-8a9b-0c1d2e3f4a5b', version: 1, license: { id: 'CC0-1.0', holder: 'CadCraft', attribution: '', url: '' } };
+  ok(L.validateItem(full).ok, 'a full item (uuid, version, license) validates');
+  ok(!L.validateItem(L.cleanItem(table)).ok, 'without uuid/version/license only partial mode accepts it');
+  const rej = (label, patch) => { const o = JSON.parse(JSON.stringify(full)); patch(o); const r = L.validateItem(o); ok(!r.ok, 'rejects ' + label + (r.ok ? '' : ' (' + r.errors[0] + ')')); };
+  rej('a category outside the taxonomy', (o) => { o.category = 'foodservice/sinkz'; });
+  rej('a license outside the list', (o) => { o.license.id = 'CC-BY-NC-4.0'; });
+  rej('format_version 2', (o) => { o.format_version = 2; });
+  rej('an unknown top-level key', (o) => { o.extra = 1; });
+  rej('an unknown params key', (o) => { o.params.colour = 'red'; });
+  rej('a number over 10^7 mm', (o) => { o.body.w = 2e7; });
+  rej('a non-finite number', (o) => { o.plan.entities[0].pts[0][0] = NaN; });
+  rej('text over 500 characters', (o) => { o.description = 'x'.repeat(501); });
+  rej('a mesh index out of range', (o) => { o.body = { type: 'mesh', positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 3] }; });
+  rej('more than 200 000 triangles', (o) => { o.body = { type: 'mesh', positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: new Array(600003).fill(0) }; });
+  rej('more than 50 000 plan entities', (o) => { o.plan.entities = new Array(50001).fill({ type: 'point', layer: '0', color: null, x: 0, y: 0 }); });
+  rej('a bad plan entity type', (o) => { o.plan.entities.push({ type: 'spline', layer: '0', color: null }); });
+  rej('a pattern hatch', (o) => { o.plan.entities.push({ type: 'hatch', layer: '0', color: null, loops: [[0, 0, 1, 0, 1, 1]], solid: false }); });
+  ok(L.validateItem({ ...full, source_attrs: { 'ANY-NAME': 'kept verbatim' } }).ok, 'any key is fine under source_attrs');
+  const h1 = await L.itemHash(full), h2 = await L.itemHash({ provenance: { sha256: 'x' }, ...Object.fromEntries(Object.entries(full).reverse()) });
+  ok(/^[0-9a-f]{64}$/.test(h1) && h1 === h2, 'itemHash: hex sha256, independent of key order and provenance');
+  ok(h1 !== await L.itemHash({ ...full, name: 'Other' }), 'itemHash changes with the content');
+
+  console.log('== Adapters');
+  // The public kitchen fixture: KCL blocks, params from the item tags, inches → mm (fixtures/facts.json).
+  const db = await parseDrawing(new Uint8Array(fs.readFileSync(KITCHEN)), false);   // the build's dwg/read.js (cc-dwg)
+  const dw = L.itemsFromDwg(db, { fileName: 'kitchen-equipment.dwg' });
+  const kcl = dw.items.filter((i) => Object.keys(i.source_attrs).some((k) => /^KCL-/.test(k)) && i.maker);
+  ok(dw.candidates.length === 163 && dw.items.length === 163 && dw.items.every((i) => valid(i).ok), `kitchen fixture: ${dw.candidates.length} blocks listed, ${dw.items.length} items, all valid`);
+  ok(kcl.length === 51, `${kcl.length} equipment blocks carry KCL data from their item tags`);
+  const hw = dw.items.find((i) => i._key === 'hw-dropin-2');
+  ok(hw && hw.name === 'Drop-In, Hot Wells' && hw.maker === 'Example Foodservice Co.' && hw.model === 'HW-2E', 'HW-DROPIN-2: name, maker, model from its tag');
+  ok(hw && near(hw.params.width, 774.7) && near(hw.params.depth, 577.85) && hw.params.plumb?.id === '(2) 1"', 'HW-DROPIN-2: 30.5 × 22.75 in → mm (INSUNITS inches), plumbing ID (2) 1"');
+  ok(hw && !('KCL-ITEM' in hw.source_attrs) && !('KCL-QTY' in hw.source_attrs) && hw.source_attrs['KCL-FILENAME'] === 'HW-DROPIN-2', 'item number and quantity stay out of the item; other attributes verbatim');
+  const pb = L.planBounds(hw.plan);
+  ok(pb && near(pb.maxY, 0, 0.01) && near(pb.minY, -577.85), 'HW-DROPIN-2 plan: back on y = 0, front toward −Y');
+  const prep = dw.items.find((i) => i._key === 'toaster-conv');
+  ok(prep && prep.params.elec?.volts === '120' && prep.params.elec?.nema === '5-15P' && prep.params.elec?.plug === 'yes', 'TOASTER-CONV: electrical decoded (120 V, NEMA 5-15P, cord and plug)');
+  ok(dw.items.filter((i) => i.body?.type === 'mesh').length === 4, 'the 4 blocks with 3D faces get a mesh body');
+  const tagBlock = dw.items.find((i) => i._key === 'itemtag-rect');
+  ok(tagBlock && tagBlock.name === 'ITEMTAG-RECT' && !tagBlock.maker && !Object.keys(tagBlock.source_attrs).length, 'item-tag blocks (KCL-ITEM) carry no placement data into an item');
+  const listed = L.itemsFromDwg(db, { list: true });
+  ok(listed.items.length === 0 && listed.candidates.find((c) => c.key === 'hw-dropin-2')?.attrs['KCL-MODEL'] === 'HW-2E', 'list mode: candidates with attributes, no items');
+  ok(L.itemsFromDwg(db, { units: 'mm', blocks: ['HW-DROPIN-2'] }).items[0].params.width === 30.5, '--units overrides the drawing units');
+
+  // IFC types → items.
+  const engine = await quiet(IfcModel.create)(WebIFC, null);
+  const api = engine.api;
+  for (const [f, want] of [['Ifc4_SampleHouse.ifc', 17], ['Ifc2x3_Duplex_Architecture.ifc', 25]].filter(([n]) => hasSample(n))) {
+    const mid = api.OpenModel(new Uint8Array(fs.readFileSync(path.join(TF, 'samples', f))), { COORDINATE_TO_ORIGIN: false });
+    const r = await quiet(() => itemsFromIfc(api, mid))();
+    ok(r.items.length === want && r.items.every((i) => valid(i).ok && i.body?.type === 'mesh'), `${f}: ${r.items.length} types → items with mesh bodies, all valid`);
+    if (f.startsWith('Ifc4')) {
+      const desk = r.items.find((i) => i.name === '1525x762mm');
+      ok(desk && near(desk.params.height, 762, 1) && desk.params.width > 1500 && desk.params.width < 1600, 'IFC4 desk type: body in mm around its own placement (' + Math.round(desk?.params.width) + ' × ' + Math.round(desk?.params.depth) + ' × ' + Math.round(desk?.params.height) + ')');
+    } else ok(r.items.some((i) => near(i.params.height, 2000, 1) && near(i.params.width, 800, 1)), 'IFC2X3 tall cabinet type: 800 wide, 2000 tall (metre file → mm)');
+    api.CloseModel(mid);
+  }
+
+  // glTF (generated GLB, Y up) and OBJ.
+  const cube = { positions: [0, 0, 0, 1, 0, 0, 1, 0, 0.5, 0, 0, 0.5, 0, 2, 0, 1, 2, 0, 1, 2, 0.5, 0, 2, 0.5], indices: [0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 1, 5, 6, 1, 6, 2, 2, 6, 7, 2, 7, 3, 3, 7, 4, 3, 4, 0] };
+  const glb = makeGlb(cube);
+  const g = L.itemFromMesh(glb, 'glb', {});
+  const gi = g.items[0];
+  ok(gi && valid(gi).ok && near(gi.params.width, 1000) && near(gi.params.depth, 500) && near(gi.params.height, 2000), 'glTF (GLB, meters, Y up) → 1000 × 500 × 2000 mm, Z up');
+  ok(gi && gi.body.indices.length === 36 && gi.plan.entities[0]?.type === 'poly', 'glTF: 12 triangles, hull outline as the plan');
+  const obj = 'o box\n' + Array.from({ length: 8 }, (_, i) => 'v ' + cube.positions.slice(i * 3, i * 3 + 3).join(' ')).join('\n') + '\n' + Array.from({ length: 12 }, (_, i) => 'f ' + cube.indices.slice(i * 3, i * 3 + 3).map((k) => k + 1).join(' ')).join('\n');
+  const o = L.itemFromMesh(new TextEncoder().encode(obj), 'obj', { units: 'm', upAxis: 'z' });
+  ok(o.items[0] && near(o.items[0].params.height, 500) && near(o.items[0].params.depth, 2000), 'OBJ (meters, Z up as asked) → 1000 × 2000 × 500 mm');
+  ok(L.itemFromMesh(new TextEncoder().encode(obj), 'obj', {}).notes.some((n) => /no units/.test(n)), 'OBJ without units: says it read millimeters');
+
+  // RFA: PartAtom only.
+  for (const f of ['MassWithBoxAndCone.rfa', 'empty.rfa'].filter(hasSample)) {
+    const info = await readRevit(new Uint8Array(fs.readFileSync(path.join(TF, 'samples', f))), f);
+    const r = L.itemFromRfa(info);
+    ok(r.items.length === 1 && valid(r.items[0]).ok && r.items[0].body === null && r.notes.some((n) => /Geometry not read/.test(n)), f + ': title "' + r.items[0]?.name + '", no geometry (no size parameters), with a note');
+  }
+  const fake = { family: { title: 'Prep table', categories: ['Specialty Equipment'], groups: [{ title: 'Dimensions', params: [{ name: 'Width', value: "6' - 0\"" }, { name: 'Depth', value: '2\' - 6"' }, { name: 'Height', value: '914.4 mm' }] }] } };
+  const fr = L.itemFromRfa(fake);
+  ok(fr.items[0].body?.type === 'box' && near(fr.items[0].body.w, 1828.8) && near(fr.items[0].body.h, 914.4) && fr.notes.some((n) => /a box stands in/.test(n)), 'RFA with Width/Depth/Height → a box stands in, with the note');
+  const csvBad = L.itemsFromCsv('name,width,depth\nNo units,30,24\n');
+  ok(csvBad.items.length === 0 && csvBad.notes.some((n) => /no units/.test(n)), 'CSV: a length without units is refused with a note, not guessed');
+
+  console.log('== Placing in IFC');
+  const engine2 = await quiet(IfcModel.create)(WebIFC, null);
+  const items = [csv.items[0], csv.items[3], { ...hw, body: null }].map((it, i) => ({ ...L.cleanItem(it), uuid: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'][i], version: 1, license: { id: 'CC0-1.0', holder: 'CadCraft', attribution: '"' + it.name + '" by CadCraft, CC0 1.0', url: '' } }));
+  for (const f of ['Ifc4_SampleHouse.ifc', 'Ifc2x3_Duplex_Architecture.ifc'].filter(hasSample)) {
+    console.log('-- ' + f);
+    const model = await quiet((b) => engine.load(b))(new Uint8Array(fs.readFileSync(path.join(TF, 'samples', f))));
+    const ed = new IfcEditor(WebIFC, engine);
+    const pl = ed.placer();
+    const inf = pl.info();
+    const storey = inf.storeys[0];
+    const C = api.GetCoordinationMatrix(engine.modelID);
+    const placed = [];
+    const t0 = Date.now();
+    placed.push(ed.placeItem(items[0], { storey: storey.id, x: 1000, y: 1000, rot: 0, itemNumber: pl.nextItemNumber(), quantity: 1, notes: 'by the window' }));
+    placed.push(ed.placeItem(items[0], { storey: storey.id, x: 3000, y: 1000, rot: 90, itemNumber: ed.placer().nextItemNumber(), quantity: 2 }));
+    placed.push(ed.placeItem(items[1], { storey: storey.id, x: 1000, y: 3000, rot: 180, itemNumber: '3' }));
+    placed.push(ed.placeItem(items[2], { storey: storey.id, x: 4000, y: 3000, rot: 45, itemNumber: '4', standInHeight: 900 }));
+    ok(placed[0].typeId === placed[1].typeId && placed[0].typeId !== placed[2].typeId, 'the same item twice shares one type; another item gets its own');
+    ok(placed.map((p) => ed.changes.find((c) => c.id === p.id)).every(Boolean) && ed.changes.length === 4, '4 placements recorded as 4 changes (' + (Date.now() - t0) + ' ms)');
+    // Undo the last one, then place it again.
+    const lastId = placed[3].id;
+    ed.undo();
+    let gone = false; try { gone = !api.GetLine(engine.modelID, lastId, false); } catch (e) { gone = true; }
+    ok(gone && ed.changes.length === 3, 'undo removes the last placement');
+    placed[3] = ed.placeItem(items[2], { storey: storey.id, x: 4000, y: 3000, rot: 45, itemNumber: '4', standInHeight: 900 });
+
+    // Swap item 3 to the work table, then "update" item 1 to a version 2 — numbers stay.
+    const clsOf = (id) => String(api.GetLine(engine.modelID, id, false).constructor?.name || '').toUpperCase();
+    const sink = { ...items[0], uuid: '44444444-4444-4444-8444-444444444444', name: 'Sink', category: 'plumbing/sinks', ifc: { ...(items[0].ifc || {}), class: 'IfcSanitaryTerminal' } };
+    const was3 = clsOf(placed[2].id), sinkCls = classesFor(sink, inf.schema).occ, want3 = classesFor(items[0], inf.schema).occ;
+    const sw = ed.swapItem(placed[2].id, sink, {});
+    ok(was3 !== sinkCls && sw.classChanged?.to.toUpperCase() === sinkCls && /^Ifc[A-Z]/.test(sw.classChanged.from) && clsOf(placed[2].id) === sinkCls, 'B11: swapped for a sink, the class changes ' + was3 + ' → ' + clsOf(placed[2].id) + ', same express ID #' + placed[2].id);
+    ed.undo();
+    ok(clsOf(placed[2].id) === was3, 'B11: undo brings the old class back (' + clsOf(placed[2].id) + ')');
+    ed.redo();
+    ok(clsOf(placed[2].id) === sinkCls, 'B11: redo changes it again');
+    ed.swapItem(placed[2].id, items[0], {});
+    ok(clsOf(placed[2].id) === want3, 'B11: swapped on to the work table: ' + want3);
+    const v2 = { ...items[0], version: 2, name: items[0].name + ' (v2)', body: { ...items[0].body, h: 900 } };
+    ed.swapItem(placed[0].id, v2, {}, { what: 'update' });
+    const bytes = ed.save();
+    const src = new TextDecoder().decode(bytes);
+    ok(this_schema(src) === inf.schema, 'saved as ' + inf.schema);
+    ok(inf.schema === 'IFC2X3' ? /IFCFACETEDBREP\(/.test(src) && !/IFCTRIANGULATEDFACESET\(/.test(src) : /IFCTRIANGULATEDFACESET\(/.test(src), inf.schema === 'IFC2X3' ? 'IFC2X3 body: IfcFacetedBrep (no IFC4 entities)' : 'IFC4 body: IfcTriangulatedFaceSet');
+    ok(/IFCGEOMETRICCURVESET\(/.test(src) && /'FootPrint'/.test(src) && /IFCMAPPEDITEM\(/.test(src), 'FootPrint curve set and mapped items written');
+
+    // Reopen in a second engine.
+    const re = await quiet((b) => engine2.load(b))(bytes);
+    const geomIds = new Set(); for (const b of re.batches) for (const t of b.triIds) geomIds.add(t);
+    ok(placed.every((p) => geomIds.has(p.id)), 'reopened: all 4 placements have geometry');
+    ok(re.elements === model.elements + 4, `reopened: ${model.elements} + 4 elements`);
+    const sp = await engine2.spatial();
+    ok(placed.every((p) => sp.storeyOf.get(p.id) === storey.id), 'every placement is on the chosen storey (' + storey.name + ')');
+    const pl2 = new IfcPlacer(WebIFC, engine2.api, engine2.modelID);
+    const back = pl2.placements();
+    const byId = new Map(back.map((p) => [p.id, p]));
+    ok(back.length === 4, '4 placements read back from their psets');
+    const p0 = byId.get(placed[0].id), p2 = byId.get(placed[2].id);
+    ok(p0 && p0.itemNumber === '1' && p0.notes === 'by the window' && p0.version === 2, 'update kept ItemNumber 1 and its notes, now version 2');
+    ok(p2 && p2.itemNumber === '3' && p2.uuid === items[0].uuid, 'swap kept ItemNumber 3 and points at the new item');
+    ok(String(engine2.api.GetLine(engine2.modelID, placed[2].id, false).constructor?.name || '').toUpperCase() === want3 && sp.storeyOf.get(placed[2].id) === storey.id, 'B11: reopened, the swapped placement is a ' + want3 + ', still on its storey, with its type and psets');
+    ok(byId.get(placed[1].id)?.quantity === 2 && near(byId.get(placed[1].id).x, 3000, 1) && near(byId.get(placed[1].id).y, 1000 + 0, 1) && near(byId.get(placed[1].id).rot, 90, 0.01), 'placement 2: quantity 2, at 3000, 1000 mm, rotated 90°');
+    const props = await quiet((x) => engine2.properties(x))(placed[0].id);
+    const setNames = props.sets.map((s) => s.name);
+    ok([PSETS.placement, PSETS.library, PSETS.equipment].every((n) => setNames.includes(n)) && setNames.some((n) => n === PSETS.library + ' (type)'), 'psets on the element: ' + setNames.filter((n) => /CadCraft/.test(n)).join(', '));
+    const hwProps = await quiet((x) => engine2.properties(x))(placed[3].id);
+    ok(hwProps.sets.some((s) => s.name === PSETS.source && s.rows.some((r) => r.name === 'KCL-MODEL' && r.value === 'HW-2E')), 'CadCraft_SourceAttributes carries the KCL attributes verbatim');
+    const types = pl2.libraryTypes();
+    const typeOfOcc = pl2.relTypeOf();
+    ok(typeOfOcc.get(placed[1].id).type === typeOfOcc.get(placed[2].id).type && types.size === 5, 'one shared type per item@version (' + types.size + ' library types: table v1, v2, refrigerator, hot well, and the sink B11 swapped through — unused types stay)');
+    const sched = pl2.schedule();
+    ok(sched && sched.rows.length === 4 && sched.rows.map((r) => r.no).join() === '1,2,3,4' && sched.rows.find((r) => r.no === '2').qty === '2', 'IFC equipment schedule: items 1–4, quantities from the placements');
+    ok(sched.rows.find((r) => r.no === '4').mfr === 'Example Foodservice Co.' && sched.rows.find((r) => r.no === '4').plumbText === 'ID (2) 1"' && sched.sheets[0].name === storey.name, 'schedule rows: maker, plumbing, storey as the sheet');
+    const { equipmentCsv } = await import(path.join(APP, 'dwg-equipment.js'));
+    ok(equipmentCsv(sched.rows, (k) => k).split('\r\n').length === 6, 'same CSV as the DWG schedule');
+    // Walls: snap the back of an item to the nearest wall.
+    const faces = pl2.wallFaces();
+    if (faces.length) {
+      const f = faces[0], mid = [(f.a[0] + f.b[0]) / 2 + f.n[0] * 500, (f.a[1] + f.b[1]) / 2 + f.n[1] * 500];
+      const s = snapToWall(mid, items[0], faces);
+      const back = [s.x, s.y], sf = s.face;
+      const onFace = Math.abs((back[0] - sf.a[0]) * sf.n[0] + (back[1] - sf.a[1]) * sf.n[1]) < 1 && s.distance <= 500.5;
+      const front = [Math.sin(s.rot * Math.PI / 180), -Math.cos(s.rot * Math.PI / 180)];   // item −Y rotated
+      ok(s && onFace && front[0] * sf.n[0] + front[1] * sf.n[1] > 0.99, `wall snap: ${faces.length} wall faces; back on the face, front facing the room (rot ${s.rot}°)`);
+    } else ok(false, 'wall faces found');
+    void C;
+  }
+
+  console.log('== tools/library/convert.mjs');
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lib-'));
+  const conv = path.join(ROOT, 'tools/library/convert.mjs');
+  const run = (...a) => { try { return { code: 0, json: JSON.parse(execFileSync(process.execPath, ['--max-old-space-size=1024', conv, ...a], { encoding: 'utf8' })) }; } catch (e) { return { code: e.status, json: JSON.parse(e.stdout || '{}') }; } };
+  const ls = run(KITCHEN, out, '--list');
+  ok(ls.code === 0 && ls.json.ok && ls.json.kind === 'dwg' && ls.json.candidates.length === 163 && ls.json.candidates.every((c) => c.key && c.name && typeof c.entities === 'number' && typeof c.has_body === 'boolean' && c.attrs), `--list on the kitchen fixture: ${ls.json.candidates?.length} candidates {key, name, entities, attrs, has_body}`);
+  ok(fs.readdirSync(out).length === 0, '--list writes nothing');
+  const cv = run(KITCHEN, out, '--block', 'HW-DROPIN-2', '--block', 'TOASTER-CONV');
+  ok(cv.code === 0 && cv.json.ok && cv.json.items.length === 2 && cv.json.items.every((i) => i.path.startsWith(out + '/') && fs.existsSync(i.path)), 'convert --block ×2: 2 items written inside the out dir');
+  const written = JSON.parse(fs.readFileSync(cv.json.items[0].path, 'utf8'));
+  ok(L.validateItem(written, { partial: true }).ok && !('uuid' in written) && !('license' in written) && !('provenance' in written), 'item.json validates and leaves uuid/version/license/provenance to the server');
+  const svg = fs.readFileSync(path.join(path.dirname(cv.json.items[0].path), 'preview.svg'), 'utf8');
+  ok(/^<svg[^>]+viewBox=/.test(svg) && /vector-effect:non-scaling-stroke/.test(svg) && !/<script/i.test(svg), 'preview.svg: viewBox fit, non-scaling strokes, no script');
+  const bad1 = run(path.join(out, 'missing.dwg'), out);
+  ok(bad1.code !== 0 && bad1.json.ok === false && bad1.json.error, 'a missing input fails with {ok:false, error}');
+  const bad2 = run(path.join(ROOT, 'fixtures/pdf/kitchen-plan-sheet.pdf'), out);
+  ok(bad2.code !== 0 && /Not a file the library can read/.test(bad2.json.error || ''), 'a PDF is refused');
+  const seed = run(path.join(ROOT, 'tools/library/seed.csv'), path.join(out, 'seed'));
+  ok(seed.code === 0 && seed.json.items.length === 6, 'seed.csv converts to 6 items');
+  // A finished format-1 item (.json): validated (partial) and passed through, with its preview.
+  const seedDir = path.join(ROOT, 'tools/library/seed');
+  const rangeSrc = JSON.parse(fs.readFileSync(path.join(seedDir, 'range.item.json'), 'utf8'));
+  const ij = run(path.join(seedDir, 'range.item.json'), path.join(out, 'item'));
+  const ijItem = ij.json.items ? JSON.parse(fs.readFileSync(ij.json.items[0].path, 'utf8')) : null;
+  ok(ij.code === 0 && ij.json.kind === 'item' && ij.json.items.length === 1 && JSON.stringify(ijItem) === JSON.stringify(rangeSrc), 'an item .json converts as kind "item", passed through unchanged');
+  const pubbed = { ...rangeSrc, uuid: '7d0f5c2e-58f4-4c55-9a43-1b1f00d2c001', version: 3, license: { id: 'CC0-1.0' }, provenance: { library: 'librarycraft' } };
+  fs.writeFileSync(path.join(out, 'pub.json'), JSON.stringify(pubbed));
+  const pj = run(path.join(out, 'pub.json'), path.join(out, 'pub'), '--list');
+  ok(pj.code === 0 && pj.json.notes.some((n) => /Left out uuid, version, license, provenance/.test(n)), 'a published item .json: server-owned fields left out with a note');
+  fs.writeFileSync(path.join(out, 'bad.json'), JSON.stringify({ format: 'cadcraft-library-item', format_version: 1, name: 'x', kind: 'nope' }));
+  const bj = run(path.join(out, 'bad.json'), path.join(out, 'bad'));
+  ok(bj.code !== 0 && /format checks/.test(bj.json.error || ''), 'an invalid item .json is refused with the format errors');
+  fs.rmSync(out, { recursive: true, force: true });
+
+  console.log('== Seed symbols and previewSvg');
+  const sym = execFileSync(process.execPath, [path.join(ROOT, 'tools/library/seed-symbols.mjs'), '--check'], { encoding: 'utf8' });
+  ok((sym.match(/^ok /gm) || []).length === 6, 'tools/library/seed-symbols.mjs --check: six symbols validate');
+  const manifest = JSON.parse(fs.readFileSync(path.join(seedDir, 'manifest.json'), 'utf8'));
+  ok(manifest.length === 6 && manifest.every((m) => {
+    const it = JSON.parse(fs.readFileSync(path.join(seedDir, m.file), 'utf8'));
+    return L.validateItem(it, { partial: true }).ok && it.maker === '' && it.model === '' && !it.plan.entities.some((e) => e.type === 'text')
+      && it.plan.entities.length >= 4 && L.planBounds(it.plan).maxY <= 1.5 * 25.4 + 1e-6;
+  }), 'seed items: valid, no maker/model, no name text in the symbol, back on y = 0');
+  ok(L.layerLinetype('EQUIP-HIDDEN') === 'hidden' && L.layerLinetype('shelf ABOVE') === 'hidden' && L.layerLinetype('door swing') === 'clear'
+    && L.layerLinetype('A-CENTER') === 'center' && L.layerLinetype('EQUIP-DETAIL') === 'thin' && L.layerLinetype('EQUIP') === '', 'layerLinetype: the layer-name convention');
+  ok(L.lengthLabel(1828.8, true) === '72"' && L.lengthLabel(647.7, true) === '25½"' && L.lengthLabel(762.4, false) === '762', 'lengthLabel: 72", 25½", 762');
+  const ps = L.previewSvg(rangeSrc);
+  const sizes = [...ps.matchAll(/font-size="([\d.]+)"/g)].map((m) => +m[1]);
+  ok(/^<svg[^>]+viewBox="0 0 480 360" width="480" height="360"/.test(ps) && /vector-effect:non-scaling-stroke/.test(ps) && /\.k\{stroke-width:1\.5\}/.test(ps)
+    && /\.m\{stroke-width:1\}/.test(ps) && /class="k"/.test(ps) && /class="hd"/.test(ps) && /class="t"/.test(ps) && /class="fl"/.test(ps), 'previewSvg: 480×360 tile, 1.5/1/0.6 strokes, heavy outline, hidden oven door, thin detail, light fill');
+  ok(/>36(&quot;|")<\/text>/.test(ps) && />33(&quot;|")<\/text>/.test(ps) && />Front<\/text>/.test(ps) && !/<script|\son\w+=|href/i.test(ps), 'previewSvg: overall dims 36" and 33", Front marker, nothing active');
+  const csvTable = L.itemsFromCsv(fs.readFileSync(path.join(ROOT, 'tools/library/seed.csv'), 'utf8')).items[0];
+  const pc = L.previewSvg(csvTable);
+  const csvSizes = [...pc.matchAll(/font-size="([\d.]+)"/g)].map((m) => +m[1]);
+  ok(csvSizes.length === 1 && csvSizes[0] <= 11 && sizes.length === 0, `previewSvg: plan text kept small (${csvSizes.join(', ')} px), no giant name text`);
+
+  const ccCopy = path.join(ROOT, 'public_html/assets/apps/cadcraft/dev/libitem.js');
+  if (fs.existsSync(ccCopy)) ok(fs.readFileSync(ccCopy).equals(fs.readFileSync(path.join(APP, 'libitem.js'))), 'cadcraft/dev/libitem.js is byte-identical');
+  else console.log('  (cadcraft/dev/libitem.js not there yet)');
+
+  console.log(bad ? `\n${bad} of ${good + bad} library checks failed` : `\nall ${good} library checks passed`);
+  return bad ? 1 : 0;
+
+  function this_schema(src) { return (src.match(/FILE_SCHEMA\(\('([^']+)'/) || [])[1]; }
+}
+
+/**
+ * --dwg3d: the drawing's 3D view, DOM-free (docs/3D-SPEC.md §D). Fixture: tools/bimcraft-test/fixture3d.py (ezdxf) →
+ * make-fixture3d.sh (ODA File Converter) → dwg3d-acad2000.dwg / dwg3d-acad2018.dwg (+ the ezdxf dwg3d.dxf); read by the
+ * build's dwg/read.js (cc-dwg) and dxf-model.js, as the browser does.
+ */
+async function dwg3dMode() {
+  const C3 = await import(path.join(APP, 'dwg-compile3d.js'));
+  const FIX = path.join(ROOT, 'tools/bimcraft-test/fixtures');
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol;
+  const read = async (file) => ({ db: await parseDrawing(new Uint8Array(fs.readFileSync(file)), /\.dxf$/i.test(file)) });
+  /** Every corner of a layer's batches: { tris: [[x,y,z]…], lines: [[x,y,z]…] } */
+  const pointsOf = (m, layer) => {
+    const out = { tris: [], lines: [], nTris: 0, nSegs: 0 };
+    for (const b of m.batches.filter((x) => x.layer === layer)) {
+      for (let i = 0; i < b.tris.length; i += 3) out.tris.push([b.tris[i], b.tris[i + 1], b.tris[i + 2]]);
+      for (let i = 0; i < b.lines.length; i += 3) out.lines.push([b.lines[i], b.lines[i + 1], b.lines[i + 2]]);
+      out.nTris += b.tris.length / 9; out.nSegs += b.lines.length / 6;
+    }
+    return out;
+  };
+  const range = (pts, k) => pts.length ? [Math.min(...pts.map((p) => p[k])), Math.max(...pts.map((p) => p[k]))] : [NaN, NaN];
+  const has = (pts, q, tol = 1e-3) => pts.some((p) => near(p[0], q[0], tol) && near(p[1], q[1], tol) && near(p[2], q[2], tol));
+
+  console.log('== m3d/: ModelCraft camera and view cube copies');
+  for (const f of ['camera.js', 'vec.js', 'viewcube.js', 'viewcube-three.js', 'viewcube-camera.js']) {
+    const src = path.join(ROOT, 'public_html/assets/apps/modelcraft/dev', f), copy = path.join(APP, 'm3d', f);
+    ok(fs.existsSync(copy) && fs.readFileSync(copy).equals(fs.readFileSync(src)), `m3d/${f} is byte-identical to modelcraft/dev/${f} (re-copy when it changes)`);
+  }
+
+  console.log('== dwg/: the cc-dwg reader (byte-identical copies of lib/dwg; node tools/dwg-test/writer-sync.mjs bimcraft)');
+  const { READER_FILES } = await import(path.join(ROOT, 'tools/dwg-test/writer-sync.mjs'));
+  const differ = READER_FILES.filter((f) => !fs.existsSync(path.join(APP, 'dwg', f)) || !fs.readFileSync(path.join(APP, 'dwg', f)).equals(fs.readFileSync(path.join(ROOT, 'lib/dwg', f))));
+  const extra = fs.existsSync(path.join(APP, 'dwg')) ? fs.readdirSync(path.join(APP, 'dwg')).filter((f) => f.endsWith('.js') && !READER_FILES.includes(f)) : [];
+  ok(!differ.length && !extra.length, `dwg/ holds byte-identical copies of the ${READER_FILES.length} lib/dwg files the reader needs` + (differ.length || extra.length ? ' — differ: ' + differ.join(', ') + (extra.length ? '; not needed: ' + extra.join(', ') : '') : ''));
+  ok(!fs.existsSync(path.join(APP, 'dwg-raw3d.js')), 'dwg-raw3d.js (the LibreDWG extras reader) is gone');
+  ok(fs.readFileSync(path.join(APP, 'dxf-model.js')).equals(fs.readFileSync(path.join(APP, '../../cadcraft/dev/dxf-model.js'))), 'dxf-model.js is byte-identical in bimcraft/dev and cadcraft/dev');
+  {   // DXF and DWG of the same drawing (ODA truth) give the same 2D drawing
+    const { compileDrawing } = await import(path.join(APP, 'dwg-compile.js'));
+    const C = path.join(TESTFILES, 'dwg-corpus') + '/';
+    const sum = (d) => d.spaces.map((sp) => { const c = (k) => [...sp.batches.values()].reduce((x, y) => x + y[k].length, 0); return sp.name + ':' + c('lines') + '/' + c('fills') + '/' + c('texts'); }).join(' ');
+    for (const n of ['example-2018', 'architectural-annotation-scaling-and-multileaders', 'blocks-and-tables-imperial']) {
+      if (!fs.existsSync(C + '_truth/AC1032/' + n + '.dxf')) continue;
+      const a = sum(compileDrawing(await parseDrawing(new Uint8Array(fs.readFileSync(C + 'AC1032/' + n + '.dwg')), false)));
+      const b = sum(compileDrawing(await parseDrawing(new Uint8Array(fs.readFileSync(C + '_truth/AC1032/' + n + '.dxf')), true)));
+      ok(a === b, `${n}: the ODA DXF (dxf-model.js) draws as the DWG (readDwg): ${b}` + (a === b ? '' : ' vs ' + a));
+    }
+  }
+  const manifest = fs.readFileSync(path.join(APP, 'manifest.json'), 'utf8') + fs.readFileSync(path.join(APP, 'ui.inc'), 'utf8');
+  ok(!/libredwg|dwgWasm|dwg-wasm/i.test(manifest), 'manifest.json and ui.inc no longer load libredwg-web');
+
+  console.log('== OCS (arbitrary axis) and 3D splines');
+  const om = C3.ocsMatrix({ x: 0, y: 0, z: -1 });
+  ok(near(C3.apply3(om, 1, 2, 3)[0], -1) && near(C3.apply3(om, 1, 2, 3)[1], 2) && near(C3.apply3(om, 1, 2, 3)[2], -3), 'extrusion (0,0,-1): X mirrored, as AutoCAD draws it');
+  const ox = C3.apply3(C3.ocsMatrix({ x: 1, y: 0, z: 0 }), 6000, 1000, 4500);
+  ok(near(ox[0], 4500) && near(ox[1], 6000) && near(ox[2], 1000), 'extrusion (1,0,0): OCS (6000, 1000, 4500) → world (4500, 6000, 1000)');
+  ok(C3.ocsMatrix({ x: 0, y: 0, z: 0 }) === C3.I3, 'no extrusion (0,0,0) = world Z');
+  const sp = C3.spline3({ degree: 1, controlPoints: [{ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 10 }], knots: [0, 0, 1, 1] });
+  ok(sp.length > 2 && near(sp[sp.length - 1][2], 10, 1e-3) && near(sp[0][2], 0), 'spline3: a degree-1 spline climbs from z 0 to z 10');
+
+  console.log('== compileScene on a hand-made scene (the reader-neutral intermediate; no reader)');
+  const hand = C3.compileScene({ units: 'millimeters', layers: [{ name: 'A', color: '#ff0000', on: true }], notes: {},
+    blocks: new Map([['B', { name: 'B', base: { x: 0, y: 0, z: 0 }, entities: [
+      { type: '3DFACE', layer: '0', color: { index: 0 }, points: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }, { x: 0, y: 1, z: 0 }], invisibleEdges: 2 }] }]]),
+    model: [
+      { type: 'LINE', layer: 'A', color: { index: 256 }, start: { x: 0, y: 0, z: 0 }, end: { x: 10, y: 0, z: 0 }, thickness: 5, extrusion: { x: 0, y: 0, z: 1 } },
+      { type: 'INSERT', layer: 'A', color: { rgb: 0x00ff00 }, block: 'B', insert: { x: 20, y: 0, z: 3 }, scale: { x: 2, y: 2, z: 2 }, rotation: 0, extrusion: { x: 0, y: 0, z: 1 }, cols: 1, rows: 1, colSpacing: 0, rowSpacing: 0, attribs: 0 },
+      { type: 'BODY', layer: 'A', color: { index: 256 } }] });
+  ok(hand.stats.segments === 4 + 3 && hand.stats.triangles === 2 + 2 && hand.batches.some((b) => b.color === '#00ff00' && b.layer === 'A') && hand.stats.notDrawn['BODY (ACIS)'] === 1
+    && hand.bounds.max[0] === 22 && hand.bounds.max[2] === 5, `LINE with thickness, a BYBLOCK 3DFACE in a scaled INSERT (one hidden edge), a BODY counted (${hand.stats.segments} segments, ${hand.stats.triangles} triangles)`);
+
+  console.log('== text, attributes and wide polylines in 3D (0.4 B7)');
+  {
+    const base = { layer: 'A', color: { index: 256 } };
+    const sc = { units: '', layers: [{ name: 'A', color: '#ff0000', on: true }], notes: {}, blocks: new Map([['TAG', { name: 'TAG', base: { x: 0, y: 0, z: 0 }, entities: [] }]]), model: [
+      { ...base, type: 'LWPOLYLINE', vertices: [{ x: 0, y: 0, bulge: 0, sw: 100, ew: 100 }, { x: 1000, y: 0, bulge: 0, sw: 0, ew: 0 }], closed: false, elevation: 50, thickness: 0 },
+      { ...base, type: 'LWPOLYLINE', vertices: [{ x: 0, y: 500, bulge: 0, sw: 0, ew: 200 }, { x: 1000, y: 500, bulge: 0, sw: 0, ew: 0 }], closed: false, elevation: 0, thickness: 0 },
+      { ...base, type: 'LWPOLYLINE', vertices: [{ x: 0, y: 1000, bulge: 1, sw: 20, ew: 20 }, { x: 1000, y: 1000, bulge: 0, sw: 0, ew: 0 }], closed: false, elevation: 0, thickness: 0 },
+      { ...base, type: 'TEXT', value: 'Middle', height: 50, insert: { x: 0, y: 0, z: 0 }, align: { x: 2000, y: 0, z: 30 }, hAlign: 1, vAlign: 2, rotation: Math.PI / 2, widthFactor: 1, generation: 0 },
+      { ...base, type: 'MTEXT', value: 'One\\PTwo', height: 10, insert: { x: 3000, y: 0, z: 0 }, attach: 1, xAxis: null, lineSpacing: 1, rotation: 0 },
+      { ...base, type: 'INSERT', block: 'TAG', insert: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, rotation: 0, cols: 1, rows: 1, colSpacing: 0, rowSpacing: 0,
+        attribs: [{ ...base, type: 'ATTRIB', value: '12', height: 20, insert: { x: 5, y: 5, z: 0 }, hAlign: 0, vAlign: 0, rotation: 0, invisible: false },
+          { ...base, type: 'ATTRIB', value: 'secret', height: 20, insert: { x: 5, y: 50, z: 0 }, hAlign: 0, vAlign: 0, rotation: 0, invisible: true }] }] };
+    const m = C3.compileScene(sc);
+    const tris = (o) => { const t = []; for (const b of m.batches) for (let i = 0; i < b.triOwner.length; i++) if (b.triOwner[i] === o) t.push([...b.tris.subarray(i * 9, i * 9 + 9)]); return t; };
+    const w0 = tris(0), ys0 = w0.flat().filter((_, i) => i % 3 === 1);
+    ok(w0.length === 2 && Math.min(...ys0) === -50 && Math.max(...ys0) === 50 && w0.flat().filter((_, i) => i % 3 === 2).every((z) => z === 50), 'constant width 100: one quad, ±50 from the path, at its elevation 50');
+    const w1 = tris(1), at1000 = w1.flat().reduce((a, v, i, arr) => (i % 3 === 0 && v === 1000 ? a.concat([arr[i + 1]]) : a), []);
+    ok(w1.length === 2 && Math.max(...at1000) === 600 && Math.min(...at1000) === 400, 'tapered 0 → 200: a point at the start, 200 wide at the end');
+    const w2 = tris(2);
+    ok(w2.length > 10 && w2.flat().filter((_, i) => i % 3 === 1).some((y) => y < 1000 - 400), 'a bulged wide segment follows its arc (' + w2.length + ' triangles)');
+    const tx = m.batches.flatMap((b) => b.texts);
+    const mid = tx.find((t) => t.s === 'Middle');
+    ok(mid && mid.ha === 1 && mid.va === 2 && near(mid.o[0], 2000) && near(mid.o[2], 30) && near(mid.xd[1], 50) && near(mid.xd[0], 0), 'TEXT: aligned at its alignment point (z 30), centred and middle, turned 90°');
+    const one = tx.find((t) => t.s === 'One'), two = tx.find((t) => t.s === 'Two');
+    ok(one && two && near(one.o[1] - two.o[1], 16.67, 0.01), 'MTEXT: two lines, 1.667 × height apart');
+    ok(tx.some((t) => t.s === '12' && t.owner === 5) && !tx.some((t) => t.s === 'secret'), 'a visible attribute is drawn and picks as its block reference; an invisible one is not');
+    ok(m.stats.drawn.TEXT === 1 && m.stats.drawn.MTEXT === 1 && m.stats.drawn.ATTRIB === 1 && !m.stats.flatOnly.ATTRIB, 'TEXT, MTEXT and ATTRIB counted as drawn');
+    const T = C3.textLines({ type: 'TEXT', value: 'Mirror', height: 10, insert: { x: 0, y: 0 }, generation: 2, widthFactor: 0.8 });
+    ok(T.length === 1 && near(T[0].ux, -8), 'a mirrored TEXT (generation 2) runs backwards; width factor 0.8 narrows it');
+  }
+
+  for (const [file, version] of [['dwg3d-acad2000.dwg', 'AutoCAD 2000'], ['dwg3d-acad2018.dwg', 'AutoCAD 2018'], ['dwg3d.dxf', 'DXF from ezdxf, dxf-model.js']]) {
+    const f = path.join(FIX, file);
+    console.log(`== ${file} (${version}; fixture3d.py through the ODA File Converter)`);
+    if (!fs.existsSync(f)) { ok(false, `${file} exists (run: sh tools/bimcraft-test/make-fixture3d.sh)`); continue; }
+    const { db } = await read(f);
+    const ms = db.blocks.find((b) => /^\*model_space$/i.test(b.name)).entities;
+    ok(!db.report.notes.length && !ms.some((e) => e.damaged), `the reader read every object (${db.report.notes.length} notes)`);
+    ok(ms.filter((e) => ['LINE', 'CIRCLE', 'ARC'].includes(e.type) && e.thickness).map((e) => e.thickness).sort((a, b) => a - b).join() === '500,800,1000', `thickness read: LINE 800, CIRCLE 1000, ARC 500`);
+    const pf = ms.find((e) => e.type === 'POLYLINE_PFACE'), pm = ms.find((e) => e.type === 'POLYLINE_MESH');
+    ok(pf && pf.vertices.length === 8 && pf.faces.length === 6 && pf.layer === 'PFACE', `polyface mesh: 8 vertices, 6 faces, layer PFACE, model space (${pf?.vertices.length}/${pf?.faces.length})`);
+    ok(pm && pm.m === 4 && pm.n === 3 && pm.vertices.length === 12 && !(pm.flags & 1) && !(pm.flags & 32), `polygon mesh: 4 × 3, 12 vertices, open (${pm?.m}×${pm?.n}, ${pm?.vertices.length})`);
+    const bodies = ms.filter((e) => ['BODY', 'REGION', '3DSOLID', 'UNKNOWN'].includes(e.type) || /SURFACE$/.test(e.type)).map((e) => e.type === 'UNKNOWN' ? e.dxfName : e.type).sort().join();
+    ok(bodies === '3DSOLID,BODY,EXTRUDEDSURFACE,MESH,REGION', `3D bodies are in the model (to count): ${bodies}`);
+    const p3 = ms.find((e) => e.type === 'POLYLINE_3D');
+    ok(p3 && p3.vertices.length === 5, `3D polyline: all 5 vertices (${p3?.vertices.length}; libredwg-web lost the last one in AutoCAD 2000 files)`);
+
+    const t0 = Date.now();
+    const m = C3.compileModel3d(db);
+    const s = m.stats;
+    ok(near(m.bounds.min[0], 0) && near(m.bounds.min[1], 0) && near(m.bounds.min[2], 0) && near(m.bounds.max[0], 10000) && near(m.bounds.max[1], 8000) && near(m.bounds.max[2], 3000),
+      `bounds (0,0,0)–(10000,8000,3000): ${m.bounds.min.map((v) => v.toFixed(3))} – ${m.bounds.max.map((v) => v.toFixed(3))} (${Date.now() - t0} ms)`);
+    const want = { LWPOLYLINE: 2, LINE: 2, POLYLINE_2D: 1, POLYLINE_3D: 1, '3DFACE': 26, CIRCLE: 2, ARC: 1, INSERT: 5, POLYLINE_PFACE: 1, POLYLINE_MESH: 1, TEXT: 1 };
+    ok(JSON.stringify(Object.fromEntries(Object.entries(s.drawn).sort())) === JSON.stringify(Object.fromEntries(Object.entries(want).sort())), `drawn by type: ${JSON.stringify(s.drawn)}`);
+    ok(JSON.stringify(Object.keys(s.notDrawn).sort()) === JSON.stringify(['3DSOLID (ACIS)', 'BODY (ACIS)', 'EXTRUDEDSURFACE', 'MESH (subdivision)', 'REGION (ACIS)']) && Object.values(s.notDrawn).every((n) => n === 1),
+      `Not drawn yet, never guessed: ${JSON.stringify(s.notDrawn)}`);
+    const texts = m.batches.flatMap((b) => b.texts);
+    ok(Object.keys(s.flatOnly).length === 0 && texts.length === 1 && texts[0].s === '3D FIXTURE' && near(texts[0].o[0], 500, 1e-6) && near(texts[0].o[1], 7500, 1e-6) && near(Math.hypot(...texts[0].yd), 200, 1e-6),
+      'the TEXT is drawn in 3D since 0.4 B7: "3D FIXTURE" at (500, 7500), 200 high; nothing left as 2D only');
+    ok(m.batches.every((b) => b.lines.every(Number.isFinite) && b.tris.every(Number.isFinite)) && m.batches.every((b) => b.lines.length % 6 === 0 && b.tris.length % 9 === 0), 'every coordinate finite; whole segments and triangles');
+    ok(s.segments === m.batches.reduce((a, b) => a + b.lines.length / 6, 0) && s.triangles === m.batches.reduce((a, b) => a + b.tris.length / 9, 0), `stats agree with the batches: ${s.segments} segments, ${s.triangles} triangles`);
+
+    const flat = pointsOf(m, 'FLAT');
+    ok(flat.nSegs === 4 && flat.nTris === 0 && range(flat.lines, 2).join() === '0,0', `2D linework stays flat: the closed rectangle is 4 segments at z 0 (${flat.nSegs})`);
+    const lines = pointsOf(m, 'LINES');
+    ok(has(lines.lines, [2000, 2000, 1500]) && lines.nTris === 2 && range(lines.tris, 2).join() === '0,800', `LINE with Z ends at (2000,2000,1500); LINE thickness 800 = one wall of 2 triangles (${lines.nTris})`);
+    const pl = pointsOf(m, 'PLINE');
+    ok(pl.nTris === 8 && range(pl.tris, 2).join() === '1200,1500', `LWPOLYLINE at elevation 1200, thickness 300: 4 walls (8 triangles) from z 1200 to 1500 (${pl.nTris}, ${range(pl.tris, 2)})`);
+    ok(pl.lines.some((p) => near(p[2], 600) && p[1] < 1000 - 1), '2D POLYLINE at elevation 600 with its bulge (an arc dips below y 1000)');
+    const p3d = pointsOf(m, 'P3D');
+    ok(p3d.nSegs === 4 && has(p3d.lines, [1000, 3000, 2000]) && range(p3d.lines, 2).join() === '0,2000', `3D POLYLINE: 4 segments up to its last vertex (1000, 3000, 2000) (${p3d.nSegs})`);
+    const fc = pointsOf(m, 'FACES');
+    ok(fc.nTris === 3 && fc.nSegs === 7 && has(fc.tris, [4000, 4000, 1000]) && has(fc.tris, [4750, 3500, 800]), `3DFACEs: a quad (2 triangles) and a triangle, 7 edges (${fc.nTris}, ${fc.nSegs})`);
+    const pfp = pointsOf(m, 'PFACE');
+    ok(pfp.nTris === 12 && pfp.nSegs === 24 && range(pfp.tris, 0).join() === '6000,7000' && range(pfp.tris, 2).join() === '0,1000', `polyface cube: 12 triangles, 24 edges, 6000–7000 × 0–1000 (${pfp.nTris}, ${pfp.nSegs})`);
+    const pmp = pointsOf(m, 'PMESH');
+    ok(pmp.nTris === 12 && pmp.nSegs === 17 && has(pmp.tris, [9500, 4000, 600]), `polygon mesh 4 × 3: 6 quads (12 triangles), 17 grid lines, corner (9500, 4000, 600) (${pmp.nTris}, ${pmp.nSegs})`);
+    const ci = pointsOf(m, 'CIRC');
+    const disc = ci.lines.filter((p) => near(p[0], 4500, 1e-6));
+    ok(disc.length > 30 && near(range(disc, 1)[0], 5700, 1) && near(range(disc, 1)[1], 6300, 1) && near(range(disc, 2)[0], 700, 1) && near(range(disc, 2)[1], 1300, 1),
+      `CIRCLE with extrusion (1,0,0) stands in the plane x 4500, centre (4500, 6000, 1000), r 300 (${disc.length} points)`);
+    const cyl = ci.tris.filter((p) => Math.hypot(p[0] - 1500, p[1] - 6000) < 401);
+    ok(cyl.length > 0 && range(cyl, 2).join() === '0,1000' && cyl.some((p) => near(p[0], 1500) && near(p[1], 6000) && near(p[2], 1000)), 'CIRCLE thickness 1000: a capped cylinder (cap centre at z 1000)');
+    const arcT = ci.tris.filter((p) => Math.hypot(p[0] - 3000, p[1] - 6000) < 401);
+    ok(arcT.length > 0 && range(arcT, 2).join() === '0,500' && !arcT.some((p) => near(p[0], 3000) && near(p[1], 6000)), 'ARC thickness 500: a wall, no cap');
+    const blk = pointsOf(m, 'BLK');
+    ok(blk.nTris === 48 && blk.nSegs === 96, `4 cube inserts (one nested): 48 triangles, 96 edges (${blk.nTris}, ${blk.nSegs})`);
+    ok(has(blk.tris, [5500, 6000, 500]), 'INSERT at (5000, 5500, 0): far corner (5500, 6000, 500)');
+    ok(has(blk.tris, [6500 + 1000 * Math.SQRT1_2 - 500 * Math.SQRT1_2, 5500 + 1000 * Math.SQRT1_2 + 500 * Math.SQRT1_2, 3000]), 'INSERT rotated 45°, scaled 2 × 1 × 2 at z 2000: far corner at z 3000');
+    ok(has(blk.tris, [8500, 5500, 500]) && !blk.tris.some((p) => p[1] < 5500 - 1e-6 && p[0] >= 8000 - 1e-6), 'INSERT with extrusion (0,-1,0): the cube stands at x 8000–8500, y 5500–6000 (its Z along −Y)');
+    ok(has(blk.tris, [9500, 7500, 500]), 'nested INSERT (NEST → CUBE) at (9000, 7000, 0)');
+    // layer "0" inside the block takes the insert's layer: no batch on layer 0
+    ok(!m.batches.some((b) => b.layer === '0'), 'block content on layer 0 is drawn on the insert\'s layer');
+  }
+
+  console.log('== polyface and polygon meshes in the 2D view (0.4 B8)');
+  {
+    const { compileDrawing } = await import(path.join(APP, 'dwg-compile.js'));
+    for (const f of ['dwg3d-acad2018.dwg', 'dwg3d.dxf']) {
+      const { db } = await read(path.join(FIX, f));
+      const d = compileDrawing(db);
+      const model = d.spaces.find((x) => x.kind === 'model');
+      const segs = (layer) => [...model.batches.values()].filter((b) => b.layer === layer).reduce((a, b) => a + b.lines.reduce((x, l) => x + l.length / 2 - 1, 0), 0);
+      const lines = (layer) => [...model.batches.values()].filter((b) => b.layer === layer).reduce((a, b) => a + b.lines.length, 0);
+      ok(!d.stats.unsupported.POLYLINE_PFACE && !d.stats.unsupported.POLYLINE_MESH, f + ': polyface and polygon meshes are drawn, not "Not drawn yet"');
+      ok(segs('PFACE') === 12, f + ': the polyface cube shows its 12 edges once each from above (' + segs('PFACE') + ')');
+      ok(lines('PMESH') === 7 && segs('PMESH') === 4 * 2 + 3 * 3, f + ': the 4 × 3 polygon mesh shows 4 + 3 grid lines (' + lines('PMESH') + ' lines, ' + segs('PMESH') + ' segments)');
+    }
+  }
+
+  console.log('== picking in the 3D view (0.4 B2): owners and Properties rows');
+  {
+    const P3 = await import(path.join(APP, 'dwg-props.js'));
+    const { db } = await read(path.join(FIX, 'dwg3d-acad2018.dwg'));
+    const m = C3.compileModel3d(db);
+    const ms = db.blocks.find((b) => /^\*model_space$/i.test(b.name)).entities;
+    ok(m.owners.length === ms.length && m.owners.every((o, i) => o.type === (ms[i].type === 'MINSERT' ? 'INSERT' : ms[i].type === 'UNKNOWN' ? (ms[i].dxfName || ms[i].className || 'UNKNOWN') : /^DIMENSION|_DIMENSION$/.test(ms[i].type) ? 'DIMENSION' : ms[i].type) && o.handle === ms[i].handle), 'one owner per model-space entity, same order, type and handle (' + m.owners.length + ')');
+    ok(m.batches.every((b) => b.lineOwner.length === b.lines.length / 6 && b.triOwner.length === b.tris.length / 9), 'every segment and triangle has an owner');
+    const ownersOn = (layer) => new Set(m.batches.filter((b) => b.layer === layer).flatMap((b) => [...b.lineOwner, ...b.triOwner]));
+    const inserts = ms.map((e, i) => [e, i]).filter(([e]) => e.type === 'INSERT').map(([, i]) => i);
+    ok(JSON.stringify([...ownersOn('BLK')].sort((a, b) => a - b)) === JSON.stringify(inserts), 'every primitive of the four block references (nested NEST included) belongs to its top-level INSERT: ' + inserts.join(', '));
+    const tris = (i) => m.batches.reduce((a, b) => a + b.triOwner.filter((o) => o === i).length, 0);
+    const nest = ms.findIndex((e) => e.type === 'INSERT' && e.block === 'NEST');
+    ok(tris(nest) === 12, 'the NEST reference owns the 12 triangles of the cube inside it');
+    const quad = ms.findIndex((e) => e.type === '3DFACE' && e.points?.[2]?.z === 1000);
+    ok(tris(quad) === 2, 'the quad 3DFACE owns its 2 triangles');
+    const line = ms.find((e) => e.type === 'LINE' && !e.thickness);
+    const rows = P3.entityRows(line, { units: m.units });
+    const r = (k) => rows.find((x) => x.key === k)?.value;
+    ok(r('dwg.prop.type') === 'LINE' && r('dwg.prop.layer') === 'LINES' && r('dwg.prop.start') === '1000, 1000, 0' && r('dwg.prop.length') === '2061.55' + (m.units ? ' ' + m.units : ''), 'LINE rows: layer, start, length 2061.55 (' + rows.map((x) => x.key.split('.').pop() + '=' + x.value).join('; ') + ')');
+    const rot = P3.entityRows(ms.find((e) => e.type === 'INSERT' && e.rotation), {});
+    const q = (k) => rot.find((x) => x.key === k)?.value;
+    ok(q('dwg.prop.block') === 'CUBE' && q('dwg.prop.rotation') === '45°' && q('dwg.prop.scale') === '2, 1, 2' && q('dwg.prop.insert') === '6500, 5500, 2000', 'INSERT rows: block CUBE, rotation 45°, scale 2, 1, 2, at (6500, 5500, 2000)');
+    const ex = P3.entityRows(ms.find((e) => e.type === 'INSERT' && e.extrusion?.y < 0), {});
+    ok(ex.some((x) => x.key === 'dwg.prop.extrusion' && x.value === '0, -1, 0'), 'a reference with extrusion (0,-1,0) lists it');
+    ok(P3.colorText({ index: 256 }) === 'ByLayer' && P3.colorText({ index: 0 }) === 'ByBlock' && P3.colorText({ index: 1 }) === 'ACI 1' && P3.colorText({ rgb: 0x12ab34 }) === '#12ab34', 'colour: ByLayer, ByBlock, ACI n, true colour');
+    const kitchen = path.join(ROOT, 'fixtures/dwg/kitchen-equipment.dwg');
+    if (fs.existsSync(kitchen)) {
+      const { db: kd } = await read(kitchen);
+      const tag = kd.blocks.find((b) => /^\*model_space$/i.test(b.name)).entities.find((e) => e.type === 'INSERT' && e.attribs?.some((a) => a.tag === 'KCL-ITEM'));
+      const at = P3.attributeRows(tag);
+      ok(at.some((a) => a.tag === 'KCL-ITEM' && a.value) && at.length === tag.attribs.length, 'an item tag in the public kitchen fixture lists its ' + at.length + ' attribute values (KCL-ITEM = ' + at.find((a) => a.tag === 'KCL-ITEM').value + ')');
+    }
+  }
+
+  console.log('== real drawings: every sample compiles in 3D');
+  const SAMPLES = path.join(TESTFILES, 'dwg-samples');   // public samples on this machine; a clean clone has the fixtures only
+  const samples = [path.join(ROOT, 'fixtures/dwg/kitchen-equipment.dwg'), path.join(ROOT, 'fixtures/dwg/base-plan.dwg'),
+    ...(fs.existsSync(SAMPLES) ? fs.readdirSync(SAMPLES).filter((n) => /\.dwg$/i.test(n)).map((n) => path.join(SAMPLES, n)) : [])].filter((p) => fs.existsSync(p));
+  for (const f of samples) {
+    try {
+      const { db } = await read(f);
+      const t0 = Date.now();
+      const m = C3.compileModel3d(db);
+      const ms = Date.now() - t0;
+      const fin = m.batches.every((b) => b.lines.every(Number.isFinite) && b.tris.every(Number.isFinite));
+      ok(fin && (m.stats.segments + m.stats.triangles > 0) && ms < 5000, `${path.basename(f)}: ${m.stats.segments} lines, ${m.stats.triangles} faces, z ${m.bounds.min[2].toFixed(1)}…${m.bounds.max[2].toFixed(1)}, ${ms} ms` +
+        (Object.keys(m.stats.notDrawn).length ? '; not drawn ' + JSON.stringify(m.stats.notDrawn) : ''));
+    } catch (e) { ok(false, path.basename(f) + ': ' + e.message); }
+  }
+
+  console.log(bad ? `\n${bad} of ${good + bad} DWG 3D checks failed` : `\nall ${good} DWG 3D checks passed`);
+  return bad ? 1 : 0;
+}
+
+/** A tiny GLB: one mesh, float positions + uint16 indices. */
+function makeGlb({ positions, indices }) {
+  const pos = new Float32Array(positions), idx = new Uint16Array(indices);
+  const binLen = pos.byteLength + idx.byteLength, pad = (4 - (binLen % 4)) % 4;
+  const json = { asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0], name: 'box' }], nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+    buffers: [{ byteLength: binLen + pad }],
+    bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: pos.byteLength }, { buffer: 0, byteOffset: pos.byteLength, byteLength: idx.byteLength }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: pos.length / 3, type: 'VEC3' }, { bufferView: 1, componentType: 5123, count: idx.length, type: 'SCALAR' }] };
+  let js = new TextEncoder().encode(JSON.stringify(json));
+  const jpad = (4 - (js.length % 4)) % 4;
+  const total = 12 + 8 + js.length + jpad + 8 + binLen + pad;
+  const out = new Uint8Array(total), dv = new DataView(out.buffer);
+  dv.setUint32(0, 0x46546c67, true); dv.setUint32(4, 2, true); dv.setUint32(8, total, true);
+  dv.setUint32(12, js.length + jpad, true); dv.setUint32(16, 0x4e4f534a, true); out.set(js, 20); out.fill(0x20, 20 + js.length, 20 + js.length + jpad);
+  let o = 20 + js.length + jpad;
+  dv.setUint32(o, binLen + pad, true); dv.setUint32(o + 4, 0x004e4942, true); o += 8;
+  out.set(new Uint8Array(pos.buffer), o); out.set(new Uint8Array(idx.buffer), o + pos.byteLength);
+  return out;
+}
+
+// ---- Cut-off compound files (partial mode). Written apart from rvt-reader.js on purpose: a second reading of
+// MS-CFB that knows, for every stream, which bytes of the file it depends on. ----
+
+/** Does the file's own index point past its end? → {need: bytes the index says the file has at least} | null. */
+function indexPastEnd(b) {
+  const SPECIAL = 0xfffffffa;   // MAXREGSECT: anything above is FREESECT / ENDOFCHAIN / FATSECT / DIFSECT
+  if (b.length < 512) return { need: 512 };
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const u32 = (o) => dv.getUint32(o, true);
+  const ss = 1 << dv.getUint16(0x1e, true), per = ss / 4;
+  const end = (s) => (s + 2) * ss;   // first byte after sector s
+  const fatSecs = [];
+  for (let i = 0; i < 109; i++) { const s = u32(0x4c + i * 4); if (s >= SPECIAL) break; fatSecs.push(s); }
+  let need = 0;
+  const index = [...fatSecs, u32(0x30)];
+  if (u32(0x40) && u32(0x3c) < SPECIAL) index.push(u32(0x3c));
+  for (let dif = u32(0x44), n = 0; dif < SPECIAL && n < 1e6; n++) {
+    index.push(dif);
+    if (end(dif) > b.length) break;
+    for (let i = 0; i < per - 1; i++) { const s = u32(end(dif) - ss + i * 4); if (s < SPECIAL) { index.push(s); fatSecs.push(s); } }
+    dif = u32(end(dif) - 4);
+  }
+  for (const s of index) need = Math.max(need, end(s));
+  // Sectors the FAT marks as used (in the FAT sectors that are in the file).
+  fatSecs.forEach((fs_, i) => {
+    if (end(fs_) > b.length) return;
+    for (let k = per - 1; k >= 0; k--) if (u32(end(fs_) - ss + k * 4) !== 0xffffffff) { need = Math.max(need, end(i * per + k)); break; }
+  });
+  return need > b.length ? { need } : null;
+}
+
+/**
+ * Every stream of a compound file with the byte ranges it depends on: its directory entry (and the entries on the
+ * tree path from the root), the FAT / DIFAT / mini FAT sectors holding the links that locate it, and its data.
+ * Links that are not in `b` stay unknown, and a stream depending on one is never complete.
+ * → { root: {deps, ok}, streams: [{path, size, deps:[[offset, length]], ok, bytes()}] }
+ */
+function cfbTruth(b) {
+  const SPECIAL = 0xfffffffa;
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const u32 = (o) => dv.getUint32(o, true);
+  const ss = 1 << dv.getUint16(0x1e, true), per = ss / 4, ms = 1 << dv.getUint16(0x20, true), perMini = ss / ms;
+  const off = (s) => (s + 1) * ss;
+  const here = ([o, n]) => o + n <= b.length;
+  const fatLoc = [];   // FAT sector i → {sec, deps (DIFAT sectors read to find it)}
+  for (let i = 0; i < 109; i++) { const s = u32(0x4c + i * 4); if (s >= SPECIAL) break; fatLoc.push({ sec: s, deps: [] }); }
+  const difDeps = [];
+  for (let dif = u32(0x44); dif < SPECIAL && difDeps.length < 1e6;) {
+    difDeps.push([off(dif), ss]);
+    if (!here([off(dif), ss])) break;
+    for (let i = 0; i < per - 1; i++) { const s = u32(off(dif) + i * 4); if (s < SPECIAL) fatLoc.push({ sec: s, deps: [...difDeps] }); }
+    dif = u32(off(dif) + ss - 4);
+  }
+  /** FAT[s] → {value (undefined = not in b), deps}. */
+  const link = (s) => {
+    const f = fatLoc[Math.floor(s / per)];
+    if (!f) return { value: undefined, deps: [] };
+    const deps = [...f.deps, [off(f.sec), ss]];
+    return { value: deps.every(here) ? u32(off(f.sec) + (s % per) * 4) : undefined, deps };
+  };
+  /** Follow a chain → positions [{sec, deps (links needed to reach it)}]; stops at the end or an unknown link. */
+  const chain = (start, want, linkOf) => {
+    const out = [];
+    let s = start, deps = [];
+    const seen = new Set();
+    while (out.length < want && s < SPECIAL && !seen.has(s)) {
+      seen.add(s);
+      out.push({ sec: s, deps });
+      if (out.length === want) break;
+      const l = linkOf(s);
+      if (l.value === undefined) break;
+      deps = [...deps, ...l.deps];
+      s = l.value;
+    }
+    return out;
+  };
+
+  const dir = chain(u32(0x30), Infinity, link);
+  const entries = [];
+  dir.forEach((p, k) => {
+    const sdeps = [...p.deps, [off(p.sec), ss]];
+    if (!sdeps.every(here)) return;
+    for (let j = 0; j < ss / 128; j++) {
+      const o = off(p.sec) + j * 128, nl = dv.getUint16(o + 0x40, true), type = b[o + 0x42];
+      if (!type || nl < 2 || nl > 64) continue;
+      entries[k * (ss / 128) + j] = { name: Buffer.from(b.subarray(o, o + nl - 2)).toString('utf16le'), type, deps: sdeps,
+        left: u32(o + 0x44), right: u32(o + 0x48), child: u32(o + 0x4c), start: u32(o + 0x74), size: u32(o + 0x78) };
+    }
+  });
+  const root = entries[0];
+  if (!root) return { root: { ok: false, deps: [[off(u32(0x30)), ss]] }, streams: [] };
+
+  const miniFat = chain(u32(0x3c), u32(0x40), link);
+  const miniLink = (m) => {
+    const p = miniFat[Math.floor(m / per)];
+    if (!p) return { value: undefined, deps: [] };
+    const deps = [...p.deps, [off(p.sec), ss]];
+    return { value: deps.every(here) ? u32(off(p.sec) + (m % per) * 4) : undefined, deps };
+  };
+  const rootChain = chain(root.start, Math.ceil(root.size / ss), link);
+  const cutoff = u32(0x38) || 4096;
+
+  const streams = [];
+  const stack = [[root.child, '', [...root.deps]]];
+  const seen = new Set();
+  while (stack.length) {
+    const [id, prefix, pdeps] = stack.pop();
+    if (id >= SPECIAL || seen.has(id)) continue;
+    seen.add(id);
+    const e = entries[id];
+    if (!e) continue;
+    const deps = [...pdeps, ...e.deps];
+    stack.push([e.left, prefix, deps], [e.right, prefix, deps]);
+    if (e.type === 1) { stack.push([e.child, prefix + e.name + '/', deps]); continue; }
+    if (e.type !== 2) continue;
+    const data = [];
+    let ok = true;
+    if (e.size >= cutoff) {
+      const want = Math.ceil(e.size / ss), c = chain(e.start, want, link);
+      if (c.length < want) ok = false;
+      else { deps.push(...c[want - 1].deps); c.forEach((p, i) => data.push([off(p.sec), Math.min(ss, e.size - i * ss)])); }
+    } else if (e.size) {
+      const want = Math.ceil(e.size / ms), c = chain(e.start, want, miniLink);
+      if (c.length < want) ok = false;
+      else {
+        deps.push(...c[want - 1].deps);
+        c.forEach((p, i) => {
+          const r = rootChain[Math.floor(p.sec / perMini)];
+          if (!r) { ok = false; return; }
+          deps.push(...r.deps);
+          data.push([off(r.sec) + (p.sec % perMini) * ms, Math.min(ms, e.size - i * ms)]);
+        });
+      }
+    }
+    const all = [...deps, ...data.map(([o]) => [o, 0]), ...data];
+    // Mini sectors are read whole (64 bytes) — the reader asks for that much, so the truth does too.
+    if (e.size && e.size < cutoff) data.forEach(([o]) => all.push([o, ms]));
+    streams.push({
+      path: prefix + e.name, size: e.size, ok, deps: all,
+      bytes: () => { const out = new Uint8Array(e.size); let w = 0; for (const [o, n] of data) { out.set(b.subarray(o, o + n), w); w += n; } return out; },
+    });
+  }
+  return { root: { ok: true, deps: root.deps }, streams };
+}
+function fitsIn(deps, c) { return deps.every(([o, n]) => o + n <= c); }
+
+/**
+ * A cut-off file must open partially: strict open throws 'truncated'; partial open says partial, carries the
+ * incomplete-file message, recovers exactly the streams whose bytes and index are all here (cfbTruth on the same
+ * bytes), byte for byte, and parses the known ones. Throws on the first wrong claim; returns report fields.
+ */
+async function checkPartialOpen(bytes, name) {
+  const { readRevit: read, openPartialCompoundFile, toSource } = await import(path.join(APP, 'rvt-reader.js'));
+  const zlib = await import('node:zlib');
+  const cut = indexPastEnd(bytes);
+  const mb = (n) => (n / 1048576).toFixed(1) + ' MB';   // the reader's own rounding
+  const must = (cond, what) => { if (!cond) throw new Error('partial open: ' + what); };
+  let strict = null;
+  try { await read(bytes, name); } catch (e) { strict = e; }
+  must(strict && strict.code === 'truncated', 'a plain open did not refuse the cut-off file');
+  must(strict.message.startsWith('This file is incomplete: it is ' + mb(bytes.length) + ', but its own index points to data at least '), 'wrong message: ' + strict.message);
+
+  const truth = cfbTruth(bytes);
+  const expect = truth.streams.filter((s) => s.ok && fitsIn(s.deps, bytes.length));
+  let info;
+  try { info = await read(bytes, name, { partial: true }); } catch (e) {
+    must(!truth.root.ok || !fitsIn(truth.root.deps, bytes.length), 'refused although its list of contents is here: ' + e.message);
+    must(e.code === 'truncated' && e.unreadable && /nothing in it can be opened/.test(e.message), 'unreadable file, wrong error: ' + e.message);
+    return { partial: 'nothing: its list of contents is in the missing part', error: e.message };
+  }
+  must(truth.root.ok, 'opened although its list of contents is missing');
+  must(info.partial === true, 'not marked partial');
+  must(info.incomplete.message === strict.message, 'the incomplete-file message changed');
+  must(info.incomplete.size === bytes.length && info.incomplete.expectedAtLeast > bytes.length, 'sizes wrong');
+  // A true lower bound: past the end, and never more than the furthest sector the index points to.
+  must(info.incomplete.expectedAtLeast <= cut.need, 'expectedAtLeast ' + info.incomplete.expectedAtLeast + ' beyond what the index says (' + cut.need + ')');
+  const got = info.recovered.map((s) => s.path).sort().join('|');
+  must(got === expect.map((s) => s.path).sort().join('|'), 'recovered [' + got + '], expected [' + expect.map((s) => s.path).sort().join(', ') + ']');
+  must(!info.missing.some((m) => expect.some((s) => s.path === m.path)), 'a recovered stream is also listed missing');
+  const cfb = await openPartialCompoundFile(toSource(bytes), null);
+  for (const s of expect) {
+    const a = await cfb.read(s.path), want = s.bytes();
+    must(a && a.length === s.size && Buffer.compare(Buffer.from(a), Buffer.from(want)) === 0, s.path + ': bytes differ from the file');
+    // Compressed element data really inflates (Revit writes a gzip header with a CRC that does not check out).
+    if (a[0] === 0x1f && a[1] === 0x8b) must(zlib.inflateRawSync(a.subarray(10), { finishFlush: zlib.constants.Z_SYNC_FLUSH }).length > 0, s.path + ' does not inflate');
+  }
+  const has = (p) => expect.some((s) => s.path === p);
+  must(has('BasicFileInfo') ? !!info.release : info.release === null, 'release claimed without BasicFileInfo, or missing with it');
+  must(has('RevitPreview4.0') ? !!info.preview : info.preview === null, 'preview claimed without RevitPreview4.0, or missing with it');
+  must(has('PartAtom') ? !!info.family : info.family === null, 'family claimed without PartAtom');
+  must(has('ProjectInformation') || info.project === null, 'project information claimed without ProjectInformation');
+  const known = ['BasicFileInfo', 'RevitPreview4.0', 'PartAtom', 'ProjectInformation', 'TransmissionData'];
+  return {
+    partial: mb(bytes.length) + ' of at least ' + mb(info.incomplete.expectedAtLeast) + ' (' + info.directory.entries + ' directory entries readable, list of contents ' + (info.directory.complete ? 'complete' : 'partly here') + ')',
+    release: info.release || 'none (BasicFileInfo is not in the file)', preview: info.preview ? info.preview.width + '×' + info.preview.height : 'none',
+    recovered: info.recovered.map((s) => s.path + ' (' + (s.size / 1024).toFixed(0) + ' KB)').join(', ') || 'none',
+    'not in file': info.missing.length + ' streams, incl. ' + (known.filter((k) => info.missing.some((m) => m.path === k)).join(', ') || 'none of the known ones'),
+  };
+}
+
+/** --partial: cut complete samples at many offsets; partial mode must recover exactly what is there. */
+async function partialMode() {
+  const TF = TESTFILES;
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; if (!cond || process.argv.includes('--verbose')) console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  console.log('\nPartial mode (cut-off RVT/RFA)');
+
+  // No complete file is ever reported partial (folder-fixture included: it holds complete backups).
+  const ole = [];
+  for (const root of [path.join(ROOT, 'fixtures/folder'), TF].filter((p) => fs.existsSync(p))) (function walk(p) {
+    for (const n of fs.readdirSync(p).sort()) {
+      const full = path.join(p, n);
+      if (fs.statSync(full).isDirectory()) { if (n !== '_truth') walk(full); }
+      else if (/\.(rvt|rfa|rte|rft)$/i.test(n)) ole.push(full);
+    }
+  })(root);
+  {   // the public folder fixture's cut-off copy recovers exactly the streams fixtures/facts.json lists
+    const F = JSON.parse(fs.readFileSync(path.join(ROOT, 'fixtures/facts.json'), 'utf8')).folder.cutOff;
+    const info = await readRevit(new Uint8Array(fs.readFileSync(path.join(ROOT, 'fixtures/folder/Cad', F.file))), F.file, { partial: true });
+    const got = info.recovered.map((x) => x.path).sort().join(), miss = info.missing.map((x) => x.path).sort().join();
+    ok(info.partial && got === [...F.recovered].sort().join() && miss === [...F.missing].sort().join(), 'fixture ' + F.file + ': partial, recovers ' + info.recovered.length + ' streams, ' + info.missing.length + ' not in the file');
+  }
+  let complete = 0;
+  for (const f of ole) {
+    const b = new Uint8Array(fs.readFileSync(f));
+    if (!isOleFile(b)) continue;
+    if (indexPastEnd(b)) {
+      // Real cut-off copies (an incomplete upload on this machine, the folder fixture's): a correct partial open.
+      let res;
+      try { res = await checkPartialOpen(b, path.basename(f)); } catch (e) { res = { error: e.message }; }
+      ok(!res.error || /nothing in it can be opened/.test(res.error), 'cut-off, opened partially: ' + path.relative(ROOT, f) + (res.error ? ' (' + res.error + ')' : ' — ' + res.recovered));
+      continue;
+    }
+    complete++;
+    let info = null;
+    try { info = await readRevit(b, path.basename(f), { partial: true }); } catch (e) { info = { error: e.message }; }
+    ok(info.partial === false, 'complete, not partial: ' + path.relative(ROOT, f) + (info.error ? ' (' + info.error + ')' : ''));
+  }
+  console.log('  ' + complete + ' complete Revit files checked: none reported partial');
+
+  for (const name of ['MassWithBoxAndCone.rfa', 'Room_Properties.rvt', 'empty2013.rfa', 'cutWalls.rvt'].filter(hasSample)) {
+    const full = new Uint8Array(fs.readFileSync(path.join(TF, 'samples', name)));
+    const orig = await readRevit(full, name);
+    const truth = cfbTruth(full);
+    const ss = 1 << new DataView(full.buffer).getUint16(0x1e, true);
+    ok(truth.streams.every((s) => s.ok) && !indexPastEnd(full), name + ': complete and fully mapped (' + truth.streams.length + ' streams)');
+    const n = full.length;
+    const cuts = [...new Set([600, ss + 100, 2 * ss, 3 * ss, 3 * ss + 1000, 4 * ss + 700, 6 * ss, 12 * ss + 64,
+      Math.floor(n * 0.25), Math.floor(n * 0.5), Math.floor(n * 0.9), n - ss, n - 1])].filter((c) => c < n).sort((a, b) => a - b);
+    let opened = 0, unreadable = 0, withRelease = 0, withPreview = 0;
+    for (const c of cuts) {
+      const b = full.slice(0, c);
+      const label = name + ' cut at ' + c;
+      ok(!!indexPastEnd(b), label + ': cut found from the file itself');
+      const expect = truth.streams.filter((s) => fitsIn(s.deps, c));
+      let res;
+      try { res = await checkPartialOpen(b, name); } catch (e) { ok(false, label + ': ' + e.message); continue; }
+      // Against the COMPLETE file's map: exactly the streams whose every dependency lies before the cut.
+      if (res.error) { unreadable++; ok(!fitsIn(truth.root.deps, c), label + ': unreadable only when the root entry is cut'); continue; }
+      const info = await readRevit(b, name, { partial: true });
+      opened++;
+      const got = info.recovered.map((s) => s.path).sort().join('|');
+      ok(got === expect.map((s) => s.path).sort().join('|'), label + ': recovers exactly the ' + expect.length + ' complete streams (' + info.recovered.length + ')');
+      const bfi = expect.some((s) => s.path === 'BasicFileInfo');
+      if (bfi) { withRelease++; ok(info.release === orig.release && info.basic.build === orig.basic.build, label + ': release ' + orig.release + ' from BasicFileInfo'); }
+      if (expect.some((s) => s.path === 'RevitPreview4.0')) {
+        withPreview++;
+        ok(info.preview && Buffer.compare(Buffer.from(info.preview.png), Buffer.from(orig.preview.png)) === 0, label + ': preview identical');
+      }
+      if (expect.some((s) => s.path === 'PartAtom')) ok(info.family && info.family.title === orig.family.title, label + ': family ' + (orig.family && orig.family.title));
+    }
+    ok(opened > 0 && withRelease > 0, name + ': ' + cuts.length + ' cuts — ' + opened + ' opened partially (' + withRelease + ' with the release, ' + withPreview + ' with the preview), ' + unreadable + ' unreadable');
+    console.log('  ' + name + ': ' + cuts.length + ' cuts, ' + opened + ' partial opens (' + withRelease + ' with release, ' + withPreview + ' with preview), ' + unreadable + ' with no list of contents');
+  }
+  console.log(bad ? `  ${bad} of ${good + bad} partial-mode checks failed` : `  all ${good} partial-mode checks passed`);
+  return bad ? 1 : 0;
+}
+
+/** The generated IFC fixture (tools/bimcraft-test/ifc-fixture.mjs) as bytes; variants: { rev: 'b', problems: true }. */
+async function fixtureBytes(opts = {}) {
+  const { fixtureIfc } = await import(path.join(ROOT, 'tools/bimcraft-test/ifc-fixture.mjs'));
+  return new TextEncoder().encode(fixtureIfc(opts));
+}
+/** Public IFC samples when this machine has them (outside the repo); a clean clone has none, and these checks skip. */
+function publicSamples() {
+  const dir = SAMPLE_DIR;
+  return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => /\.ifc$/i.test(n)).map((n) => path.join(dir, n)) : [];
+}
+
+async function visMode() {
+  const V = await import(path.join(APP, 'ifc-vis.js'));
+  const { keyOf, splitKey, KEY_SPAN } = await import(path.join(APP, 'ifc-model.js'));
+  const { FIXTURE } = await import(path.join(ROOT, 'tools/bimcraft-test/ifc-fixture.mjs'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const load = quiet((bytes, o) => ifcm.load(bytes, () => {}, o));
+
+  /** Every run is contiguous and complete: the batch's triangles and vertices, split by element, nothing left over. */
+  const runsOk = (m) => {
+    for (const b of m.batches) {
+      const E = b.elems, tris = b.indices.length / 3, verts = b.positions.length / 3;
+      let t = 0, v = 0;
+      for (let r = 0; r < E.ids.length; r++) {
+        if (E.t0[r] !== t || E.v0[r] !== v) return 'run ' + r + ' does not follow the one before';
+        for (let k = E.t0[r]; k < E.t0[r] + E.tn[r]; k++) {
+          if (b.triIds[k] !== E.ids[r]) return 'triangle ' + k + ' belongs to ' + b.triIds[k] + ', its run says ' + E.ids[r];
+          for (let j = 0; j < 3; j++) { const vi = b.indices[k * 3 + j]; if (vi < E.v0[r] || vi >= E.v0[r] + E.vn[r]) return 'triangle ' + k + ' uses a vertex outside its run'; }
+        }
+        t += E.tn[r]; v += E.vn[r];
+      }
+      if (t !== tris || v !== verts) return 'runs cover ' + t + '/' + tris + ' triangles, ' + v + '/' + verts + ' vertices';
+      if (new Set(E.ids).size !== E.ids.length) return 'an element has two runs in one batch';
+    }
+    return '';
+  };
+
+  console.log('== element runs (ifc-model.js) on the fixture');
+  const m = await load(await fixtureBytes());
+  const keyByName = new Map();
+  for (const id of m.classOf.keys()) keyByName.set(String(ifcm.api.GetLine(m.modelID, id).Name?.value), id);
+  const K = (name) => keyByName.get(name);
+  const runs = runsOk(m);
+  ok(!runs, 'every batch splits into one contiguous run per element' + (runs ? ': ' + runs : ''));
+  ok(m.keyBase === 0 && [...m.classOf.keys()].every((id) => m.batches.some((b) => b.elems.ids.includes(id))), 'keys of the first model are its expressIDs (keyBase 0)');
+  ok(m.elements === 11 && FIXTURE.walls1.concat(FIXTURE.walls2, [FIXTURE.door, FIXTURE.desk, FIXTURE.slab], FIXTURE.flights).every((n) => keyByName.has(n)), '11 elements with geometry, each found by name');
+  ok(m.tree && m.classOf.get(K('W-101')) === 'IfcWall' && m.storeyOf.get(K(FIXTURE.desk)) === m.storeys[0].id, 'the load result carries the spatial tree, classes and storeys (the desk, inside the space, is on Level 1)');
+
+  console.log('== Visibility + batchIndex');
+  const vis = new V.Visibility();
+  const all = m.batches.map((b) => b.indices.length / 3);
+  ok(m.batches.every((b) => V.batchIndex(b, vis).index === b.indices), 'nothing hidden: each batch keeps its own index buffer (no copy)');
+  const tn = (key) => m.batches.reduce((a, b) => { const r = b.elems.ids.indexOf(key); return a + (r >= 0 ? b.elems.tn[r] : 0); }, 0);
+  const count = (fn) => m.batches.reduce((a, b) => a + fn(V.batchIndex(b, vis)), 0);
+  const total = all.reduce((a, b) => a + b, 0);
+  ok(vis.hide([K('W-101'), K('W-102')]) === 2 && vis.hide([K('W-101')]) === 0, 'hide counts only newly hidden elements');
+  ok(count((r) => r.nSolid) === total - tn(K('W-101')) - tn(K('W-102')) && count((r) => r.nGhost) === 0, 'Hide: their triangles are left out (' + (total - tn(K('W-101')) - tn(K('W-102'))) + ' of ' + total + ' drawn)');
+  ok(m.batches.every((b) => { const r = V.batchIndex(b, vis); return ![...r.triIds].includes(K('W-101')) && r.index.length === r.triIds.length * 3; }), 'and the reordered triangle ids no longer name them');
+  vis.isolate([K('D-101'), K('W-101')]);
+  ok(vis.state(K('W-101')) === V.SOLID && !vis.hidden.has(K('W-101')), 'Isolate shows a hidden element it names');
+  ok(count((r) => r.nSolid) === tn(K('D-101')) + tn(K('W-101')) && count((r) => r.nGhost) === 0, 'Isolate: only the door and its wall are drawn');
+  vis.isolate([K('D-101')], { ghost: true });
+  ok(count((r) => r.nSolid) === tn(K('D-101')) && count((r) => r.nGhost) === total - tn(K('D-101')) - tn(K('W-102')), 'See-through: the door solid, the rest faint, a still-hidden wall left out');
+  const order = m.batches.map((b) => V.batchIndex(b, vis)).every((r) => [...r.triIds.subarray(0, r.nSolid)].every((k) => vis.state(k) === V.SOLID) && [...r.triIds.subarray(r.nSolid)].every((k) => vis.state(k) === V.GHOST));
+  ok(order, 'solid triangles come first in each buffer, see-through ones after (two draw groups)');
+  const json = JSON.parse(JSON.stringify(vis.toJSON()));
+  const vis2 = new V.Visibility(); vis2.load(json);
+  ok(m.batches.every((b) => { const a = V.batchIndex(b, vis), c = V.batchIndex(b, vis2); return a.nSolid === c.nSolid && a.nGhost === c.nGhost; }), 'toJSON → load gives the same drawing (kept over a rebuild)');
+  const v0 = vis.version;
+  ok(vis.prune((k) => k !== K('W-102')) === 1 && !vis.hidden.has(K('W-102')) && vis.version > v0, 'prune forgets an element that is gone (after a delete)');
+  vis.showAll();
+  ok(vis.plain && m.batches.every((b) => V.batchIndex(b, vis).index === b.indices), 'Show all: back to the original buffers');
+
+  console.log('== per-element edges, bounds');
+  const edgesOf = (key) => m.batches.reduce((a, b) => { const e = V.batchEdges(b); const r = [...e.ids].indexOf(key); return a + (r >= 0 ? e.sn[r] : 0); }, 0);
+  ok(edgesOf(K('W-102')) === 12, 'a plain box wall has its 12 edges (got ' + edgesOf(K('W-102')) + ')');
+  ok(edgesOf(K('W-101')) > 12, 'the wall with the door opening has more (' + edgesOf(K('W-101')) + ')');
+  vis.hide([K('W-102')]);
+  const segs = (fn) => m.batches.reduce((a, b) => a + fn(V.edgeIndex(V.batchEdges(b), vis)), 0);
+  const allSegs = m.batches.reduce((a, b) => a + V.batchEdges(b).positions.length / 6, 0);
+  ok(segs((r) => r.nSolid) === allSegs - 12, 'a hidden element takes its edges with it');
+  vis.isolate([K('S-201')], { ghost: true });
+  ok(segs((r) => r.nSolid) === edgesOf(K('S-201')) && segs((r) => r.nGhost) === allSegs - 12 - edgesOf(K('S-201')), 'see-through edges are their own group');
+  vis.showAll();
+  const bb = V.boundsOf(m.batches, [K('W-102')]);
+  const size = bb ? bb.max.map((x, i) => x - bb.min[i]).sort((a, b) => a - b).map((x) => Math.round(x * 1000) / 1000) : null;
+  ok(size && size[0] === 0.2 && size[1] === 3 && size[2] === 6, 'boundsOf W-102: 0.2 × 3 × 6 m (got ' + JSON.stringify(size) + ')');
+  ok(V.boundsOf(m.batches, [999999]) === null, 'boundsOf an element without geometry is null');
+  ok(V.keysOf(m.batches).size === 12 && m.elements === 11 && m.spaces === 1, 'keysOf lists every element and space once (11 + 1)');
+
+  console.log('== keys of a second model (federation)');
+  const ifc2 = IfcModel.sharing(ifcm);
+  const m2 = await quiet((b) => ifc2.load(b, () => {}, { keyBase: keyOf(3, 0) }))(await fixtureBytes({ rev: 'b' }));
+  const k2 = m2.batches[0].elems.ids[0];
+  ok(splitKey(k2).mi === 3 && splitKey(k2).id < KEY_SPAN && m2.classOf.has(splitKey(k2).id), 'keyBase 3 × 2^26: keys split back into (model 3, expressID)');
+  ok(!runsOk(m2) && ifcm.modelID !== ifc2.modelID && ifc2.api === ifcm.api, 'the second model has its own runs, on the same engine, both open');
+  ifc2.close();
+
+  for (const f of publicSamples()) {
+    const mm = await load(new Uint8Array(fs.readFileSync(f)));
+    const r = runsOk(mm);
+    const t0 = performance.now();
+    const v = new V.Visibility(); v.hide([...V.keysOf(mm.batches)].filter((_, i) => i % 2));
+    let drawn = 0; for (const b of mm.batches) drawn += V.batchIndex(b, v).nSolid;
+    const ms = performance.now() - t0;
+    ok(!r && drawn > 0 && drawn < mm.triangles, path.basename(f) + ': runs complete; half hidden → ' + drawn.toLocaleString('en-US') + ' of ' + mm.triangles.toLocaleString('en-US') + ' triangles in ' + ms.toFixed(1) + ' ms' + (r ? ' — ' + r : ''));
+  }
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' visibility checks passed');
+  return bad ? 1 : 0;
+}
+
+/** Lines a STEP file refers to that it does not define (an edit that left a dangling reference). → [ids] */
+function danglingRefs(text) {
+  const defined = new Set(), refs = new Set();
+  for (const m of text.matchAll(/^#(\d+)=/gm)) defined.add(Number(m[1]));
+  for (const line of text.split('\n')) {
+    const eq = line.indexOf('=');
+    if (!/^#\d+=/.test(line)) continue;
+    const body = line.slice(eq + 1).replace(/'(?:[^']|'')*'/g, "''");
+    for (const m of body.matchAll(/#(\d+)/g)) refs.add(Number(m[1]));
+  }
+  return [...refs].filter((r) => !defined.has(r));
+}
+
+async function elementsMode() {
+  const { IfcEditor } = await import(path.join(APP, 'ifc-edit.js'));
+  const { FIXTURE } = await import(path.join(ROOT, 'tools/bimcraft-test/ifc-fixture.mjs'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const load = quiet((bytes) => ifcm.load(bytes, () => {}));
+  const api = ifcm.api;
+  const nameOf = (id) => String(api.GetLine(ifcm.modelID, id).Name?.value ?? '');
+  const find = (m, name) => { for (const id of m.classOf.keys()) if (nameOf(id) === name) return id; return null; };
+  const findAny = (name, type) => { const v = api.GetLineIDsWithType(ifcm.modelID, api.GetTypeCodeFromName(type), true); for (let i = 0; i < v.size(); i++) if (nameOf(v.get(i)) === name) return v.get(i); return null; };
+  const tris = (m, id) => m.batches.reduce((a, b) => { const r = b.elems.ids.indexOf(id); return a + (r >= 0 ? b.elems.tn[r] : 0); }, 0);
+  /** Save, check, reopen: → the reloaded model (the editor follows ifcm). */
+  const roundTrip = async (ed, label) => {
+    const bytes = ed.save();
+    const text = new TextDecoder().decode(bytes);
+    const d = danglingRefs(text);
+    ok(d.length === 0, label + ': the saved file refers to no missing line' + (d.length ? ' (missing ' + d.slice(0, 5).map((x) => '#' + x).join(', ') + ')' : ''));
+    const m = await load(bytes);
+    ed.reindex();
+    return { m, text };
+  };
+  const world = (id) => { const l = api.GetLine(ifcm.modelID, id, false); return api.GetWorldTransformMatrix(ifcm.modelID, l.ObjectPlacement.value); };
+  const containerOf = (id) => { const v = api.GetLineIDsWithType(ifcm.modelID, WebIFC.IFCRELCONTAINEDINSPATIALSTRUCTURE); for (let i = 0; i < v.size(); i++) { const r = api.GetLine(ifcm.modelID, v.get(i)); if (r.RelatedElements.some((h) => h.value === id)) return r.RelatingStructure.value; } return null; };
+  const { ids: liveIds } = await import(path.join(APP, 'ifc-util.js'));   // web-ifc keeps listing deleted lines
+  const relsNaming = (id) => { let n = 0; for (const rid of liveIds(api, ifcm.modelID, 'IFCRELATIONSHIP', true)) { const t = JSON.stringify(api.GetLine(ifcm.modelID, rid, false)); if (new RegExp('"value":' + id + '[,}]').test(t)) n++; } return n; };
+
+  console.log('== Delete');
+  let m = await load(await fixtureBytes());
+  let ed = new IfcEditor(WebIFC, ifcm);
+  const n0 = m.elements;
+  const w102 = find(m, 'W-102');
+  const sharedBefore = relsNaming(find(m, 'W-101'));
+  let r = ed.removeElements([w102], { label: 'W-102' });
+  ok(r.removed.length === 1 && r.removed[0] === w102 && ed.changes.length === 1 && ed.changes[0].kind === 'remove', 'removeElements(W-102): one element, one change');
+  ok(relsNaming(w102) === 0, 'no relationship names it any more (containment, shared property set, its own sets, type, material)');
+  ok(relsNaming(find(m, 'W-101')) === sharedBefore, 'W-101 keeps every relationship it had (the shared Pset_WallCommon relation is kept for the others)');
+  ({ m } = await roundTrip(ed, 'after deleting W-102'));
+  ok(m.elements === n0 - 1 && find(m, 'W-102') === null, 'reopened: ' + m.elements + ' elements, W-102 gone');
+  const p101 = await ifcm.properties(find(m, 'W-101'));
+  ok(p101.sets.some((x) => x.name === 'Pset_WallCommon' && x.rows.some((rr) => rr.name === 'IsExternal' && rr.value === 'Yes')), 'W-101 still shows the shared Pset_WallCommon');
+  ed.undo();
+  ({ m } = await roundTrip(ed, 'after Undo'));
+  ok(m.elements === n0 && find(m, 'W-102') === w102 && nameOf(w102) === 'W-102', 'Undo brings W-102 back with its own id');
+  const p102 = await ifcm.properties(w102);
+  ok(p102.typeName === 'Basic wall 200' && ['Pset_WallCommon', 'Fixture_Data', 'Qto_WallBaseQuantities'].every((n) => p102.sets.some((x) => x.name === n)) && containerOf(w102) === m.storeys[0].id, 'and with its type, property sets, quantities and storey');
+  const rr2 = ed.redo();
+  ({ m } = await roundTrip(ed, 'after Redo'));
+  ok(rr2 && rr2.kind === 'remove' && find(m, 'W-102') === null, 'Redo deletes it again');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo again'));
+
+  const door = find(m, 'D-101'), w101 = find(m, 'W-101');
+  const t101 = tris(m, w101);
+  r = ed.removeElements([door]);
+  ok(r.removed.length === 2 && r.removed.includes(door), 'deleting the door takes the opening it filled with it (' + r.removed.length + ' lines)');
+  ({ m } = await roundTrip(ed, 'after deleting the door'));
+  ok(tris(m, w101) === 12 && t101 > 12, 'and the wall closes: W-101 is a plain box again (' + t101 + ' → ' + tris(m, w101) + ' triangles)');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo'));
+  ok(tris(m, w101) === t101 && find(m, 'D-101') === door, 'Undo: door and opening back');
+
+  r = ed.removeElements([w101]);
+  ({ m } = await roundTrip(ed, 'after deleting W-101'));
+  ok(r.removed.length === 2 && find(m, 'D-101') === door && containerOf(door) === m.storeys[0].id, 'deleting the wall takes its opening; the door stays, still on Level 1');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo'));
+
+  const stair = findAny('ST-1', 'IFCSTAIR');
+  r = ed.removeElements([stair]);
+  ({ m } = await roundTrip(ed, 'after deleting the stair'));
+  ok(r.removed.length === 3 && FIXTURE.flights.every((f) => find(m, f) === null), 'deleting the stair takes its two flights (an aggregate)');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo'));
+
+  const space = findAny(FIXTURE.space.split(' ')[0], 'IFCSPACE');
+  r = ed.removeElements([m.storeys[0].id, space]);
+  ok(r.removed.length === 0 && r.refused.length === 2 && r.refused.every((x) => x.why === 'spatial') && ed.changes.length === 0, 'storeys and spaces are refused (spatial structure); nothing changes');
+
+  r = ed.removeElements([find(m, 'W-103'), find(m, 'W-104'), find(m, 'F-101')]);
+  ({ m } = await roundTrip(ed, 'after deleting three at once'));
+  ok(r.removed.length === 3 && ed.changes.length === 1 && m.elements === n0 - 3, 'three elements in one change');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo'));
+  ok(m.elements === n0, 'one Undo brings all three back');
+
+  console.log('== Copy and paste');
+  const at = (id) => { const w = world(id); return [w[12], w[13], w[14]].map((v) => Math.round(v)); };
+  const w102b = find(m, 'W-102');
+  let snap = ed.snapshot([w102b]);
+  ok(snap.top.length === 1 && snap.elements.length === 1 && snap.storey === m.storeys[0].id, 'snapshot(W-102): one element, on Level 1');
+  let p = ed.pasteElements(snap, { dx: 0, dy: 8000 }, { label: 'W-102' });
+  ({ m } = await roundTrip(ed, 'after pasting W-102 8 m along Y'));
+  const copy = p.ids[0];
+  ok(nameOf(copy) === 'W-102' && api.GetLine(ifcm.modelID, copy).GlobalId.value !== api.GetLine(ifcm.modelID, w102b).GlobalId.value, 'the copy has the name and a new GlobalId');
+  ok(JSON.stringify(at(copy)) === JSON.stringify([at(w102b)[0], at(w102b)[1] + 8000, at(w102b)[2]]), 'it sits 8000 mm along Y: ' + at(copy).join(', '));
+  ok(tris(m, copy) === tris(m, w102b) && containerOf(copy) === m.storeys[0].id, 'same geometry (shared shape), on Level 1');
+  const pc = await ifcm.properties(copy);
+  ok(pc.typeName === 'Basic wall 200' && pc.sets.some((x) => x.name === 'Fixture_Data' && x.rows.some((q) => q.name === 'Cost' && q.value === '980')), 'same type and property values');
+  const editRow = pc.sets.find((x) => x.name === 'Fixture_Data').rows.find((q) => q.name === 'Cost').edit;
+  ed.setProperty(copy, editRow, '1');
+  const orig = (await ifcm.properties(w102b)).sets.find((x) => x.name === 'Fixture_Data').rows.find((q) => q.name === 'Cost').value;
+  ok(orig === '980', 'editing the copy\'s shared value leaves the original alone (copy-on-write): ' + orig);
+  ed.undo(); ed.undo();
+  ({ m } = await roundTrip(ed, 'Undo the edit and the paste'));
+  ok(m.elements === n0, 'Undo takes the copy away');
+
+  const l2 = m.storeys[1].id;
+  p = ed.pasteElements(ed.snapshot([w102b]), { storey: l2, dx: 0, dy: 0 });
+  ({ m } = await roundTrip(ed, 'after pasting onto Level 2'));
+  ok(containerOf(p.ids[0]) === l2 && at(p.ids[0])[2] === at(w102b)[2] + 3000, 'pasted onto Level 2: contained there, 3000 mm higher');
+  const plc = api.GetLine(ifcm.modelID, api.GetLine(ifcm.modelID, p.ids[0]).ObjectPlacement.value);
+  ok(plc.PlacementRelTo.value === api.GetLine(ifcm.modelID, l2).ObjectPlacement.value, 'and placed relative to Level 2');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo'));
+
+  const w0 = world(w102b);
+  p = ed.pasteElements(ed.snapshot([w102b]), { rot: 90, about: [w0[12], w0[13]], dx: 0, dy: 0 });
+  ({ m } = await roundTrip(ed, 'after a turned paste'));
+  const w1 = world(p.ids[0]);
+  ok(Math.abs(w1[0] - (-w0[1])) < 1e-6 && Math.abs(w1[1] - w0[0]) < 1e-6 && Math.abs(w1[12] - w0[12]) < 1e-6, 'turned 90° about its own origin: X axis (' + [w0[0], w0[1]].map((v) => v.toFixed(2)) + ') → (' + [w1[0], w1[1]].map((v) => v.toFixed(2)) + ')');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo'));
+
+  snap = ed.snapshot([w101, door]);
+  ok(snap.top.length === 2 && snap.elements.length === 3, 'wall + door: both on top, the opening comes along (3 lines)');
+  p = ed.pasteElements(snap, { dx: 0, dy: -9000 });
+  ({ m } = await roundTrip(ed, 'after pasting wall + door'));
+  const [nw, nd] = p.ids;
+  ok(tris(m, nw) === t101 && tris(m, nd) === tris(m, door), 'the copied wall has the copied opening cut in it, the door fills it');
+  const dpl = api.GetLine(ifcm.modelID, api.GetLine(ifcm.modelID, nd).ObjectPlacement.value);
+  const op = p.all.find((x) => x !== nw && x !== nd);
+  ok(dpl.PlacementRelTo.value === api.GetLine(ifcm.modelID, op).ObjectPlacement.value, 'the copied door is placed relative to the copied opening, as the original');
+  ok(at(nd)[1] === at(door)[1] - 9000, 'and moved with it');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo'));
+
+  p = ed.pasteElements(ed.snapshot([stair]), { dx: -4000, dy: 0 });
+  ({ m } = await roundTrip(ed, 'after pasting the stair'));
+  const flights = p.all.filter((x) => x !== p.ids[0]);
+  ok(flights.length === 2 && flights.every((f) => tris(m, f) > 0), 'the stair copy brings two flight copies with geometry');
+  ed.undo(); ({ m } = await roundTrip(ed, 'Undo'));
+
+  console.log('== Cut, then paste');
+  snap = ed.snapshot([w101]);
+  ed.removeElements([w101]);
+  ({ m } = await roundTrip(ed, 'after Cut'));
+  p = ed.pasteElements(snap, { dx: 500, dy: 0 });
+  ({ m } = await roundTrip(ed, 'after pasting what was cut'));
+  ok(tris(m, p.ids[0]) === t101 && find(m, 'W-101') === p.ids[0] && find(m, 'D-101') === door, 'the cut wall is pasted with its opening (its shape lines stayed in the file); the door is still there');
+  ed.undo(); ed.undo(); ({ m } = await roundTrip(ed, 'Undo both'));
+  ok(find(m, 'W-101') === w101 && m.elements === n0, 'two Undos: the original wall is back where it was');
+
+  console.log('== Library placement copied with other elements');
+  {
+    const L = await import(path.join(APP, 'libitem.js'));
+    const csv = L.itemsFromCsv(fs.readFileSync(path.join(ROOT, 'tools/library/seed.csv'), 'utf8'));
+    const item = L.cleanItem(csv.items[0]);
+    const pl = ed.placeItem(item, { storey: m.storeys[0].id, x: 2000, y: 2000, rot: 0, itemNumber: '7', quantity: 2, notes: 'n', library: 'file', sha256: 'a'.repeat(64), sourceFile: 'seed.csv' });
+    ({ m } = await roundTrip(ed, 'after placing a library item'));
+    p = ed.pasteElements(ed.snapshot([pl.id, w102b]), { dx: 0, dy: 1000 });
+    ({ m } = await roundTrip(ed, 'after pasting it with a wall'));
+    const rows = ed.placer().placements().map((x) => x.itemNumber + '×' + x.quantity).sort();
+    ok(rows.join() === '7×2,8×2', 'the pasted placement gets its own item number (next free), same quantity: ' + rows.join(', '));
+  }
+
+  for (const f of publicSamples()) {
+    console.log('== ' + path.basename(f));
+    m = await load(new Uint8Array(fs.readFileSync(f)));
+    ed = new IfcEditor(WebIFC, ifcm);
+    const walls = [...m.classOf].filter(([, c]) => /^IfcWall/.test(c)).map(([id]) => id);
+    const doors = [...m.classOf].filter(([, c]) => c === 'IfcDoor').map(([id]) => id);
+    const n = m.elements;
+    const wid = walls.find((w) => ed.elements().relations().voids.has(w)) || walls[0];
+    r = ed.removeElements([wid]);
+    let rt = await roundTrip(ed, path.basename(f) + ': delete a wall with openings');
+    ok(rt.m.elements < n && !rt.m.classOf.has(wid), 'the wall is gone (' + r.removed.length + ' lines with its openings)');
+    ed.undo(); rt = await roundTrip(ed, 'Undo');
+    ok(rt.m.elements === n && rt.m.classOf.has(wid), 'Undo: ' + n + ' elements again');
+    if (doors.length) {
+      p = ed.pasteElements(ed.snapshot([doors[0]]), { dx: 1000, dy: 0 });
+      rt = await roundTrip(ed, 'paste a door');
+      ok(rt.m.elements === n + 1 && tris(rt.m, p.ids[0]) === tris(rt.m, doors[0]), 'a pasted door has the same geometry');
+    }
+  }
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' element edit checks passed');
+  return bad ? 1 : 0;
+}
+
+async function treeMode() {
+  const T = await import(path.join(APP, 'ifc-tree.js'));
+  const V = await import(path.join(APP, 'ifc-vis.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const load = quiet((bytes) => ifcm.load(bytes, () => {}));
+  const nameOf = (id) => String(ifcm.api.GetLine(ifcm.modelID, id).Name?.value ?? '');
+  const desc = (n) => (n.kind === 'group' ? 'group ' + n.cls.replace(/^Ifc/, '') + ' (' + n.kids.length + ')' : n.cls.replace(/^Ifc/, '') + ' ' + nameOf(n.id));
+
+  console.log('== the fixture');
+  let m = await load(await fixtureBytes());
+  let tree = T.buildTree(m, { className: (id) => ifcm.className(id) });
+  const root = tree.root;
+  ok(root && root.cls === 'IfcProject' && root.kind === 'spatial' && tree.loose === null, 'root: the project; nothing outside the spatial structure');
+  const chain = []; for (let n = root; n && n.kind === 'spatial'; n = n.kids.find((k) => k.kind === 'spatial')) chain.push(n.cls);
+  ok(chain.join(' → ') === 'IfcProject → IfcSite → IfcBuilding → IfcBuildingStorey → IfcSpace', 'levels: ' + chain.join(' → '));
+  const bld = root.kids[0].kids[0];
+  const [l1, l2] = bld.kids;
+  ok(nameOf(l1.id) === 'Level 1' && nameOf(l2.id) === 'Level 2', 'the building holds Level 1 and Level 2, in file order');
+  ok(l1.kids.map(desc).join(', ') === 'Space 101, group Wall (4), group Door (1), group Stair (1)', 'Level 1: the space first, then elements by class, the largest group first: ' + l1.kids.map(desc).join(', '));
+  ok(l2.kids.map(desc).join(', ') === 'group Wall (2), group Slab (1)', 'Level 2: ' + l2.kids.map(desc).join(', '));
+  const space = l1.kids[0];
+  ok(space.kids.map(desc).join() === 'group Furniture (1)' && nameOf(space.kids[0].kids[0].id) === 'F-101', 'the space holds its desk (contained in the space, not the storey)');
+  const stair = l1.kids.find((k) => k.cls === 'IfcStair').kids[0];
+  ok(!stair.geo && stair.kids.length === 2 && stair.kids.every((f) => f.geo && f.cls === 'IfcStairFlight') && stair.size === 2, 'the stair (no body of its own) holds its two flights');
+  ok(root.size === 11 && l1.size === 8 && l2.size === 3, 'sizes count elements with geometry: project 11, Level 1 8, Level 2 3');
+  ok(T.leaves(stair).length === 2 && T.leaves(l1).length === 9 && T.leaves(root).length === 12, 'leaves: the stair 2, Level 1 8 + its space, all 11 + the space (hiding a storey hides its rooms)');
+  const vis = new V.Visibility();
+  const w101 = l1.kids.find((k) => k.cls === 'IfcWall').kids.find((w) => nameOf(w.id) === 'W-101');
+  vis.hide([w101.key]);
+  ok(T.checkState(l1, vis) === 'mixed' && T.checkState(w101.parent, vis) === 'mixed' && T.checkState(w101, vis) === 'off' && T.checkState(l2, vis) === 'on', 'one wall hidden: wall off, its group and storey mixed, Level 2 on');
+  vis.hide(T.leaves(l2));
+  ok(T.checkState(l2, vis) === 'off' && T.checkState(root, vis) === 'mixed', 'Level 2 hidden: off; the project mixed');
+  vis.isolate([w101.key]);
+  ok(T.shown(vis, w101.key) && !T.shown(vis, stair.kids[0].key), 'shown() follows isolation (rows dim)');
+  const trail = T.pathTo(tree, stair.kids[1].key).map(desc);
+  ok(trail.length === 7 && trail[4] === 'group Stair (1)' && trail[5] === 'Stair ST-1', 'pathTo a flight: ' + trail.join(' › '));
+  ok(T.pathTo(tree, 999999).length === 0, 'pathTo an unknown key: []');
+
+  console.log('== an element contained nowhere');
+  m = await load(await fixtureBytes({ problems: true }));
+  tree = T.buildTree(m, { className: (id) => ifcm.className(id) });
+  ok(tree.loose && tree.loose.kids.length === 1 && tree.loose.kids[0].cls === 'IfcBuildingElementProxy' && T.pathTo(tree, tree.loose.kids[0].key).length === 2, 'the loose proxy is in its own group at the end');
+  const counted = T.leaves(tree.root).length + T.leaves(tree.loose).length;
+  ok(counted === m.elements + m.spaces, 'every element and space with geometry is in the tree once (' + counted + ' of ' + m.elements + ' + ' + m.spaces + ')');
+
+  console.log('== keys of a second model');
+  const ifc2 = IfcModel.sharing(ifcm);
+  const m2 = await quiet((b) => ifc2.load(b, () => {}, { keyBase: 7 * 2 ** 26 }))(await fixtureBytes());
+  const t2 = T.buildTree(m2, { className: (id) => ifc2.className(id) });
+  ok(T.leaves(t2.root).every((k) => k >= 7 * 2 ** 26) && t2.byKey.get(7 * 2 ** 26 + m2.storeys[0].id)?.cls === 'IfcBuildingStorey', 'a federated model\'s tree uses its keys (keyBase 7 × 2^26)');
+  ifc2.close();
+
+  for (const f of publicSamples()) {
+    const mm = await load(new Uint8Array(fs.readFileSync(f)));
+    const t0 = performance.now();
+    const tt = T.buildTree(mm, { className: (id) => ifcm.className(id) });
+    const ms = performance.now() - t0;
+    const n = T.leaves(tt.root).length + (tt.loose ? tt.loose.kids.length : 0);
+    const seen = new Set([...T.leaves(tt.root), ...(tt.loose ? T.leaves(tt.loose) : [])]);
+    ok(n === mm.elements + mm.spaces && seen.size === n, path.basename(f) + ': all ' + n + ' elements and spaces once, ' + (tt.loose ? tt.loose.kids.length + ' outside the structure, ' : '') + ms.toFixed(0) + ' ms');
+  }
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' model tree checks passed');
+  return bad ? 1 : 0;
+}
+
+async function colorMode() {
+  const P = await import(path.join(APP, 'ifc-props.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const load = quiet((bytes) => ifcm.load(bytes, () => {}));
+
+  console.log('== the property index on the fixture');
+  const m = await load(await fixtureBytes());
+  const ix = P.propertyIndex(WebIFC, ifcm.api, ifcm.modelID, m);
+  const idOf = (name) => [...m.classOf.keys()].find((id) => ix.value('name', id) === name);
+  const ids = Object.fromEntries(['W-101', 'W-201', 'F-101', 'S-201', 'D-101', 'ST-1 flight 1'].map((n) => [n, idOf(n)]));
+  const f = (id) => ix.fields.find((x) => x.id === id);
+  const firstSet = ix.fields.findIndex((x) => x.group);
+  const setIds = ix.fields.slice(firstSet).map((x) => x.id);
+  ok(ix.fields.slice(0, firstSet).map((x) => x.id).join() === 'cls,type,storey,material,name,tag,predefined,guid' && ix.fields.slice(firstSet).every((x) => x.group)
+    && setIds.join() === [...setIds].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).join(), 'built-in fields first (no Object type: the fixture has none), then the sets\' fields in name order');
+  ok(ix.value('cls', ids['W-101']) === 'IfcWall' && ix.value('storey', ids['F-101']) === 'Level 1' && ix.value('storey', ids['S-201']) === 'Level 2', 'Class and Storey (the desk in its space is on Level 1)');
+  ok(ix.value('type', ids['W-101']) === 'Basic wall 200' && ix.value('type', ids['D-101']) === undefined, 'Type: the wall type\'s name; the door has none');
+  ok(ix.value('material', ids['W-101']) === 'Concrete' && ix.value('material', ids['F-101']) === 'Oak' && ix.value('material', ids['S-201']) === 'Concrete', 'Material: Concrete walls and slab, an Oak desk');
+  ok(ix.value('p:Fixture_Data.Cost', ids['W-101']) === 1250.5 && f('p:Fixture_Data.Cost').kind === 'number' && f('p:Fixture_Data.Cost').count === 6, 'Fixture_Data.Cost: a number on the 6 walls');
+  ok(ix.value('p:Pset_WallCommon.IsExternal', ids['W-101']) === 'Yes' && ix.value('p:Pset_WallCommon.IsExternal', ids['W-201']) === 'No', 'a shared set (W-101) and an own one (W-201): Yes / No');
+  ok(ix.value('p:Pset_WallCommon.FireRating', ids['W-201']) === 'EI60', 'a type set\'s value reaches every wall of the type (FireRating EI60)');
+  ok(ix.value('p:Qto_WallBaseQuantities.Length', ids['W-101']) === 10000 && f('p:Qto_WallBaseQuantities.NetVolume').kind === 'number', 'quantity sets: Length 10000, NetVolume a number');
+  ok(ix.keys.length === 11 && ix.value('guid', ids['W-101']) === '0BimCraftFixture000201', 'every element with geometry, GlobalId too');
+
+  console.log('== colorBy');
+  const byCls = P.colorBy(ix, 'cls');
+  ok(byCls.kind === 'category' && byCls.legend.map((l) => l.label + ':' + l.count).join() === 'IfcWall:6,IfcStairFlight:2,IfcDoor:1,IfcFurniture:1,IfcSlab:1', 'Class: most common first, ties by name: ' + byCls.legend.map((l) => l.label + ':' + l.count).join(', '));
+  ok(byCls.legend.every((l, i) => l.color === P.CATEGORICAL.light[i]) && byCls.colorOf.get(ids['W-101']) === P.CATEGORICAL.light[0], 'colors in the fixed categorical order; a wall gets the first');
+  const dark = P.colorBy(ix, 'cls', { theme: 'dark' });
+  ok(dark.legend.every((l, i) => l.color === P.CATEGORICAL.dark[i]) && dark.legend[0].color !== byCls.legend[0].color, 'the dark theme uses its own steps of the same hues');
+  const cost = P.colorBy(ix, 'p:Fixture_Data.Cost');
+  const none = cost.legend.find((l) => l.none);
+  ok(cost.kind === 'category' && cost.legend.filter((l) => !l.none).length === 4 && none && none.count === 5 && none.color === P.NONE.light, 'Cost: 4 values in categories; the 5 elements without it in the pale "no value" color');
+  ok(cost.colorOf.size === 11, 'every element has a color');
+  const guid = P.colorBy(ix, 'guid');
+  const other = guid.legend.find((l) => l.other);
+  ok(guid.legend.filter((l) => !l.other && !l.none).length === 7 && other && other.other === 4 && other.count === 4 && other.color === P.OTHER.light, '11 GlobalIds: 7 colors, the other 4 fold into "4 other values"');
+  const synth = { keyBase: 0, ids: Array.from({ length: 20 }, (_, i) => i + 1), values: () => new Map(Array.from({ length: 20 }, (_, i) => [i + 1, i * 5])) };
+  const rng = P.colorBy(synth, 'x');
+  ok(rng.kind === 'range' && rng.legend.length === 6 && rng.legend.reduce((a, l) => a + l.count, 0) === 20 && rng.legend.every((l, i) => l.color === P.SEQUENTIAL.light[i]) && rng.legend[5].keys.includes(20) && rng.legend[0].keys.includes(1), '20 numbers: 6 equal ranges on the sequential ramp, low to high, every element in one');
+  ok(rng.legend[0].label === '0 – 15.8' && rng.legend[5].label === '79.2 – 95', 'range labels: ' + rng.legend.map((l) => l.label).join(' | '));
+
+  for (const file of publicSamples()) {
+    const mm = await load(new Uint8Array(fs.readFileSync(file)));
+    const t0 = performance.now();
+    const pix = P.propertyIndex(WebIFC, ifcm.api, ifcm.modelID, mm);
+    const ms = performance.now() - t0;
+    const c = P.colorBy(pix, 'cls');
+    ok(pix.fields.length > 10 && c.colorOf.size === mm.elements, path.basename(file) + ': ' + pix.fields.length + ' fields for ' + mm.elements + ' elements in ' + ms.toFixed(0) + ' ms; by class ' + c.legend.length + ' legend rows');
+  }
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' color checks passed');
+  return bad ? 1 : 0;
+}
+
+async function federationMode() {
+  const { placementMatrix, apply4 } = await import(path.join(APP, 'ifc-util.js'));
+  const { keyOf, splitKey } = await import(path.join(APP, 'ifc-model.js'));
+  const V = await import(path.join(APP, 'ifc-vis.js'));
+  const { IfcEditor } = await import(path.join(APP, 'ifc-edit.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const near = (a, b, tol = 1e-4) => Math.abs(a - b) <= tol;
+  const A = await quiet(() => IfcModel.create(WebIFC, null))();
+  const B = IfcModel.sharing(A), C2 = IfcModel.sharing(A);
+  const ld = (im, bytes, mi) => quiet((b) => im.load(b, () => {}, { keyBase: keyOf(mi, 0) }))(bytes);
+  /** World bounds of a model through its placement (8 corners of its local box). */
+  const worldBox = (m, P) => {
+    const bb = V.boundsOf(m.batches, V.keysOf(m.batches));
+    const pts = [];
+    for (const x of [bb.min[0], bb.max[0]]) for (const y of [bb.min[1], bb.max[1]]) for (const z of [bb.min[2], bb.max[2]]) pts.push(apply4(P, x, y, z));
+    return { min: [0, 1, 2].map((k) => Math.min(...pts.map((p) => p[k]))), max: [0, 1, 2].map((k) => Math.max(...pts.map((p) => p[k]))) };
+  };
+
+  console.log('== two models: the fixture, and the fixture with its site 100 m east');
+  const ma = await ld(A, await fixtureBytes(), 0);
+  const mb = await ld(B, await fixtureBytes({ shift: 100000 }), 1);
+  const refC = [...A.api.GetCoordinationMatrix(ma.modelID)];
+  const Pa = placementMatrix(refC, refC), Pb = placementMatrix(refC, [...B.api.GetCoordinationMatrix(mb.modelID)]);
+  ok(Pa.every((v, i) => near(v, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1][i])), 'the first model stays where it is (identity)');
+  const wa = worldBox(ma, Pa), wb = worldBox(mb, Pb);
+  ok(near(wb.min[0] - wa.min[0], 100, 1e-3) && near(wb.min[1], wa.min[1], 1e-3) && near(wb.min[2], wa.min[2], 1e-3) && near(wb.max[0] - wa.max[0], 100, 1e-3),
+    'the second lands 100 m along X, exactly (each was moved to the origin on load; the placement puts it back): ΔX ' + (wb.min[0] - wa.min[0]).toFixed(4));
+  const Po = placementMatrix(refC, [...B.api.GetCoordinationMatrix(mb.modelID)], [0, 10, 2]);
+  const wo = worldBox(mb, Po);
+  ok(near(wo.min[0], wb.min[0], 1e-3) && near(wo.min[1] - wb.min[1], 2, 1e-3) && near(wo.min[2] - wb.min[2], -10, 1e-3), 'an offset of Y 10 m, Z 2 m: viewer Z −10, Y +2 (IFC Z is up)');
+  const ka = V.keysOf(ma.batches), kb = V.keysOf(mb.batches);
+  ok([...kb].every((k) => !ka.has(k) && splitKey(k).mi === 1) && ka.size === kb.size, 'keys never collide: model 1\'s keys split back to model 1 (' + kb.size + ' each)');
+
+  console.log('== editing one model leaves the other alone');
+  const edB = new IfcEditor(WebIFC, B);
+  const w102 = [...mb.classOf.keys()].find((id) => B.api.GetLine(mb.modelID, id).Name?.value === 'W-102');
+  edB.removeElements([w102]);
+  const sb = new TextDecoder().decode(edB.save()), sa = new TextDecoder().decode(A.api.SaveModel(ma.modelID));
+  ok(!/'W-102'/.test(sb) && /'W-102'/.test(sa), 'deleting W-102 in model 1 removes it from model 1\'s file only');
+  const mb2 = await ld(C2, new TextEncoder().encode(sb), 1);
+  ok(mb2.elements === mb.elements - 1 && danglingRefs(sb).length === 0, 'model 1 saves and reopens on its own (' + mb2.elements + ' elements, no missing references)');
+  ok(ma.elements === 11 && A.modelID !== B.modelID && B.modelID !== C2.modelID, 'model 0 still has its 11 elements; three models open on one engine');
+
+  const samples = publicSamples();
+  if (samples.length >= 2) {
+    console.log('== public samples together');
+    const s0 = await ld(A, new Uint8Array(fs.readFileSync(samples[0])), 0);
+    const s1 = await ld(B, new Uint8Array(fs.readFileSync(samples[1])), 2);
+    const r0 = [...A.api.GetCoordinationMatrix(s0.modelID)], P1 = placementMatrix(r0, [...B.api.GetCoordinationMatrix(s1.modelID)]);
+    const k0 = V.keysOf(s0.batches), k1 = V.keysOf(s1.batches);
+    ok([...k1].every((k) => !k0.has(k)) && P1.every(Number.isFinite), path.basename(samples[0]) + ' + ' + path.basename(samples[1]) + ': ' + k0.size + ' + ' + k1.size + ' elements, no shared key, a finite placement');
+  }
+  A.close(); B.close(); C2.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' federation checks passed');
+  return bad ? 1 : 0;
+}
+
+async function measureMode() {
+  const M = await import(path.join(APP, 'measure.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const near = (a, b, tol = 1e-4) => Math.abs(a - b) <= tol;
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const m = await quiet((b) => ifcm.load(b, () => {}))(await fixtureBytes());
+  const key = (name) => [...m.classOf.keys()].find((id) => ifcm.api.GetLine(m.modelID, id).Name?.value === name);
+  const where = (k) => { for (const b of m.batches) { const r = M.runOf(b, k); if (r >= 0) return { b, r }; } return null; };
+
+  console.log('== faces and areas (W-102: 6 m × 3 m × 0.2 m, a plain box)');
+  const { b, r } = where(key('W-102'));
+  const areas = new Map();
+  for (let t = b.elems.t0[r]; t < b.elems.t0[r] + b.elems.tn[r]; t++) { const f = M.faceRegion(b, r, t); areas.set(Math.round(f.area * 1000) / 1000, (areas.get(Math.round(f.area * 1000) / 1000) || 0) + 1); }
+  const kinds = [...areas.keys()].sort((x, y) => x - y);
+  ok(kinds.join() === '0.6,1.2,18', 'every triangle belongs to one of three face sizes: ends 0.6 m², top and bottom 1.2 m², sides 18 m² (' + kinds.join(', ') + ')');
+  ok(areas.get(18) === 4 && areas.get(1.2) === 4 && areas.get(0.6) === 4, 'two triangles per face, both report the whole face (4 each)');
+  const side = M.faceRegion(b, r, [...Array(b.elems.tn[r]).keys()].map((i) => b.elems.t0[r] + i).find((t) => near(M.faceRegion(b, r, t).area, 18, 1e-3)));
+  ok(side.tris.length === 2 && near(Math.hypot(...side.normal), 1), 'a side face: 2 triangles, a unit normal');
+  const w1 = where(key('W-101'));
+  const big = Math.max(...[...Array(w1.b.elems.tn[w1.r]).keys()].map((i) => M.faceRegion(w1.b, w1.r, w1.b.elems.t0[w1.r] + i).area));
+  ok(near(big, 30 - 2.1, 1e-3), 'W-101\'s face with the door opening: 10 × 3 m less the 1 × 2.1 m opening = 27.9 m² (' + big.toFixed(3) + ')');
+
+  console.log('== feature edges and snapping');
+  const edges = M.runEdges(b.positions, b.indices, b.elems.t0[r], b.elems.tn[r]);
+  ok(edges.length / 6 === 12, 'W-102: 12 feature edges (no face diagonals)');
+  const proj = (p) => [p[0] * 100, p[2] * 100];   // a plan on screen, 1 px = 1 cm
+  const corners = []; for (let i = 0; i < edges.length; i += 3) corners.push([edges[i], edges[i + 1], edges[i + 2]]);
+  const c0 = corners[0], s0 = proj(c0);
+  const sv = M.snapTo(corners, edges, [s0[0] + 4, s0[1] - 3], proj);
+  ok(sv && sv.kind === 'vertex' && near(proj(sv.point)[0], s0[0]) && near(proj(sv.point)[1], s0[1]), '5 px from a corner: snaps to the corner (top and bottom share the spot in plan)');
+  const mid = [(edges[0] + edges[3]) / 2, (edges[1] + edges[4]) / 2, (edges[2] + edges[5]) / 2], sm = proj(mid);
+  const se = M.snapTo(corners, edges, [sm[0] + 3, sm[1] + 3], proj);
+  ok(se && (se.kind === 'edge' || se.kind === 'vertex'), 'near the middle of an edge: snaps to the edge (' + se?.kind + ')');
+  ok(M.snapTo(corners, edges, [1e6, 1e6], proj) === null, 'far from everything: no snap (the face point is used)');
+  const behind = M.snapTo(corners, edges, s0, () => null);
+  ok(behind === null, 'points behind the camera never snap');
+
+  console.log('== distances in IFC axes');
+  ok(near(M.distance([0, 0, 0], [3, 4, 0]), 5), 'distance 3-4-5');
+  const d = M.ifcDelta([0, 0, 0], [1, 2, -3]);
+  ok(d[0] === 1 && d[1] === 3 && d[2] === 2, 'viewer (x, y up, z) → IFC ΔX = Δx, ΔY = −Δz, ΔZ = Δy: ' + d.join(', '));
+  ok(M.fmtLength(3.25) === '3.250 m' && M.fmtLength(12.5) === '12.50 m' && M.fmtArea(1.2) === '1.200 m²', 'formats: ' + [M.fmtLength(3.25), M.fmtLength(12.5), M.fmtArea(1.2)].join(', '));
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' measure checks passed');
+  return bad ? 1 : 0;
+}
+
+async function bcfMode() {
+  const B = await import(path.join(APP, 'bcf.js'));
+  const zlib = await import('node:zlib');
+  const os = await import('node:os');
+  const { execFileSync } = await import('node:child_process');
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const near = (a, b, tol = 1e-6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+
+  console.log('== cameras: viewer (Y up, moved by the coordination matrix) ↔ IFC (Z up, metres)');
+  const C = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -100, -2, 50, 1];   // web-ifc moved the model by (−100, −2, 50)
+  const vp = [3, 4, 5];
+  const ip = B.toIfcPoint(C, vp);
+  ok(near(ip, [103, -(5 - 50), 4 + 2]), 'viewer (3, 4, 5) → IFC (103, 45, 6): the move undone, Y up → Z up (' + ip + ')');
+  ok(near(B.fromIfcPoint(C, ip), vp), 'and back');
+  ok(near(B.toIfcDir(C, [0, 0, -1]), [0, 1, 0]) && near(B.fromIfcDir(C, [0, 0, 1]), [0, 1, 0]), 'directions: viewer −Z is IFC +Y; IFC up is viewer +Y');
+
+  console.log('== write → validate → read');
+  const g = () => B.newGuid();
+  const topics = [
+    { guid: g(), title: 'Duct through beam <B-12> & "column"', status: 'Open', type: 'Issue', author: 'tester@example.com', created: '2026-10-12T10:00:00Z', description: 'Line 1\nLine 2',
+      comments: [], viewpoints: [{ guid: g(), camera: { kind: 'perspective', viewPoint: [10, -5, 3], direction: [0, 1, 0], up: [0, 0, 1], fov: 45 },
+        selection: ['0BimCraftFixture000201'], visibility: { defaultVisible: true, exceptions: ['0BimCraftFixture000202'] }, clipping: [{ location: [0, 0, 1.5], direction: [0, 0, 1] }], snapshot: png }] },
+    { guid: g(), title: 'Isolated', status: 'Closed', type: '', author: 'a', created: '2026-10-12T11:00:00Z', description: '', comments: [],
+      viewpoints: [{ guid: g(), camera: { kind: 'orthogonal', viewPoint: [0, 0, 50], direction: [0, 0, -1], up: [0, 1, 0], scale: 20 }, selection: [], visibility: { defaultVisible: false, exceptions: ['0BimCraftFixture000303'] }, clipping: [], snapshot: null }] },
+  ];
+  topics[0].comments.push({ guid: g(), date: '2026-10-12T10:05:00Z', author: 'tester@example.com', text: 'Seen on Level 1', viewpoint: topics[0].viewpoints[0].guid });
+  const bytes = await B.writeBcf({ topics, file: { name: 'bimcraft-fixture.ifc', ifcProject: '0BimCraftFixture000001', date: '2026-10-12T00:00:00Z' } });
+  const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bimcraft-bcf-')), 'issues.bcf');
+  fs.writeFileSync(tmp, bytes);
+  let unz = '';
+  try { unz = execFileSync('unzip', ['-t', tmp], { encoding: 'utf8' }); } catch (e) { unz = e.stdout || ''; }
+  ok(/No errors detected/.test(unz), 'unzip -t: no errors');
+  const py = path.join(ROOT, 'tools/markupcraft-test/venv/bin/python'), checker = path.join(ROOT, 'tools/markupcraft-test/bcf_check.py');
+  if (fs.existsSync(py) && fs.existsSync(checker)) {
+    let res;
+    try { res = JSON.parse(execFileSync(py, [checker, tmp], { encoding: 'utf8' })); } catch (e) { res = JSON.parse(e.stdout || '{}'); }
+    ok(res.ok && res.topics === 2, 'valid against the buildingSMART BCF 2.1 schemas (markup, visinfo, version)' + (res.ok ? '' : ': ' + (res.errors || []).slice(0, 3).join(' | ')));
+  } else console.log('  (skipped: the BCF schema check needs tools/markupcraft-test/venv with lxml)');
+  const back = await B.readBcf(bytes);
+  const t0 = back.topics.find((t) => t.guid === topics[0].guid), v0 = t0?.viewpoints[0];
+  ok(back.version === '2.1' && back.topics.length === 2 && back.notes.length === 0, 'read back: version 2.1, 2 topics, no notes');
+  ok(t0 && t0.title === topics[0].title && t0.description === 'Line 1\nLine 2' && t0.status === 'Open' && t0.comments[0].text === 'Seen on Level 1' && t0.comments[0].viewpoint === v0.guid, 'title with < & " kept, description, status, the comment and its viewpoint');
+  ok(v0 && near(v0.camera.viewPoint, [10, -5, 3]) && v0.camera.fov === 45 && v0.selection.join() === '0BimCraftFixture000201' && !v0.visibility.defaultVisible === false && v0.visibility.exceptions.join() === '0BimCraftFixture000202', 'the camera, the selection and a hidden element come back');
+  ok(v0.clipping.length === 1 && near(v0.clipping[0].location, [0, 0, 1.5]) && v0.snapshot && v0.snapshot[1] === 0x50, 'the clipping plane and the snapshot come back');
+  const t1 = back.topics.find((t) => t.guid === topics[1].guid);
+  ok(t1.viewpoints[0].camera.kind === 'orthogonal' && t1.viewpoints[0].camera.scale === 20 && t1.viewpoints[0].visibility.defaultVisible === false, 'an orthogonal camera and "everything hidden but…" come back');
+
+  console.log('== a deflated zip (as other programs write them), and refusals');
+  const files = await B.unzip(bytes);
+  const defl = [];
+  let off = 0; const parts = [], central = [];
+  const u16 = (v) => Buffer.from([v & 255, v >> 8 & 255]), u32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
+  for (const [name, data] of files) {
+    const c = zlib.deflateRawSync(data), n = Buffer.from(name), crc = B.crc32(data);
+    const local = Buffer.concat([u32(0x04034b50), u16(20), u16(0), u16(8), u16(0), u16(0), u32(crc), u32(c.length), u32(data.length), u16(n.length), u16(0), n, c]);
+    central.push(Buffer.concat([u32(0x02014b50), u16(20), u16(20), u16(0), u16(8), u16(0), u16(0), u32(crc), u32(c.length), u32(data.length), u16(n.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(off), n]));
+    parts.push(local); off += local.length; defl.push(name);
+  }
+  const cd = Buffer.concat(central);
+  const deflated = Buffer.concat([...parts, cd, u32(0x06054b50), u16(0), u16(0), u16(files.size), u16(files.size), u32(cd.length), u32(off), u16(0)]);
+  const back2 = await B.readBcf(new Uint8Array(deflated));
+  ok(back2.topics.length === 2 && back2.topics.find((t) => t.guid === topics[0].guid).viewpoints[0].selection.length === 1, 'a deflated BCF reads the same (' + defl.length + ' entries)');
+  let err = '';
+  try { await B.readBcf(new Uint8Array([1, 2, 3])); } catch (e) { err = e.message; }
+  ok(err === 'not a zip', 'a file that is not a zip is refused: ' + err);
+  let threw = ''; try { B.parseXml('<!DOCTYPE x [<!ENTITY a "aaaa">]><x>&a;</x>'); } catch (e) { threw = e.message; }
+  ok(/DTD/.test(threw), 'DTDs (and so entity expansion) are refused: ' + threw);
+  const evil = B.zip([{ name: 'bcf.version', data: new TextEncoder().encode('<Version VersionId="2.1"/>') }, { name: 'x/markup.bcf', data: new TextEncoder().encode('<Markup><Topic Guid="x"><Title>t</Title></Topic><Viewpoints Guid="v"><Viewpoint>../../etc/passwd</Viewpoint></Viewpoints></Markup>') }]);
+  const r3 = await B.readBcf(evil);
+  ok(r3.topics.length === 1 && r3.topics[0].viewpoints.length === 0, 'a viewpoint path with .. is never followed');
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' BCF checks passed');
+  return bad ? 1 : 0;
+}
+
+async function findMode() {
+  const P = await import(path.join(APP, 'ifc-props.js'));
+  const F = await import(path.join(APP, 'ifc-find.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const m = await quiet((b) => ifcm.load(b, () => {}))(await fixtureBytes());
+  const ix = P.propertyIndex(WebIFC, ifcm.api, ifcm.modelID, m);
+  const names = (keys) => keys.map((k) => ix.value('name', k)).sort().join(', ');
+  const f = (rules, mode = 'all') => names(F.find(ix, { rules, mode }));
+  console.log('== rules on the fixture');
+  ok(f([{ field: 'cls', op: 'is', value: 'ifcwall' }]) === 'W-101, W-102, W-103, W-104, W-201, W-202', 'Class is "ifcwall" (case does not matter): the 6 walls');
+  ok(f([{ field: 'name', op: 'starts', value: 'W-1' }]) === 'W-101, W-102, W-103, W-104', 'Name starts with W-1: Level 1\'s walls');
+  ok(f([{ field: 'p:Fixture_Data.Cost', op: 'gt', value: '1000' }]) === 'W-101, W-103, W-201', 'Cost is more than 1000 (a number against a number)');
+  ok(f([{ field: 'p:Fixture_Data.Cost', op: 'lte', value: '980' }]) === 'W-102, W-104, W-202', 'Cost is at most 980');
+  ok(f([{ field: 'p:Pset_WallCommon.IsExternal', op: 'is', value: 'yes' }]) === 'W-101, W-102, W-103, W-104', 'IsExternal is yes (a shared set)');
+  ok(f([{ field: 'p:Fixture_Data.Zone', op: 'hasnot' }, { field: 'cls', op: 'is', value: 'IfcWall' }]) === 'W-201, W-202', 'every rule: walls without a Zone');
+  ok(f([{ field: 'storey', op: 'is', value: 'Level 2' }, { field: 'material', op: 'is', value: 'Oak' }], 'any') === 'F-101, S-201, W-201, W-202', 'any rule: on Level 2, or made of Oak');
+  ok(f([{ field: 'p:Qto_WallBaseQuantities.Length', op: 'is', value: '6000' }]) === 'W-102, W-104, W-202', 'a quantity typed as "6000" matches 6000 (two on Level 1, one on Level 2)');
+  ok(f([{ field: 'type', op: 'contains', value: 'wall 2' }]) === 'W-101, W-102, W-103, W-104, W-201, W-202' && f([{ field: 'type', op: 'notcontains', value: 'wall' }]).split(', ').length === 5, 'contains / does not contain (the type name)');
+  ok(f([{ field: 'p:Nope.Missing', op: 'is', value: 'x' }]) === '' && F.find(ix, { rules: [{ field: 'p:Nope.Missing', op: 'hasnot' }] }).length === 11, 'a field nobody has: "is" finds nothing, "has no value" finds all 11');
+  ok(F.find(ix, { rules: [{ field: 'cls', op: 'is', value: '' }] }).length === 0 && F.find(ix, { rules: [] }).length === 0, 'a rule without its value, or no rule: nothing');
+  console.log('== search sets from storage (untrusted)');
+  const sets = F.cleanSets(JSON.stringify([
+    { name: ' External walls ', mode: 'all', rules: [{ field: 'p:Pset_WallCommon.IsExternal', op: 'is', value: 'Yes' }] },
+    { name: 'Bad op', rules: [{ field: 'cls', op: 'eval', value: 'x' }] },
+    { name: '', rules: [{ field: 'cls', op: 'is', value: 'x' }] },
+    { name: 'Object value', rules: [{ field: 'cls', op: 'is', value: { a: 1 } }] },
+    { name: 'x'.repeat(500), mode: 'whatever', rules: [{ field: 'cls', op: 'has' }] }, 42, null]));
+  ok(sets.length === 2 && sets[0].name === 'External walls' && sets[1].name.length === 80 && sets[1].mode === 'all', 'kept: the good set (name trimmed) and a long one cut to 80 characters; dropped: bad operator, no name, an object value, junk');
+  ok(F.cleanSets('{not json').length === 0 && F.cleanSets('{"a":1}').length === 0, 'unreadable or not a list: no sets');
+  ok(F.suggestions(ix, 'cls')[0] === 'IfcWall', 'value suggestions: the most common first');
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' find checks passed');
+  return bad ? 1 : 0;
+}
+
+async function agentMode() {
+  const P = await import(path.join(APP, 'ifc-props.js'));
+  const A = await import(path.join(APP, 'bim-agent.js'));
+  const { createDispatcher } = await import(path.join(APP, 'host.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const m = await quiet((b) => ifcm.load(b, () => {}))(await fixtureBytes());
+  let ix = P.propertyIndex(WebIFC, ifcm.api, ifcm.modelID, m);
+  const vis = [];
+  const app = {
+    index: () => ix, name: () => 'bimcraft-fixture.ifc',
+    properties: (k) => ifcm.properties(k - ix.keyBase),
+    visibility: (how, keys) => { vis.push([how, keys.length]); return { hidden: how === 'hide' ? keys.length : 0 }; },
+  };
+  let allowed = ['read'];
+  const d = createDispatcher({ server: { name: 'bimcraft', title: 'BimCraft', version: 'test' }, allowed: () => allowed });
+  for (const def of A.bimTools(app)) d.tool(def);
+  const call = async (name, a) => { const r = await d.call(name, a); return { r, v: r.structuredContent, text: r.content?.[0]?.text || '' }; };
+  const names = (els) => els.map((e) => e.name).sort().join(', ');
+  console.log('== the tools and their permissions');
+  ok(d.list().map((t) => t.name).join() === 'elements_find,element_properties', 'with read allowed: elements_find and element_properties are listed');
+  allowed = ['read', 'edit'];
+  ok(d.list().length === 3 && d.list().find((t) => t.name === 'elements_isolate')?.annotations?.readOnlyHint === false, 'with edit: elements_isolate too (not read-only)');
+  allowed = ['read'];
+  let x = await call('elements_isolate', { how: 'isolate', class: 'IfcWall' });
+  ok(x.r.isError && /edit permission/.test(x.text) && vis.length === 0, 'elements_isolate is refused without edit, and nothing changes: ' + x.text.slice(0, 60));
+  console.log('== elements_find');
+  x = await call('elements_find', { class: 'ifcwall' });
+  ok(x.v.total === 6 && names(x.v.elements) === 'W-101, W-102, W-103, W-104, W-201, W-202' && x.v.model === 'bimcraft-fixture.ifc', 'class IfcWall (any case): the 6 walls');
+  const w = x.v.elements.find((e) => e.name === 'W-101');
+  ok(Number.isInteger(w.id) && /^[0-9A-Za-z_$]{22}$/.test(w.guid) && w.storey === 'Level 1' && w.class === 'IfcWall', 'each element: id, guid, class, name, storey, type (' + JSON.stringify(w).slice(0, 90) + ')');
+  x = await call('elements_find', { class: 'IfcWall', storey: 'Level 2' });
+  ok(names(x.v.elements) === 'W-201, W-202', 'class and storey together: Level 2\'s walls');
+  x = await call('elements_find', { property: { name: 'IsExternal', equals: 'yes' } });
+  ok(names(x.v.elements) === 'W-101, W-102, W-103, W-104', 'a property by name, without its set: IsExternal is yes');
+  x = await call('elements_find', { property: { set: 'Fixture_Data', name: 'Cost' }, rules: [{ field: 'p:Fixture_Data.Cost', op: 'gt', value: '1000' }] });
+  ok(names(x.v.elements) === 'W-101, W-103, W-201', 'a property that is there, and a Find rule (Cost more than 1000)');
+  x = await call('elements_find', { storey: 'Level 2', rules: [{ field: 'material', op: 'is', value: 'Oak' }], mode: 'any' });
+  ok(names(x.v.elements) === 'F-101, S-201, W-201, W-202', 'mode any: on Level 2, or made of Oak (' + names(x.v.elements) + ')');
+  x = await call('elements_find', { offset: 2, limit: 3 });
+  ok(x.v.total === 11 && x.v.offset === 2 && x.v.elements.length === 3, 'no filter: every element, paged (offset 2, limit 3 of 11)');
+  x = await call('elements_find', { limit: 1000 });
+  ok(x.r.isError && /Invalid arguments/.test(x.text), 'a limit over 500 is refused by the schema');
+  x = await call('elements_find', { name: 'no such thing' });
+  ok(!x.r.isError && x.v.total === 0, 'no match: total 0, not an error');
+  console.log('== elements_isolate (edit: visibility only)');
+  allowed = ['read', 'edit'];
+  x = await call('elements_isolate', { how: 'ghost', class: 'IfcWall', storey: 'Level 1' });
+  ok(!x.r.isError && x.v.elements === 4 && vis.at(-1).join() === 'ghost,4', 'ghost Level 1\'s walls: the app gets 4 keys');
+  x = await call('elements_isolate', { how: 'isolate', ids: [w.id, 99999999] });
+  ok(x.r.isError && /99999999/.test(x.text) && vis.length === 1, 'an unknown id is refused, and nothing changes');
+  x = await call('elements_isolate', { how: 'hide', ids: [w.id] });
+  ok(x.v.hidden === 1 && vis.at(-1).join() === 'hide,1', 'hide one by id');
+  x = await call('elements_isolate', { how: 'show_all' });
+  ok(x.v.elements === 11 && x.v.hidden === 0 && vis.at(-1)[0] === 'show_all', 'show_all needs no ids');
+  x = await call('elements_isolate', { how: 'isolate' });
+  ok(x.r.isError && /Say which elements/.test(x.text), 'isolate with no ids and no filter is refused');
+  console.log('== element_properties');
+  x = await call('element_properties', { id: w.id });
+  const cost = x.v.sets.find((s) => s.name === 'Fixture_Data')?.properties.find((p) => p.name === 'Cost');
+  ok(x.v.name === 'W-101' && x.v.class === 'IfcWall' && x.v.storey === 'Level 1' && cost && Number(String(cost.value).replace(/[^0-9.]/g, '')) > 1000, 'by id: W-101 with its sets (Fixture_Data Cost ' + cost?.value + ')');
+  ok(x.v.sets.some((s) => s.properties.some((p) => p.name === 'Length')), 'quantity sets are there too');
+  const byGuid = await call('element_properties', { guid: w.guid });
+  ok(byGuid.v.id === w.id, 'by GlobalId: the same element');
+  x = await call('element_properties', { id: 12345678 });
+  ok(x.r.isError && /No element 12345678/.test(x.text), 'an unknown id: an error result that says so');
+  ix = null;
+  x = await call('elements_find', {});
+  ok(x.r.isError && /No IFC model is open/.test(x.text), 'with no model open: every tool says to open one');
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' assistant tool checks passed');
+  return bad ? 1 : 0;
+}
+
+async function clashMode() {
+  const K = await import(path.join(APP, 'clash.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  console.log('== triangle pairs');
+  const T = (...v) => Float32Array.from(v);
+  const flat = T(0, 0, 0, 2, 0, 0, 0, 2, 0);
+  ok(K.triTri(flat, 0, T(0.5, 0.5, -1, 0.5, 0.5, 1, 1.5, 0.2, 0), 0) !== null, 'a triangle through another crosses it');
+  ok(K.triTri(flat, 0, T(0.5, 0.5, 0.1, 1.5, 0.5, 0.1, 0.5, 1.5, 0.1), 0) === null, 'a parallel one just above does not');
+  ok(K.triTri(flat, 0, T(0.2, 0.2, 0, 1, 0.2, 0, 0.2, 1, 0), 0) === null, 'a triangle lying in the same plane only touches: not a clash');
+  ok(K.triTri(flat, 0, T(3, 3, -1, 3, 3, 1, 4, 3, 0), 0) === null, 'one far off does not');
+
+  console.log('== the fixture: walls against everything');
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const m = await quiet((b) => ifcm.load(b, () => {}))(await fixtureBytes());
+  const nameOf = (k) => String(ifcm.api.GetLine(m.modelID, k).Name?.value);
+  const keys = [...m.classOf.keys()], walls = keys.filter((k) => m.classOf.get(k) === 'IfcWall');
+  const A = K.elementsOf(m.batches, walls), B = K.elementsOf(m.batches, keys);
+  const t0 = performance.now();
+  const res = K.clashes(A, B, { tolerance: 0.01 });
+  const ms = performance.now() - t0;
+  const pairs = res.map((c) => [nameOf(c.a), nameOf(c.b)].sort().join(' × ')).sort();
+  console.log('    ' + pairs.join(', '));
+  ok(['W-101 × W-102', 'W-102 × W-103', 'W-103 × W-104', 'W-101 × W-104', 'W-201 × W-202'].every((p) => pairs.includes(p)), 'the walls\' corners clash where they overlap (L1 four, L2 one)');
+  ok(['W-101', 'W-102', 'W-103', 'W-104'].every((w) => pairs.includes(['S-201', w].sort().join(' × '))), 'Level 1\'s walls run 200 mm into the Level 2 slab');
+  ok(!pairs.some((p) => /D-101|F-101/.test(p)), 'the door in its opening and the desk in the room clash with nothing');
+  ok(!pairs.some((p) => /W-20[12] × S-201|S-201 × W-20[12]/.test(p)), 'Level 2\'s walls only stand on the slab (touching is not a clash)');
+  ok(new Set(pairs).size === pairs.length, 'each pair once, though walls are in both sets (' + pairs.length + ' clashes, ' + ms.toFixed(0) + ' ms)');
+  const one = res.find((c) => [nameOf(c.a), nameOf(c.b)].sort().join() === 'S-201,W-101');
+  ok(one && Math.abs(one.depth - 0.1) < 1e-3 && [one.a, one.b].every((k) => { const e = B.find((x) => x.key === k); return one.point.every((v, i) => v >= e.box[i] - 1e-6 && v <= e.box[i + 3] + 1e-6); }), 'the wall into the slab: boxes overlap 0.100 m at the least (the wall\'s half-thickness over the slab\'s edge), a point on the crossing, inside both');
+  ok(K.clashes(A, B, { tolerance: 0.15 }).length === 0 && K.clashes(A, B, { tolerance: 0.05 }).length === res.length, 'tolerance 0.15 m drops them all (each overlaps 0.1 m), 0.05 m keeps them all');
+  ok(K.clashes(A, K.elementsOf(m.batches, keys.filter((k) => m.classOf.get(k) === 'IfcFurniture'))).length === 0, 'walls against the furniture: none');
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' clash checks passed');
+  return bad ? 1 : 0;
+}
+
+async function checksMode() {
+  const P = await import(path.join(APP, 'ifc-props.js'));
+  const Q = await import(path.join(APP, 'ifc-checks.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const load = async (o) => { const m = await quiet((b) => ifcm.load(b, () => {}))(await fixtureBytes(o)); return { m, ix: P.propertyIndex(WebIFC, ifcm.api, ifcm.modelID, m) }; };
+  const nm = (ix, keys) => keys.map((k) => ix.value('name', k)).sort().join(', ');
+  console.log('== the clean fixture');
+  let { m, ix } = await load();
+  let r = Q.runChecks(ix, m, { required: [{ cls: '', field: 'name' }, { cls: 'IfcWall', field: 'p:Fixture_Data.Cost' }] });
+  ok(r.map((c) => c.id + ':' + c.count).join() === 'required:0,guid:0,storey:0,stacked:0', 'nothing to report: ' + r.map((c) => c.id + ' ' + c.count).join(', '));
+  console.log('== the fixture with problems');
+  ({ m, ix } = await load({ problems: true }));
+  r = Q.runChecks(ix, m, { required: [{ cls: '', field: 'name' }, { cls: 'IfcWall', field: 'p:Fixture_Data.Cost' }] });
+  const by = Object.fromEntries(r.map((c) => [c.id, c]));
+  ok(by.required.groups.length === 1 && nm(ix, by.required.groups[0].keys) === 'W-105 bare', 'required: the wall without Fixture_Data.Cost (every element has a name)');
+  ok(by.guid.groups.length === 1 && by.guid.groups[0].label === '0BimCraftFixture000202' && nm(ix, by.guid.groups[0].keys) === 'W-102, W-102 copy', 'GlobalIds: W-102 and its copy share one');
+  ok(nm(ix, by.storey.groups[0]?.keys || []) === 'Loose proxy', 'no storey: the proxy contained nowhere (the desk in its space is on a storey)');
+  ok(by.stacked.groups.length === 1 && nm(ix, by.stacked.groups[0].keys) === 'W-103, W-103', 'stacked: the copy of W-103 on top of it');
+  ok(Q.runChecks(ix, m, { required: [{ cls: 'IfcDoor', field: 'p:Fixture_Data.Cost' }] })[0].count === 1, 'a rule for one class looks at that class only (the door has no Cost)');
+  ok(JSON.stringify(Q.cleanRules('[{"cls":"IfcWall","field":"p:A.B"},{"field":""},{"cls":7,"field":"x"},"junk"]')) === '[{"cls":"IfcWall","field":"p:A.B"}]' && Q.cleanRules('nope') === null, 'saved rules from storage: only well-formed ones');
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' model check checks passed');
+  return bad ? 1 : 0;
+}
+
+async function qtoMode() {
+  const P = await import(path.join(APP, 'ifc-props.js'));
+  const Q = await import(path.join(APP, 'ifc-qto.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const m = await quiet((b) => ifcm.load(b, () => {}))(await fixtureBytes());
+  const ix = P.propertyIndex(WebIFC, ifcm.api, ifcm.modelID, m);
+  const L = 'p:Qto_WallBaseQuantities.Length', A = 'p:Qto_WallBaseQuantities.NetSideArea', C = 'p:Fixture_Data.Cost';
+  // what the fixture should add up to, read straight from the index
+  const walls = ix.ids.filter((id) => ix.value('cls', id) === 'IfcWall');
+  const sumOf = (f, ids) => ids.reduce((a, id) => a + (ix.value(f, id) || 0), 0);
+  console.log('== by storey, walls');
+  let r = Q.totals(ix, { keys: walls.map((id) => ix.keyBase + id), groupBy: ['storey'], sum: [L, A] });
+  ok(r.rows.map((x) => x.values[0] + ':' + x.count).join() === 'Level 1:4,Level 2:2', 'walls by storey: Level 1 four, Level 2 two (' + r.rows.map((x) => x.values[0] + ' ' + x.count).join(', ') + ')');
+  const l1 = walls.filter((id) => ix.value('storey', id) === 'Level 1');
+  ok(Math.abs(r.rows[0].sums[0] - sumOf(L, l1)) < 1e-9 && r.rows[0].sums[0] > 0, 'Level 1 wall length = the sum of its walls\' Qto lengths (' + r.rows[0].sums[0] + ')');
+  ok(Math.abs(r.total.sums[1] - sumOf(A, walls)) < 1e-9 && r.total.count === walls.length, 'the total row adds every wall\'s net side area (' + r.total.sums[1] + ')');
+  console.log('== by class, everything');
+  r = Q.totals(ix, { groupBy: ['cls'], sum: [L] });
+  const door = r.rows.find((x) => x.values[0] === 'IfcDoor');
+  ok(door && door.count === 1 && door.counted[0] === 0 && door.sums[0] === 0, 'a door has no wall length: counted, sum 0, left out 1');
+  ok(r.total.count === ix.ids.length, 'every element with a shape is counted once (' + r.total.count + ')');
+  console.log('== two group fields, a property');
+  r = Q.totals(ix, { groupBy: ['cls', 'p:Fixture_Data.Zone'], sum: [C] });
+  const zones = r.rows.filter((x) => x.values[0] === 'IfcWall').map((x) => x.values[1]);
+  ok(zones.length >= 2 && zones[zones.length - 1] === '', 'walls split by Zone, the walls with none last (' + JSON.stringify(zones) + ')');
+  ok(Math.abs(r.total.sums[0] - sumOf(C, walls)) < 1e-6, 'Cost totals the walls\' costs');
+  console.log('== CSV');
+  const csv = Q.totalsCsv(Q.totals(ix, { groupBy: ['cls'], sum: [L] }), { label: (f) => f === 'cls' ? 'Class' : f.split('.').pop() });
+  const lines = csv.trim().split('\r\n');
+  ok(lines[0] === 'Class,Count,Length,Length (left out)', 'header: groups, Count, the sum, and "left out" since some elements have no length');
+  ok(/^Total,\d+,[\d.]+,\d+$/.test(lines[lines.length - 1]), 'a total row: ' + lines[lines.length - 1]);
+  const evil = Q.totalsCsv({ groupBy: ['name'], sum: [], rows: [{ values: ['=HYPERLINK("x")'], count: 1, sums: [], counted: [] }, { values: [-5], count: 1, sums: [], counted: [] }], total: { count: 2, sums: [], counted: [] } });
+  ok(evil.includes(`"'=HYPERLINK(""x"")"`) && evil.includes('\r\n-5,1'), 'formula-looking text gets a leading \' (quoted); a negative number stays a number');
+  ok(Q.quantityFields(ix)[0].group.startsWith('Qto_') && Q.quantityFields(ix).every((f) => f.kind === 'number'), 'quantity fields: number fields, quantity sets first');
+  ok(Q.tidy(0.1 + 0.2) === 0.3, 'sums lose binary noise (0.1 + 0.2 = 0.3)');
+  console.log('== B10 schedules: one row per element');
+  const er = Q.elementRows(ix, { keys: walls.map((id) => ix.keyBase + id), columns: ['storey', 'name', L] });
+  ok(er.rows.length === walls.length && er.rows[0].values[0] === 'Level 1' && er.rows.map((r) => r.values[1]).slice(0, 4).join() === 'W-101,W-102,W-103,W-104', 'walls, sorted by storey then name: ' + er.rows.map((r) => r.values[1]).join(', '));
+  ok(er.rows.every((r) => typeof r.values[2] === 'number'), 'each row carries its own Qto length');
+  console.log('== B10 spaces: measured from the shape, then from the file\'s quantities');
+  let sp = Q.spaceSchedule(P.propertyIndex(WebIFC, ifcm.api, ifcm.modelID, m, { spaces: true }), m);
+  ok(sp.rows.length === 1 && sp.rows[0].number === '101' && sp.rows[0].name === '101 Office' && sp.rows[0].storey === 'Level 1', 'one space: number 101 (Name), "101 Office" (Long name), on Level 1');
+  ok(sp.rows[0].area === 53.76 && sp.rows[0].areaFrom === 'shape' && sp.rows[0].volume === 155.904 && sp.rows[0].volumeFrom === 'shape', 'no quantity set: 9.6 × 5.6 × 2.9 m → 53.76 m², 155.904 m³ measured from its shape (' + sp.rows[0].area + ', ' + sp.rows[0].volume + ')');
+  ifcm.close();
+  const ifq = await quiet(() => IfcModel.create(WebIFC, null))();
+  const mq = await quiet((b) => ifq.load(b, () => {}))(await fixtureBytes({ spaceQto: true }));
+  const ixq = P.propertyIndex(WebIFC, ifq.api, ifq.modelID, mq, { spaces: true });
+  sp = Q.spaceSchedule(ixq, mq);
+  ok(sp.rows[0].area === 52.5 && sp.rows[0].areaFrom === 'file' && sp.rows[0].volume === 152.25 && sp.rows[0].volumeFrom === 'file', 'with Qto_SpaceBaseQuantities: the file\'s 52.5 m² and 152.25 m³ win');
+  ok(sp.total.count === 1 && sp.total.area === 52.5, 'totals: 1 space, 52.5 m²');
+  ok(Q.spaceSchedule(ixq, mq, { keys: walls.map((id) => ixq.keyBase + id) }).rows.length === 0 && P.propertyIndex(WebIFC, ifq.api, ifq.modelID, mq).ids.every((id) => mq.classOf.get(id) !== 'IfcSpace'), 'only spaces are scheduled (walls picked: no rows); the element index leaves spaces out');
+  const csv2 = Q.tableCsv(['A', 'B'], [['=1+1', 2], ['x,y', -3]]);
+  ok(csv2 === "A,B\r\n'=1+1,2\r\n\"x,y\",-3\r\n", 'tableCsv escapes formulas and commas');
+  ifq.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' quantity total checks passed');
+  return bad ? 1 : 0;
+}
+
+async function compareMode() {
+  const P = await import(path.join(APP, 'ifc-props.js'));
+  const K = await import(path.join(APP, 'ifc-compare.js'));
+  const { placementMatrix } = await import(path.join(APP, 'ifc-util.js'));
+  const { keyOf } = await import(path.join(APP, 'ifc-model.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const A = await quiet(() => IfcModel.create(WebIFC, null))();
+  const B = IfcModel.sharing(A), B2 = IfcModel.sharing(A);
+  const ld = (im, bytes, mi) => quiet((b) => im.load(b, () => {}, { keyBase: keyOf(mi, 0) }))(bytes);
+  const ma = await ld(A, await fixtureBytes(), 0), mb = await ld(B, await fixtureBytes({ rev: 'b' }), 1), mc = await ld(B2, await fixtureBytes({ rev: 'b', shift: 100000 }), 2);
+  const ixa = P.propertyIndex(WebIFC, A.api, ma.modelID, ma), ixb = P.propertyIndex(WebIFC, B.api, mb.modelID, mb), ixc = P.propertyIndex(WebIFC, B2.api, mc.modelID, mc);
+  const refC = [...A.api.GetCoordinationMatrix(ma.modelID)];
+  const side = (ix, m, im) => ({ ix, model: m, matrix: placementMatrix(refC, [...im.api.GetCoordinationMatrix(m.modelID)]) });
+  const nm = (ix, k) => ix.value('name', k - ix.keyBase);
+  console.log('== the fixture → revision b');
+  const r = K.compareModels(side(ixa, ma, A), side(ixb, mb, B));
+  ok(r.removed.map((k) => nm(ixa, k)).join() === 'W-104', 'removed: W-104');
+  ok(r.added.map((k) => nm(ixb, k)).join() === 'W-203', 'added: W-203');
+  const ch = Object.fromEntries(r.changed.map((c) => [nm(ixb, c.b), c]));
+  console.log('    changed: ' + r.changed.map((c) => nm(ixb, c.b) + ' [' + c.props.map((p) => p.field).join(' ') + (c.moved ? ' moved ' + c.moved.toFixed(3) : '') + (c.reshaped ? ' reshaped' : '') + ']').join(', '));
+  ok(ch['W-201'] && ch['W-201'].props.some((p) => p.field === 'p:Fixture_Data.Cost' && p.before !== p.after) && !ch['W-201'].moved, 'W-201: Cost changed (' + ch['W-201']?.props.map((p) => p.before + ' → ' + p.after).join() + '), not moved');
+  const desk = Object.values(ch).find((c) => ixb.value('cls', c.b - ixb.keyBase) === 'IfcFurniture');
+  ok(desk && Math.abs(desk.moved - 0.5) < 1e-6 && !desk.reshaped && !desk.props.length, 'the desk moved 0.500 m, same shape, same properties');
+  ok(r.same > 0 && r.same + r.changed.length + r.removed.length === ixa.ids.length, 'every old element accounted for (' + r.same + ' the same)');
+  const others = r.changed.filter((c) => c !== desk && c !== ch['W-201']);
+  ok(others.length === 0, 'nothing else changed');
+  console.log('== revision b with its site moved 100 m east');
+  const r2 = K.compareModels(side(ixa, ma, A), side(ixc, mc, B2));
+  ok(r2.changed.length === ixb.ids.length - 1 && r2.changed.every((c) => c.moved > 99.99), 'in true coordinates every matched element moved (100 m; the desk 100.5)');
+  const aligned = { ix: ixc, model: mc, matrix: placementMatrix(refC, [...B2.api.GetCoordinationMatrix(mc.modelID)], [-100, 0, 0]) };
+  const r3 = K.compareModels(side(ixa, ma, A), aligned);
+  ok(r3.changed.map((c) => nm(ixc, c.b)).sort().join() === r.changed.map((c) => nm(ixb, c.b)).sort().join() && r3.changed.every((c) => !c.moved || Math.abs(c.moved - 0.5) < 1e-6), 'moved back 100 m (a Move offset, as the Models panel sets): the same changes as before');
+  console.log('== the same file twice; CSV');
+  ok(K.compareModels(side(ixa, ma, A), side(ixa, ma, A)).changed.length === 0, 'a model against itself: nothing changed');
+  const csv = K.compareCsv(r, { name: (s, k) => nm(s === 'a' ? ixa : ixb, k), guid: (s, k) => (s === 'a' ? ixa : ixb).value('guid', k - (s === 'a' ? ixa : ixb).keyBase) });
+  const lines = csv.trim().split('\r\n');
+  ok(lines[0] === 'Change,GlobalId,Element,What,Before,After' && lines.some((l) => /^Changed,\w+,W-201,p:Fixture_Data\.Cost,/.test(l)) && lines.some((l) => /^Moved,\w+,.*,0\.5$/.test(l)) && lines.some((l) => /^Added,\w+,W-203/.test(l)) && lines.some((l) => /^Removed,\w+,W-104/.test(l)), 'CSV: a row per change with the GlobalId');
+  for (const im of [A, B, B2]) im.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' compare checks passed');
+  return bad ? 1 : 0;
+}
+
+async function handoffMode() {
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const canon = fs.readFileSync(path.join(APP, 'handoff.js'));
+  const apps = path.resolve(APP, '..', '..');
+  console.log('== copies');
+  for (const a of ['cadcraft', 'modelcraft', 'detailcraft', 'markupcraft', 'takeoffcraft']) {
+    const f = path.join(apps, a, 'dev', 'handoff.js');
+    if (!fs.existsSync(path.join(apps, a, 'dev'))) { console.log('  skip ' + a + ' (not in this clone)'); continue; }
+    ok(fs.existsSync(f) && Buffer.compare(fs.readFileSync(f), canon) === 0, a + '/dev/handoff.js is byte-identical to the canonical copy');
+  }
+  const H = await import(path.join(APP, 'handoff.js'));
+  console.log('== ids');
+  const id = H.newHandoffId();
+  ok(H.handoffParam('?handoff=' + id.toUpperCase()) === id, 'a fresh id reads back from a query string (lower case)');
+  ok(H.handoffParam('?handoff=../../etc') === null && H.handoffParam('?x=1') === null && H.handoffParam('?handoff=' + id + 'x') === null, 'anything but a UUID is ignored');
+  console.log('== sendHandoff');
+  const saved = globalThis.window;
+  const opened = [];
+  globalThis.window = { open: (u) => { opened.push(u); return null; } };
+  let err = null;
+  try { await H.sendHandoff('/lab/detailcraft', { name: 'a.ifc' }, 'bimcraft'); } catch (e) { err = e; }
+  ok(err?.code === 'blocked' && /^\/lab\/detailcraft\?handoff=[0-9a-f-]{36}$/.test(opened[0]), 'a blocked tab: code "blocked", the address carried the id (' + opened[0] + ')');
+  let closed = false;
+  globalThis.window = { open: (u) => { opened.push(u); return { close: () => { closed = true; } }; } };
+  err = null;
+  try { await H.sendHandoff('/lab/markupcraft?x=1', { name: 'a.pdf' }, 'takeoffcraft'); } catch (e) { err = e; }
+  ok(/\?x=1&handoff=/.test(opened[1]) && err && closed, 'no IndexedDB here: storing fails and the new tab is closed again (' + (err?.code || err?.message) + ')');
+  globalThis.window = saved;
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' handoff checks passed');
+  return bad ? 1 : 0;
+}
+
+async function fourDMode() {
+  const P = await import(path.join(APP, 'ifc-props.js'));
+  const D = await import(path.join(APP, 'ifc-4d.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  console.log('== dates');
+  ok(D.dayText(D.parseDay('2026-11-02')) === '2026-11-02' && D.parseDay('2026-02-30') === null && D.parseDay('02/11/2026') === null && D.parseDay('2026-1-2') === null, 'YYYY-MM-DD only, real days only (2026-02-30 and 02/11/2026 refused)');
+  console.log('== the CSV');
+  const csv = '﻿Task;Start;Finish;Field;Value\r\n'
+    + 'Level 1;2026-11-02;2026-11-13;Storey;Level 1\r\n'
+    + 'Slab;2026-11-16;2026-11-16;Class;IfcSlab\r\n'
+    + 'Level 2 walls;2026-11-17;2026-11-27;Storey;level 2\r\n'
+    + 'Level 2 walls;2026-11-17;2026-11-27;Fixture_Data.Zone;North\r\n'
+    + '"Fit-out; desk";2026-11-30;2026-12-04;Name;F-101\r\n'
+    + 'Ghost;2026-12-07;2026-12-08;Name;nothing like this\r\n'
+    + 'Bad date;2026-13-01;2026-12-01;Name;x\r\n'
+    + 'Backwards;2026-12-05;2026-12-01;Name;x\r\n'
+    + 'Level 1;2026-11-03;2026-11-13;Class;IfcDoor\r\n';
+  const p = D.parseTasks(csv);
+  ok(p.tasks.map((t) => t.name).join('|') === 'Level 1|Slab|Level 2 walls|Fit-out; desk|Ghost', 'semicolons, a BOM, a quoted ; in a name, one task per name, by start date: ' + p.tasks.map((t) => t.name).join(' | '));
+  ok(p.errors.map((e) => e.message + '@' + e.line).join() === 'date@8,order@9,dates-differ@10', 'refused with their lines: a bad date, a finish before the start, the same task with other dates (' + p.errors.map((e) => e.message + '@' + e.line).join(', ') + ')');
+  ok(D.parseTasks('Name,When\nx,y\n').errors[0]?.message === 'header' && D.parseTasks('').errors[0]?.message === 'empty', 'a file without the columns, or empty: said so');
+  console.log('== matching the fixture');
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const m = await quiet((b) => ifcm.load(b, () => {}))(await fixtureBytes());
+  const ix = P.propertyIndex(WebIFC, ifcm.api, ifcm.modelID, m);
+  const mt = D.matchTasks(ix, p.tasks);
+  const by = Object.fromEntries(mt.map((t) => [t.name, t]));
+  const nm = (keys) => keys.map((k) => ix.value('name', k - ix.keyBase)).sort().join(',');
+  ok(by['Level 1'].keys.length === 8 && by['Slab'].keys.length === 1 && nm(by['Fit-out; desk'].keys) === 'F-101', 'Storey = Level 1 → 8 elements, Class = IfcSlab → 1, Name = F-101 → the desk');
+  ok(by['Level 2 walls'].keys.length === 3 + 1, 'two rows for one task add up, and a value ignores case: Level 2 (3) + the North wall (' + by['Level 2 walls'].keys.length + ')');
+  ok(by['Ghost'].keys.length === 0 && by['Ghost'].unmatched.length === 1, 'a row that matches nothing is reported');
+  ok(D.fieldId(ix, 'GlobalId') === 'guid' && D.fieldId(ix, 'fixture_data.cost') === 'p:Fixture_Data.Cost' && D.fieldId(ix, 'Nope') === null, 'fields by name, property sets as "Set.Property" (any case)');
+  console.log('== status on a date');
+  const day = D.parseDay;
+  const at = (d) => D.statusAt(mt, day(d));
+  const w101 = ix.keyBase + ix.ids.find((id) => ix.value('name', id) === 'W-101'), slab = by['Slab'].keys[0], north = by['Level 2 walls'].keys.find((k) => !by['Level 1'].keys.includes(k) && ix.value('storey', k - ix.keyBase) === 'Level 1');
+  const one = (t, d) => D.statusAt([t], day(d));
+  ok(one(by['Level 1'], '2026-11-01').get(w101) === 'waiting' && one(by['Level 1'], '2026-11-02').get(w101) === 'progress' && one(by['Level 1'], '2026-11-13').get(w101) === 'progress' && one(by['Level 1'], '2026-11-14').get(w101) === 'built', 'one task: waiting, in progress from Start through Finish, built the day after');
+  ok(one(by['Slab'], '2026-11-16').get(slab) === 'progress' && one(by['Slab'], '2026-11-17').get(slab) === 'built', 'a one-day task: in progress on its day, built the next');
+  ok(at('2026-11-14').get(w101) === 'progress' && at('2026-11-28').get(w101) === 'built', 'W-101 is also the North wall of "Level 2 walls": in progress between the two, built after both');
+  ok(north === undefined || at('2026-11-14').get(north) === 'progress', 'an element in two tasks (Level 1 done, Level 2 walls not started): in progress');
+  ok(at('2026-12-31').size === new Set(mt.flatMap((t) => t.keys)).size && [...at('2026-12-31').values()].every((s) => s === 'built'), 'after the last finish everything in a task is built');
+  const sp = D.span(mt);
+  ok(D.dayText(sp.first) === '2026-11-02' && D.dayText(sp.last) === '2026-12-08', 'the slider runs from the first start to the last finish');
+  const tpl = D.parseTasks(D.templateCsv(['Level 1', 'Level 2'], day('2026-11-02')));
+  ok(tpl.errors.length === 0 && tpl.tasks.map((t) => t.name + ' ' + D.dayText(t.start) + '–' + D.dayText(t.finish)).join(', ') === 'Level 1 2026-11-02–2026-11-06, Level 2 2026-11-09–2026-11-13' && D.matchTasks(ix, tpl.tasks)[0].keys.length === 8, 'the template: a week per storey, reads back and matches');
+  ifcm.close();
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' 4D checks passed');
+  return bad ? 1 : 0;
+}

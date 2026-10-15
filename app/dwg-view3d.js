@@ -27,6 +27,7 @@
  */
 import * as THREE from 'three';
 import { Camera, VIEWS } from './m3d/camera.js';
+import { action3d, wheelFactor } from './input-mouse.js';   // 0.5 IP.1: buttons and wheel from the input profile
 
 export { VIEWS };
 const SCENE = 100;   // the drawing's extents in scene units
@@ -370,7 +371,11 @@ export class DrawingView3D {
       if (e.button > 2) return;
       this.onUserMove?.();   // e.g. stop a view-cube turn
       c.setPointerCapture?.(e.pointerId);
-      drag = { x: p.x, y: p.y, pan: e.button === 2 || e.shiftKey, x0: p.x, y0: p.y, button: e.button };
+      // what this button does comes from the input profile (input-mouse.js); Shift swaps orbit and pan
+      let act = e.pointerType === 'touch' ? null : action3d(e.button);
+      if (act === null) act = e.button === 2 || e.shiftKey ? 'pan' : 'orbit';   // this view's own: right or Shift pans
+      else if (e.shiftKey && (act === 'orbit' || act === 'pan')) act = act === 'orbit' ? 'pan' : 'orbit';
+      drag = { x: p.x, y: p.y, pan: act === 'pan', zoom: act === 'zoom', none: act === 'none', x0: p.x, y0: p.y, button: e.button };
       e.preventDefault();
       // touch: a long press without moving adds the object to the pick or takes it out (Ctrl+click), 0.4 S.8
       clearTimeout(longTimer);
@@ -403,7 +408,9 @@ export class DrawingView3D {
       if (!drag) return;
       const dx = p.x - drag.x, dy = p.y - drag.y;
       drag.x = p.x; drag.y = p.y;
-      if (drag.pan) this.cam.pan(dx, dy); else this.cam.orbit(dx, dy);
+      if (drag.none) return;
+      if (drag.zoom) this.cam.zoomAt(Math.exp(dy * 0.01), drag.x0, drag.y0);
+      else if (drag.pan) this.cam.pan(dx, dy); else this.cam.orbit(dx, dy);
       this.render();
     });
     const end = (e) => {
@@ -438,7 +445,7 @@ export class DrawingView3D {
         return;
       }
       const p = pos(e);
-      const k = Math.exp((e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY) * (e.ctrlKey ? 0.01 : 0.0015));
+      const k = Math.exp((e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY) * (e.ctrlKey ? 0.01 : 0.0015) * (e.ctrlKey ? 1 : wheelFactor()));
       this.cam.zoomAt(k, p.x, p.y, this.hit(p.x, p.y));
       this.render();
     }, { passive: false });

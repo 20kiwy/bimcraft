@@ -7,6 +7,7 @@
  *   ids(api, mid, 'IFCWALL', inherited)   [expressID…]
  *   val(x)                                web-ifc value → plain JS value
  *   lengthUnitMm(api, mid)                mm per file length unit (1 for mm files, 1000 for m, 304.8 for ft…)
+ *   unitMm(unitLine)                      mm per unit of one IfcNamedUnit line (read with GetLine(…, true))
  *   M4: inv4, mul4, apply4 — column-major 4×4 matrices as web-ifc returns them
  *   yupToZup([x,y,z]) / zupToYup — web-ifc hands geometry over Y-up; IFC is Z-up
  */
@@ -79,7 +80,7 @@ export function lengthUnitMm(api, mid) {
   }
   return 1000;   // IFC's default length unit is the metre
 }
-function unitMm(u) {
+export function unitMm(u) {
   if (!u) return 1000;
   if (u.Name && val(u.Name) === 'METRE' && !u.ConversionFactor) {
     const pre = val(u.Prefix);

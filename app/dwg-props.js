@@ -34,7 +34,7 @@ export function attributeRows(e) {
 }
 
 /** Rows for one entity. Values that are lang keys (yes/no) are marked { key, valueKey }. */
-export function entityRows(e, { units = '' } = {}) {
+export function entityRows(e, { units = '', dyn = null } = {}) {
   const rows = [];
   const add = (key, value, extra = {}) => { if (value !== '' && value !== null && value !== undefined) rows.push({ key, value: String(value), ...extra }); };
   const len = (v) => (Number.isFinite(v) ? num(v) + (units ? ' ' + units : '') : '');
@@ -43,6 +43,13 @@ export function entityRows(e, { units = '' } = {}) {
   add('dwg.prop.color', colorText(e.color));
   if (e.linetype) add('dwg.prop.linetype', e.linetype);
   add('dwg.prop.handle', e.handle);
+  if (dyn) {   // 0.5 DB.11: a dynamic block reference (dwg-dynamic.js dynamicOf): its block, the state it shows, the others
+    add('dwg.prop.dyn', dyn.name);
+    if (dyn.states.length) {
+      add('dwg.prop.dyn.state', dyn.state ?? 'dwg.dyn.unknown', dyn.state ? {} : { valueKey: true });
+      add('dwg.prop.dyn.others', dyn.others.length ? dyn.others.join(', ') : 'dwg.dyn.none', dyn.others.length ? {} : { valueKey: true });
+    }
+  }
   switch (e.type) {
     case 'LINE':
       add('dwg.prop.start', pt(e.start)); add('dwg.prop.end', pt(e.end));

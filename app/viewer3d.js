@@ -11,6 +11,14 @@
  *   v.placing = { move(pt|null, e), click(pt, e) }   while set, the pointer hits the plane y = v.placeY instead of picking
  *   v.setGhost(corners|null)                  a see-through box (8 viewer-space corners) where an item would go
  *   v.setSection({ axis, offset, flip }|null) section plane (three.js clipping planes); picking skips the cut-away side
+ *   v.setSection({ axis: 'box', box } | { axis: 'box', cells })   section box, or a free-form volume (0.5 WL.1:
+ *                                              section-volume.js — a union of cells with tilted faces and extra planes)
+ *   v.setGrips([{ p, kind }] | null, hover)   section box grips (0.5 WL.2), IFC rel. points; v.gripAt(x, y) → index | -1;
+ *   v.onGrip = (phase 'start'|'move'|'end', index, event) => …   a drag on a grip (orbit and picking stay out of it);
+ *   v.rayIfc(x, y) → { o, d, view }            the pointer's ray in the section box's space (IFC axes, m from the min corner)
+ *   v.setSectionTurn(rad)                      sections square to a building turned in its site (0.5 BM.9): the Front / Side
+ *                                              planes and the box run along axes turned by `rad` about the vertical (the
+ *                                              building's own, IfcPlacer.planRotation); 0 = the model's axes, as before
  *   v.vis.hide(keys) / isolate(keys, {ghost}) / showAll(); v.applyVisibility()   hide, isolate, see-through (ifc-vis.js)
  *   v.select(key | [keys] | null, { also })   highlight one or more elements (+ `also`, lit but not picked); v.selection
  *   v.frameKeys(keys)                          zoom to elements, keeping the view direction
@@ -34,6 +42,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Visibility, batchIndex, batchEdges, edgeIndex, boundsOf, SOLID } from './ifc-vis.js';
 import { KEY_SPAN } from './ifc-model.js';
 import { runOf, runEdges, faceRegion, snapTo } from './measure.js';
+import { cleanVolume, cellPlanes, polyhedron, modelSpec, capSpec, specKey, clipGlsl } from './section-volume.js';
+import { openElements, stencilIndex } from './caps-closed.js';
+import { onMouse } from './input-mouse.js';   // 0.5 IP.1: the input profile's buttons and wheel
+
+const CLIP_EPS = 0.0005;   // m: section planes sit this far outside the kept part (setClip)
 
 const EDGE_LIMIT = 1500000;   // skip edge lines above this many triangles (memory)
 const GHOST_OPACITY = 0.12;   // see-through elements (isolate with see-through others)
@@ -50,6 +63,8 @@ export class Viewer3D {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, stencil: true });
     this.renderer.localClippingEnabled = true;
     this.clip = [];
+    this.clipSpec = null;   // a union of cells (WL.1): which of `clip` belong together; null = keep inside every plane
+    this.clipGroups = null;
     this.caps = [];       // stencil meshes and cap planes while a section shows
     this.capsOn = true;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -58,6 +73,24 @@ export class Viewer3D {
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = false;
     this.controls.screenSpacePanning = true;
+    // the input profile's mouse (Settings › BimCraft › Menus, keys and mouse): buttons → orbit / pan / zoom / nothing,
+    // wheel direction and speed; null buttons = OrbitControls' own (left orbits, middle zooms, right pans)
+    const ACT = { orbit: THREE.MOUSE.ROTATE, pan: THREE.MOUSE.PAN, zoom: THREE.MOUSE.DOLLY, none: -1 };
+    this._mouseOff = onMouse((m) => {
+      const o = m.orbit3d;
+      this.controls.mouseButtons = o ? { LEFT: ACT[o.left], MIDDLE: ACT[o.middle], RIGHT: ACT[o.right] } : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+      this.controls.zoomSpeed = m.zoomSpeed;
+      this._wheelFlip = m.wheel === -1;
+    });
+    // the wheel turned round: a copy of the event with the other sign (a pinch, ctrl+wheel, is never turned round)
+    canvas.addEventListener('wheel', (e) => {
+      if (!this._wheelFlip || e.ctrlKey || e.ccFlipped) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      const f = new WheelEvent('wheel', { deltaX: e.deltaX, deltaY: -e.deltaY, deltaZ: e.deltaZ, deltaMode: e.deltaMode, clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey, bubbles: true, cancelable: true });
+      f.ccFlipped = true;
+      canvas.dispatchEvent(f);
+    }, { capture: true, passive: false });
     this.controls.addEventListener('change', () => this.render());
     this.controls.addEventListener('start', () => this.onUserMove?.());   // e.g. stop a view-cube turn
 
@@ -152,6 +185,7 @@ export class Viewer3D {
     this.box.makeEmpty();
     for (const L of Ls) if (L.group.visible && !L.box.isEmpty()) this.box.union(L.box.clone().applyMatrix4(L.group.matrix));
     if (this.box.isEmpty()) for (const L of Ls) if (L.group.visible) for (const m of L.spaceMeshes) this.box.union(m.geometry.boundingBox.clone().applyMatrix4(L.group.matrix));
+    for (const f of this.extraBoxes || []) { const b = f(); if (b && !b.isEmpty()) this.box.union(b); }   // a point cloud (0.5 SG.1)
   }
 
   /**
@@ -195,15 +229,15 @@ export class Viewer3D {
       geo.computeBoundingSphere();
       const [r, gg, bb, a] = b.color;
       const color = new THREE.Color().setRGB(r, gg, bb, THREE.SRGBColorSpace);
-      const mat = new THREE.MeshLambertMaterial({
-        color, clippingPlanes: this.clip,
+      const mat = this.clipped(new THREE.MeshLambertMaterial({
+        color,
         transparent: b.space || a < 1,
         opacity: b.space ? Math.min(a, 0.25) : a,
         depthWrite: !(b.space || a < 1),
         side: THREE.DoubleSide,
         polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
-      });
-      const ghost = new THREE.MeshLambertMaterial({ color, transparent: true, opacity: GHOST_OPACITY * (b.space ? 0.5 : 1), depthWrite: false, side: THREE.DoubleSide, clippingPlanes: this.clip });
+      }));
+      const ghost = this.clipped(new THREE.MeshLambertMaterial({ color, transparent: true, opacity: GHOST_OPACITY * (b.space ? 0.5 : 1), depthWrite: false, side: THREE.DoubleSide }));
       const mesh = new THREE.Mesh(geo, [mat, ghost]);
       mesh.userData.batch = b;
       mesh.userData.color = color;
@@ -222,8 +256,8 @@ export class Viewer3D {
           eg.setAttribute('position', new THREE.BufferAttribute(ed.positions, 3));
           eg.computeBoundingSphere();
           const lines = new THREE.LineSegments(eg, [
-            new THREE.LineBasicMaterial({ color: this.colors.edge, transparent: true, opacity: 0.55, clippingPlanes: this.clip }),
-            new THREE.LineBasicMaterial({ color: this.colors.edge, transparent: true, opacity: 0.08, depthWrite: false, clippingPlanes: this.clip }),
+            this.clipped(new THREE.LineBasicMaterial({ color: this.colors.edge, transparent: true, opacity: 0.55 })),
+            this.clipped(new THREE.LineBasicMaterial({ color: this.colors.edge, transparent: true, opacity: 0.08, depthWrite: false })),
           ]);
           lines.userData.edges = ed;
           lines.visible = this.edgesOn;
@@ -337,94 +371,143 @@ export class Viewer3D {
    */
   setSection(s) {
     if (this.sectionFrame) { this.sectionFrame.geometry.dispose(); this.sectionFrame.material.dispose(); this.sectionFrame.removeFromParent(); this.sectionFrame = null; }
+    this.clipSpec = null; this.clipGroups = null;
     if (!s || this.box.isEmpty()) { this.section = null; this.setClip([]); this.render(); return; }
-    if (s.axis === 'box') { this.setSectionBox(s.box); return; }
+    if (s.axis === 'box') { this.setSectionBox(s.box, s.cells); return; }
     const k = SECTION_AXES[s.axis] ? s.axis : 'top';
     const { i } = SECTION_AXES[k];
-    const lo = this.box.min.getComponent(i), hi = this.box.max.getComponent(i);
+    // in the section's frame (the model's axes, or turned with the building: secBox / toTurned / fromTurned)
+    const B = this.secBox();
+    const lo = B.min.getComponent(i), hi = B.max.getComponent(i);
     const at = lo + Math.max(0, Math.min(hi - lo, Number(s.offset) || 0));
-    const n = new THREE.Vector3().setComponent(i, s.flip ? 1 : -1);
-    const plane = new THREE.Plane(n, s.flip ? -at : at);   // kept: n·p + c ≥ 0
+    const nT = new THREE.Vector3().setComponent(i, s.flip ? 1 : -1);
+    const onT = new THREE.Vector3().setComponent(i, at);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(this.turnDir(nT), this.fromTurned(onT));   // kept: n·p + c ≥ 0
     this.section = { axis: k, offset: at - lo, flip: !!s.flip, plane };
     this.setClip([plane]);
     // the plane's outline, nudged onto the kept side so the clipping does not eat it
-    const a = this.box.min.clone(), b = this.box.max.clone(), c = [];
+    const a = B.min.clone(), b = B.max.clone(), c = [];
     const j = (i + 1) % 3, l = (i + 2) % 3, eps = (hi - lo) * 1e-4 + 1e-4, put = at + (s.flip ? eps : -eps);
     for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
       const p = new THREE.Vector3();
       p.setComponent(i, put); p.setComponent(j, u ? b.getComponent(j) : a.getComponent(j)); p.setComponent(l, v ? b.getComponent(l) : a.getComponent(l));
-      c.push(p);
+      c.push(this.fromTurned(p));
     }
     this.sectionFrame = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(c), new THREE.LineBasicMaterial({ color: this.colors.pick }));
     this.scene.add(this.sectionFrame);
     this.render();
   }
   /**
-   * Section box (0.4 B4): six planes, everything outside the box is cut away. box = { min: [x, y, z], max: [x, y, z] } in
-   * IFC axes (X east, Y north, Z up), metres from the model's own minimum corner — the page's sliders. Kept: inside all six.
+   * Section box (0.4 B4) and free-form volumes (0.5 WL.1). `{ box }` = one box: { min: [x, y, z], max: [x, y, z] } in
+   * IFC axes (X east, Y north, Z up), metres from the model's own minimum corner — the page's sliders. `{ cells }` = a
+   * union of cells (section-volume.js: each a box with tilted faces and extra planes). Kept: inside any cell.
    */
-  setSectionBox(b) {
-    const lo = this.box.min, hi = this.box.max;
-    // IFC (x, y, z) → viewer (x, z, −y): IFC Y runs along −viewer Z
-    const vmin = [lo.x + b.min[0], lo.y + b.min[2], hi.z - b.max[1]], vmax = [lo.x + b.max[0], lo.y + b.max[2], hi.z - b.min[1]];
-    const planes = [];
-    for (let i = 0; i < 3; i++) {
-      planes.push(new THREE.Plane(new THREE.Vector3().setComponent(i, 1), -vmin[i]));   // keep ≥ min
-      planes.push(new THREE.Plane(new THREE.Vector3().setComponent(i, -1), vmax[i]));   // keep ≤ max
-    }
-    this.section = { axis: 'box', box: { min: [...b.min], max: [...b.max] }, planes, plane: null };
-    this.setClip(planes);
-    // the box's edges, a hair inside (the renderer's planes clip every material, the frame's too)
+  setSectionBox(b, cellsIn) {
+    const cells = cleanVolume(cellsIn || [{ box: b }], this.sizeIfc());
+    const B = this.secBox(), lo = B.min, hi = B.max;
+    // IFC (x, y, z) → viewer (x, z, −y): IFC Y runs along −viewer Z; the outward normal turned round = what is kept
+    // (ifcPoint: in the section's frame, turned with the building when setSectionTurn says so)
+    const P = (p) => this.ifcPoint(p);
+    const planes = [], groups = [], frame = [];
     const e = (hi.x - lo.x + hi.y - lo.y + hi.z - lo.z) * 1e-5 + 1e-4;
-    const a = new THREE.Vector3(vmin[0] + e, vmin[1] + e, vmin[2] + e), c = new THREE.Vector3(vmax[0] - e, vmax[1] - e, vmax[2] - e);
-    const P = (x, y, z) => new THREE.Vector3(x ? c.x : a.x, y ? c.y : a.y, z ? c.z : a.z);
-    const E = [[0, 0, 0, 1, 0, 0], [0, 1, 0, 1, 1, 0], [0, 0, 1, 1, 0, 1], [0, 1, 1, 1, 1, 1], [0, 0, 0, 0, 1, 0], [1, 0, 0, 1, 1, 0], [0, 0, 1, 0, 1, 1], [1, 0, 1, 1, 1, 1], [0, 0, 0, 0, 0, 1], [1, 0, 0, 1, 0, 1], [0, 1, 0, 0, 1, 1], [1, 1, 0, 1, 1, 1]];
-    const pts = E.flatMap(([x0, y0, z0, x1, y1, z1]) => [P(x0, y0, z0), P(x1, y1, z1)]);
-    this.sectionFrame = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: this.colors.pick }));
-    this.scene.add(this.sectionFrame);
+    for (const cell of cells) {
+      const pl = cellPlanes(cell), g = [];
+      for (const q of pl) { g.push(planes.length); planes.push(new THREE.Plane().setFromNormalAndCoplanarPoint(this.turnDir(new THREE.Vector3(-q.n[0], -q.n[2], q.n[1])), P(q.p))); }
+      groups.push(g);
+      // the cell's edges, a hair inside (every plane clips the model; the frame is drawn unclipped over it)
+      const ph = polyhedron(pl);
+      if (!ph.verts.length) continue;
+      const c = ph.verts.reduce((s, v) => s.add(P(v)), new THREE.Vector3()).multiplyScalar(1 / ph.verts.length);
+      const V = ph.verts.map((v) => { const x = P(v), d = c.clone().sub(x); const l = d.length(); return l > e ? x.add(d.multiplyScalar(e / l)) : x; });
+      for (const [a, z] of ph.edges) frame.push(V[a], V[z]);
+    }
+    this.section = { axis: 'box', box: { min: [...cells[0].box.min], max: [...cells[0].box.max] }, cells, planes, groups, plane: null, empty: !frame.length };
+    this.clipGroups = groups;
+    this.clipSpec = cells.length > 1 ? modelSpec(groups) : null;
+    this.setClip(planes);
+    if (frame.length) {
+      this.sectionFrame = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(frame), new THREE.LineBasicMaterial({ color: this.colors.pick }));
+      this.scene.add(this.sectionFrame);
+    }
     this.render();
   }
-  /** The section's planes on every material (the shared array changes in place), then the caps. */
+  /**
+   * A material clipped by the section: `clippingPlanes` is the shared `this.clip`; while the section is a union of cells
+   * (`this.clipSpec`), three.js's own test (inside every plane) is swapped for section-volume.js's (inside any cell).
+   * `spec` = a fixed spec instead (the cut faces).
+   */
+  clipped(mat, spec) {
+    const get = spec === undefined ? () => this.clipSpec : () => spec;
+    if (spec === undefined) mat.clippingPlanes = this.clip;
+    mat.onBeforeCompile = (sh) => { const s = get(); if (s) sh.fragmentShader = sh.fragmentShader.replace('#include <clipping_planes_fragment>', clipGlsl(s)); };
+    mat.customProgramCacheKey = () => specKey(get());
+    return mat;
+  }
+  /** The section's planes on every material (the shared array changes in place), then the caps. Each plane is moved
+   *  CLIP_EPS out of the kept side: a box fitted to the whole model otherwise lies exactly on the outer faces, and the
+   *  depth/stencil tests flicker there (speckled walls); half a millimetre is never seen. */
   setClip(planes) {
     this.clip.length = 0;
-    this.clip.push(...planes);
+    this.clip.push(...planes.map((p) => { const q = p.clone(); q.constant += CLIP_EPS; return q; }));
     this.renderer.clippingPlanes = [];
     for (const m of this.meshes) for (const mat of m.material) mat.needsUpdate = true;
     for (const e of this.edges) for (const mat of e.material) mat.needsUpdate = true;
+    if (this.highlight) this.highlight.material.needsUpdate = true;
     this.updateCaps();
   }
 
   /**
    * Filled cut faces (0.4 B5), the stencil method (three.js webgl_clipping_stencil): for each plane, every solid batch
-   * is drawn twice into the stencil only — back faces add 1, front faces take 1 away, clipped by THAT plane alone — so
-   * the stencil is not 0 where the plane passes through a solid; then a quad on the plane (clipped by the other planes)
-   * paints there in the cut color and the stencil is cleared for the next plane. Needs closed solids, as IFC bodies
-   * are; spaces and see-through elements are left out. The parts share the batch geometry, so hiding follows.
+   * is drawn into the stencil only, clipped by THAT plane alone, flipping the stencil's low bit on every surface it
+   * crosses — so the bit is set where the plane passes through a solid (an odd number of surfaces behind it); then a
+   * quad on the plane (clipped by the other planes) paints there in the cut color and the stencil is cleared for the
+   * next plane. Parity, not front/back counting, so faces pointing the wrong way don't matter.
+   * Only closed elements count (caps-closed.js): an open surface (tree foliage, terrain, a single-sided panel) would set
+   * the bit over its whole outline, and the near cap would paint over it — elements "ghosting" in the cut colour,
+   * depending on the view (Discord, 2026-10-14). Spaces and see-through elements are left out too. The stencil parts
+   * share the batch's vertices with an index of their own, rebuilt here — every visibility change calls updateCaps().
    */
   updateCaps() {
-    for (const o of this.caps) { if (o.userData.capPlane) { o.geometry.dispose(); } for (const m of [].concat(o.material)) m.dispose(); o.removeFromParent(); }
+    for (const o of this.caps) { if (o.userData.capPlane || o.userData.capStencil) { o.geometry.dispose(); } for (const m of [].concat(o.material)) m.dispose(); o.removeFromParent(); }
     this.caps = [];
     if (!this.capsOn || !this.clip.length || this.box.isEmpty()) { this.render(); return; }
     const size = this.box.getSize(new THREE.Vector3()).length() * 2 + 1;
-    const off = new THREE.MeshBasicMaterial({ visible: false });
-    this.clip.forEach((plane, i) => {
+    // Per batch, once: the closed elements' shown triangles, as an index over the batch's own vertices.
+    const parts = [];
+    for (const m of this.meshes) {
+      if (m.userData.space) continue;
+      const b = m.userData.batch;
+      if (b && !b.openIds) b.openIds = openElements(b.positions, b.indices, b.triIds);
+      const idx = m.geometry.index.array;
+      const nSolid = m.userData.nSolid ?? idx.length / 3;
+      const sel = stencilIndex(idx, nSolid, m.userData.triIds, b ? b.openIds : new Set());
+      if (!sel.length) continue;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', m.geometry.getAttribute('position'));
+      geo.setIndex(new THREE.BufferAttribute(sel, 1));
+      parts.push({ m, geo });
+    }
+    const groups = this.clipGroups || [this.clip.map((_, i) => i)];
+    groups.forEach((g, gi) => g.forEach((i) => {
+      const plane = this.clip[i];
       const order = 20 + i * 2;
-      const stencil = (side, op) => new THREE.MeshBasicMaterial({ side, clippingPlanes: [plane], depthWrite: false, depthTest: false, colorWrite: false,
-        stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc, stencilFail: op, stencilZFail: op, stencilZPass: op });
-      const back = stencil(THREE.BackSide, THREE.IncrementWrapStencilOp), front = stencil(THREE.FrontSide, THREE.DecrementWrapStencilOp);
-      for (const m of this.meshes) {
-        if (m.userData.space) continue;
-        for (const mat of [back, front]) {
-          const sm = new THREE.Mesh(m.geometry, [mat, off]);   // group 0 = shown elements; see-through ones (group 1) do not count
-          sm.renderOrder = order;
-          sm.frustumCulled = false;
-          m.parent.add(sm);
-          this.caps.push(sm);
-        }
+      const flip = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, clippingPlanes: [plane], depthWrite: false, depthTest: false, colorWrite: false,
+        stencilWrite: true, stencilWriteMask: 1, stencilFunc: THREE.AlwaysStencilFunc,
+        stencilFail: THREE.InvertStencilOp, stencilZFail: THREE.InvertStencilOp, stencilZPass: THREE.InvertStencilOp });
+      for (const { m, geo } of parts) {
+        const sm = new THREE.Mesh(geo, flip);   // one stencil geometry per batch, shared by every plane's pass
+        sm.userData.capStencil = true;
+        sm.renderOrder = order;
+        sm.frustumCulled = false;
+        m.parent.add(sm);
+        this.caps.push(sm);
       }
-      const capMat = new THREE.MeshBasicMaterial({ color: this.colors.cap, side: THREE.DoubleSide, clippingPlanes: this.clip.filter((p) => p !== plane),
-        stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc, stencilFail: THREE.ReplaceStencilOp, stencilZFail: THREE.ReplaceStencilOp, stencilZPass: THREE.ReplaceStencilOp,
+      // the cut face: on this cell's other planes' kept side and — for a union of cells — in no other cell
+      const cs = groups.length > 1 ? capSpec(groups, gi, i) : null;
+      const capMat = new THREE.MeshBasicMaterial({ color: this.colors.cap, side: THREE.DoubleSide, clippingPlanes: cs ? cs.order.map((k) => this.clip[k]) : this.clip.filter((p) => p !== plane),
+        stencilWrite: true, stencilRef: 0, stencilFuncMask: 1, stencilFunc: THREE.NotEqualStencilFunc, stencilFail: THREE.ReplaceStencilOp, stencilZFail: THREE.ReplaceStencilOp, stencilZPass: THREE.ReplaceStencilOp,
         polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+      if (cs) this.clipped(capMat, cs.spec);
       const cap = new THREE.Mesh(new THREE.PlaneGeometry(size, size), capMat);
       cap.userData.capPlane = true;
       const at = plane.coplanarPoint(new THREE.Vector3()), c = this.box.getCenter(new THREE.Vector3());
@@ -434,7 +517,7 @@ export class Viewer3D {
       cap.onAfterRender = (r) => r.clearStencil();
       this.scene.add(cap);
       this.caps.push(cap);
-    });
+    }));
     this.render();
   }
   setCaps(on) { this.capsOn = !!on; this.updateCaps(); }
@@ -442,14 +525,59 @@ export class Viewer3D {
   /** The model's size along each IFC axis [X, Y, Z] in metres (the section box sliders' range). */
   sizeIfc() {
     if (this.box.isEmpty()) return [0, 0, 0];
-    const s = this.box.getSize(new THREE.Vector3());
+    const s = this.secBox().getSize(new THREE.Vector3());
     return [s.x, s.z, s.y];
   }
+
+  // ---- the section's frame (0.5 BM.9): the model's axes, or turned about the vertical with a building turned in its site ----
+  /** Turn the section frame by `rad` about the vertical through the model's centre (0 = off). The section in use is not
+   *  redrawn here: the page sets it again (its numbers are in the frame). */
+  setSectionTurn(rad = 0) {
+    this.sectionTurn = Number(rad) || 0;
+    this._secBox = null;
+  }
+  /** The model's bounds in the section frame: the box itself when not turned, else the tight bounds of every vertex. */
+  secBox() {
+    if (!this.sectionTurn) return this.box;
+    const key = this.box.min.toArray().concat(this.box.max.toArray()).join() + '|' + this.sectionTurn + '|' + this.meshes.length;
+    if (this._secBox && this._secBoxKey === key) return this._secBox;
+    const bb = new THREE.Box3(), v = new THREE.Vector3();
+    for (const m of [...this.meshes, ...(this.spaceMeshes || [])]) {
+      if (!m.visible && !m.parent?.visible) continue;
+      m.updateMatrixWorld();
+      const pos = m.geometry.getAttribute('position');
+      for (let i = 0; i < pos.count; i++) bb.expandByPoint(this.toTurned(v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld)));
+    }
+    if (bb.isEmpty()) bb.copy(this.box);
+    this._secBox = bb; this._secBoxKey = key;
+    return bb;
+  }
+  /** viewer → the section frame (turned by −sectionTurn about the vertical through the box's centre), and back. */
+  toTurned(p) {
+    if (!this.sectionTurn) return p.clone();
+    const c = this.box.getCenter(new THREE.Vector3()), a = -this.sectionTurn, x = p.x - c.x, z = p.z - c.z;
+    return new THREE.Vector3(c.x + x * Math.cos(a) + z * Math.sin(a), p.y, c.z - x * Math.sin(a) + z * Math.cos(a));
+  }
+  fromTurned(p) {
+    if (!this.sectionTurn) return p.clone();
+    const c = this.box.getCenter(new THREE.Vector3()), a = this.sectionTurn, x = p.x - c.x, z = p.z - c.z;
+    return new THREE.Vector3(c.x + x * Math.cos(a) + z * Math.sin(a), p.y, c.z - x * Math.sin(a) + z * Math.cos(a));
+  }
+  /** A direction from the section frame into the viewer's (and back: unturnDir). */
+  turnDir(d) { if (!this.sectionTurn) return d.clone(); const a = this.sectionTurn; return new THREE.Vector3(d.x * Math.cos(a) + d.z * Math.sin(a), d.y, -d.x * Math.sin(a) + d.z * Math.cos(a)); }
+  unturnDir(d) { if (!this.sectionTurn) return d.clone(); const a = -this.sectionTurn; return new THREE.Vector3(d.x * Math.cos(a) + d.z * Math.sin(a), d.y, -d.x * Math.sin(a) + d.z * Math.cos(a)); }
+  /** A point of the section box's space (IFC axes, m from the frame's minimum corner) in viewer coordinates. */
+  ifcPoint(p) { const B = this.secBox(); return this.fromTurned(new THREE.Vector3(B.min.x + p[0], B.min.y + p[2], B.max.z - p[1])); }
   /** World bounds of elements as a section box in IFC axes from the model's minimum corner, with a margin (metres). */
   boxAround(keys, margin = 0.3) {
-    const bb = this.keyBounds(keys);
+    let bb = this.keyBounds(keys);
     if (!bb || this.box.isEmpty()) return null;
-    const lo = this.box.min, hi = this.box.max, sz = this.sizeIfc();
+    if (this.sectionTurn) {   // the pick's corners in the turned frame (a little loose for a pick that is not square to it)
+      const q = new THREE.Box3();
+      for (const x of [bb.min[0], bb.max[0]]) for (const y of [bb.min[1], bb.max[1]]) for (const z of [bb.min[2], bb.max[2]]) q.expandByPoint(this.toTurned(new THREE.Vector3(x, y, z)));
+      bb = { min: q.min.toArray(), max: q.max.toArray() };
+    }
+    const B = this.secBox(), lo = B.min, hi = B.max, sz = this.sizeIfc();
     const cl = (v, k) => Math.max(0, Math.min(sz[k], v));
     return {
       min: [cl(bb.min[0] - lo.x - margin, 0), cl(hi.z - bb.max[2] - margin, 1), cl(bb.min[1] - lo.y - margin, 2)],
@@ -459,13 +587,65 @@ export class Viewer3D {
   sectionRange(axis) {
     if (this.box.isEmpty()) return [0, 0];
     const { i } = SECTION_AXES[axis] || SECTION_AXES.top;
-    return [0, this.box.max.getComponent(i) - this.box.min.getComponent(i)];
+    const B = this.secBox();
+    return [0, B.max.getComponent(i) - B.min.getComponent(i)];
   }
   /** True when a viewer-space point is on the kept side of the section plane (or there is none). */
   keeps(p) {
     if (!this.section) return true;
     const q = p.isVector3 ? p : new THREE.Vector3(...p);
-    return this.section.planes ? this.section.planes.every((pl) => pl.distanceToPoint(q) >= -1e-6) : this.section.plane.distanceToPoint(q) >= -1e-6;
+    const S = this.section;
+    if (S.groups) return S.groups.some((g) => g.every((i) => S.planes[i].distanceToPoint(q) >= -1e-6));
+    return S.planes ? S.planes.every((pl) => pl.distanceToPoint(q) >= -1e-6) : S.plane.distanceToPoint(q) >= -1e-6;
+  }
+
+  /**
+   * Section box grips (0.5 WL.2): squares a fixed size on screen, over everything, at IFC rel. points (the section box's
+   * space). Faces small, edges a little larger, corners largest; `hover` = the one under the pointer, drawn in the action
+   * colour. null = none.
+   */
+  setGrips(list, hover = -1) {
+    if (this.gripObj) { this.gripObj.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); this.gripObj.removeFromParent(); this.gripObj = null; }
+    this.grips = list && list.length && !this.box.isEmpty() ? list : null;
+    this.gripHover = this.grips ? hover : -1;
+    if (!this.grips) { if (this.canvas.style.cursor === 'move') this.canvas.style.cursor = ''; this.render(); return; }
+    this.gripObj = new THREE.Group();
+    const SIZE = { face: 8, edge: 10, corner: 12 };
+    const action = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue('--action').trim() || '#1d4ed8');
+    for (const kind of ['face', 'edge', 'corner', 'hover']) {
+      const pts = [];
+      this.grips.forEach((g, i) => { if (kind === 'hover' ? i === hover : g.kind === kind && i !== hover) pts.push(...this.ifcPoint(g.p).toArray()); });
+      if (!pts.length) continue;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      const m = new THREE.Points(geo, new THREE.PointsMaterial({ color: kind === 'hover' ? action : this.colors.pick, size: kind === 'hover' ? 14 : SIZE[kind], sizeAttenuation: false, depthTest: false, transparent: true }));
+      m.renderOrder = 30;
+      this.gripObj.add(m);
+    }
+    this.scene.add(this.gripObj);
+    this.render();
+  }
+  /** The grip nearest a page point within `tol` px (corners first when they overlap), or -1. */
+  gripAt(clientX, clientY, tol = 9) {
+    if (!this.grips) return -1;
+    const rank = { corner: 0, edge: 1, face: 2 };
+    let best = -1, bd = Infinity;
+    this.grips.forEach((g, i) => {
+      const s = this.project(this.ifcPoint(g.p).toArray());
+      if (!s) return;
+      const d = Math.hypot(s.x - clientX, s.y - clientY) + rank[g.kind] * 0.5;
+      if (d <= tol + 1 && d < bd) { bd = d; best = i; }
+    });
+    return best;
+  }
+  /** The pointer's ray and the view direction in the section box's space: IFC axes, metres from the model's minimum corner. */
+  rayIfc(clientX, clientY) {
+    const r = this.canvas.getBoundingClientRect(), ray = new THREE.Raycaster();
+    this.camera.updateMatrixWorld();
+    ray.setFromCamera(new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1), this.camera);
+    const B = this.secBox(), lo = B.min, hi = B.max, o = this.toTurned(ray.ray.origin), d = this.unturnDir(ray.ray.direction);
+    const v = this.unturnDir(this.camera.getWorldDirection(new THREE.Vector3()));
+    return { o: [o.x - lo.x, hi.z - o.z, o.y - lo.y], d: [d.x, -d.z, d.y], view: [v.x, -v.z, v.y] };
   }
 
   setEdges(on) {
@@ -500,6 +680,29 @@ export class Viewer3D {
 
   bindPicking() {
     const ray = new THREE.Raycaster();
+    // Section box grips (0.5 WL.2): a press on a grip is caught on the way down (capture on the canvas's parent), so
+    // OrbitControls and the pick below never see it; the drag then follows the window until the button is let go.
+    this.canvas.parentElement.addEventListener('pointerdown', (e) => {
+      if (!this.grips || !this.onGrip || e.button !== 0 || e.target !== this.canvas || this.walk || this.measuring || this.placing) return;
+      const i = this.gripAt(e.clientX, e.clientY, e.pointerType === 'touch' ? 16 : 9);
+      if (i < 0) return;
+      e.stopPropagation(); e.preventDefault();
+      const id = e.pointerId;
+      const move = (ev) => { if (ev.pointerId === id) this.onGrip('move', i, ev); };
+      const up = (ev) => {
+        if (ev.pointerId !== id) return;
+        window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerup', up, true); window.removeEventListener('pointercancel', up, true);
+        this.onGrip('end', i, ev);
+      };
+      window.addEventListener('pointermove', move, true); window.addEventListener('pointerup', up, true); window.addEventListener('pointercancel', up, true);
+      this.onGrip('start', i, e);
+    }, true);
+    this.canvas.addEventListener('pointermove', (e) => {
+      if (!this.grips || e.buttons) return;
+      const i = this.gripAt(e.clientX, e.clientY);
+      this.canvas.style.cursor = i >= 0 ? 'move' : '';
+      if (i !== this.gripHover) this.setGrips(this.grips, i);
+    });
     // Touch (0.4 S.8): OrbitControls turns one finger into orbit and two into pinch + pan. A tap picks (10 px of slack
     // for a finger, 4 px for a mouse); a gesture that ever had two fingers never picks; a long press (LONG_MS, no move)
     // adds the element to the pick or takes it out, as Ctrl+click does.
@@ -658,7 +861,18 @@ export class Viewer3D {
     const ray = new THREE.Raycaster();
     ray.setFromCamera(ndc, this.camera);
     const h = ray.intersectObjects(this.meshes.filter((m) => this.isShown(m)), false).find((x) => x.faceIndex < x.object.userData.nSolid && this.keeps(x.point));
+    // a point cloud's drawn point (0.5 SG.1, this.cloudSnap = pointcloud-three.js pick) wins over a face, unless the
+    // model is in front of it; a model corner or edge in reach still wins over the cloud
+    const cp = this.cloudSnap?.(clientX, clientY) || null;
+    if (cp && (!h || cp.dist <= h.distance + 0.02)) {
+      const r = h ? this.measureAt0(h, clientX, clientY) : null;
+      if (r && r.snap !== 'face') return r;
+      return { key: r?.key ?? null, point: cp.point, snap: 'cloud', face: r?.face ?? null };
+    }
     if (!h) return null;
+    return this.measureAt0(h, clientX, clientY);
+  }
+  measureAt0(h, clientX, clientY) {
     const m = h.object, b = m.userData.batch, key = m.userData.triIds[h.faceIndex];
     const run = runOf(b, key);
     if (run < 0) return null;
@@ -942,11 +1156,10 @@ export class Viewer3D {
     if (!pos.length) { this.render(); return; }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    this.highlight = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-      clippingPlanes: this.clip,
+    this.highlight = new THREE.Mesh(geo, this.clipped(new THREE.MeshBasicMaterial({
       color: this.colors.pick, transparent: true, opacity: 0.7, side: THREE.DoubleSide,
       depthTest: true, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-    }));
+    })));
     this.highlight.renderOrder = 10;
     this.scene.add(this.highlight);
     this.render();

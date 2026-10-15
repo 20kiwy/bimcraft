@@ -76,6 +76,11 @@
  * open model, a search set, everything), a tolerance, Run; results deepest first; one isolates the pair, see-through the
  * rest, and can become an issue.
  *
+ * Draw (0.5 part 3, track BM; model-ui.js and the model-*.js modules, map docs/apps/bimcraft-model.md): the toolbar's Draw
+ * shows the plan of a level beside the 3D view, with walls, doors, windows, floors, ceilings, roofs, rooms, the Levels
+ * panel, schedules, dimensions and a PDF of the plan — all written into the open IFC through IfcEditor.modelChange. Hooks
+ * here: modelUi.opened / stage / rebuilding / rebuilt / picked / decorate / edit (search "modelUi").
+ *
  * Strings added since 0.4 come from lang/en.json through t() (i18n.js, docs/LANG.md).
  *
  * Every string that comes from a file reaches the page through el() (text nodes), never
@@ -85,7 +90,12 @@ import * as WebIFC from './ifc/api.js';   // cc-ifc, our own IFC engine (0.4 I.1
 import { t, has } from './i18n.js';
 import { IfcModel, keyOf, KEY_SPAN } from './ifc-model.js';
 import { IfcEditor } from './ifc-edit.js';
+import { newBuilding, stackLevels, levelsProblem } from './new-model.js';   // 0.5 part 3: File › New building
+import { mountModel } from './model-ui.js';   // 0.5 part 3, track BM: Draw (plan view, walls, levels)
+import { mountRes } from './res-ui.js';   // 0.5 part 4, track RC: the residential tools in the plan (roof planes, …)
+import { parseLength } from './libitem.js';
 import { readRevit, isOleFile } from './rvt-reader.js';
+import { previewSupport, convertRevit } from './rvt-convert.js';   // 0.5 SG.8 (b): RVT preview, lab only (ui.inc data-rvt-preview)
 import { Viewer3D } from './viewer3d.js';
 import { compileDrawing, UNITS } from './dwg-compile.js';
 import { mountViewCube, mountAxisIcon } from './m3d/viewcube.js';
@@ -94,6 +104,7 @@ import { cameraCubeOptions } from './m3d/viewcube-camera.js';
 import { DrawingView } from './dwg-view.js';
 import { equipmentList, equipmentCsv } from './dwg-equipment.js';
 import { entityRows, attributeRows } from './dwg-props.js';
+import { dynamicDefs, dynamicOf, dynamicSummary } from './dwg-dynamic.js';   // 0.5 DB.11
 import { renderEquipment } from './equip-view.js';
 import { scanFolder, resolveLink } from './folder-scan.js';
 import { canPickFolder, pickFolder, fromHandle, fromInput, dropEntries, dropFolderHandle, fromDropEntries,
@@ -105,14 +116,16 @@ import { fromViewer, toViewer, snapToWall, PSETS } from './ifc-place.js';
 import { sendHandoff } from './handoff.js';
 import { getHost } from "./host.js";
 import { Autosave } from "./app-autosave.js";
-import { CLIP_KEY, placementClip, elementsClip, readClip, writeClip, libKey, boxFromItem, boxFromEquipment, ghostItem,
-  besideSpot, pickStorey, elementText } from './clipboard.js';
+import { CLIP_KEY, placementClip, elementsClip, pasteMove, readClip, writeClip, libKey, boxFromItem, boxFromEquipment, ghostItem,
+  besideSpot, pickStorey, elementText, elementCsv } from './clipboard.js';
 import { boundsOf } from './ifc-vis.js';
+import { cleanVolume, FACE_AXES, MAX_CELLS, MAX_PLANES, MAX_TILT, planeFromPoint, boxGrips, dragDelta, dragBox } from './section-volume.js';
 import { inv4, placementMatrix } from './ifc-util.js';
 import { distance, ifcDelta, fmtLength, fmtArea } from './measure.js';
+import { readGeoref, fileToMap, siteLonLat, datumOf, dms, viewerToFile } from './ifc-geo.js';
 import { writeBcf, readBcf, newGuid, toIfcPoint, toIfcDir, fromIfcPoint, fromIfcDir } from './bcf.js';
 import { buildTree, leaves } from './ifc-tree.js';
-import { propertyIndex, colorBy, CATEGORICAL } from './ifc-props.js';
+import { propertyIndex, colorBy, CATEGORICAL, schemeOf, readScheme, applyScheme } from './ifc-props.js';
 import { compareModels, compareCsv } from './ifc-compare.js';
 import { parseTasks, matchTasks, statusAt, span, templateCsv, dayText } from './ifc-4d.js';
 import { find, cleanSets, suggestions, OPS, SETS_KEY } from './ifc-find.js';
@@ -121,6 +134,7 @@ import { runChecks, cleanRules } from './ifc-checks.js';
 import { totals, totalsCsv, quantityFields, MAX_GROUP, elementRows, spaceSchedule, tableCsv } from './ifc-qto.js';
 import { TreeView } from './tree-view.js';
 import { bimTools } from './bim-agent.js';
+import { startAddons } from './addons/bimcraft-api.js';   // 0.5 AO.7 (session addons' module; manifest "addons": "own")
 
 /** The library needs getcadcraft.com's API: off in the self-hosted browser edition (devshell `#cc-edition` {library: false}). */
 const libraryOn = (() => { try { const ed = JSON.parse(document.getElementById('cc-edition')?.textContent || 'null'); return !ed || ed.library !== false; } catch { return true; } })();
@@ -132,6 +146,7 @@ if (root) root.addEventListener('pointerdown', (e) => { if (e.pointerType === 't
 
 function init(root) {
   const $ = (s) => root.querySelector(s);
+  let addons = null;   // 0.5 AO.7: the add-on API's handle once startAddons() resolves (search "Add-ons")
   const ui = {
     file: $('[data-file]'), folderInput: $('[data-folder-input]'), recent: $('[data-recent]'), recentList: $('[data-recent] ul'), drop: $('[data-drop]'), veil: $('[data-dropveil]'),   // i18n-ignore: selectors
     status: $('[data-status]'), empty: $('[data-empty]'), toolbar: $('[data-toolbar]'),
@@ -148,7 +163,7 @@ function init(root) {
     qtoSec: $('[data-qto-sec]'), qto: $('[data-qto]'), qtoDetails: $('[data-qto-details]'),
     checksSec: $('[data-checks-sec]'), checks: $('[data-checks]'), checksDetails: $('[data-checks-details]'),
     clashSec: $('[data-clash-sec]'), clash: $('[data-clash]'), clashDetails: $('[data-clash-details]'),
-    library: $('[data-library]'), color: $('[data-color]'), findSec: $('[data-find-sec]'), find: $('[data-find]'), findDetails: $('[data-find-details]'), issues: $('[data-issues]'), bcfInput: $('[data-bcf-input]'),
+    library: $('[data-library]'), color: $('[data-color]'), colorInput: $('[data-color-input]'), findSec: $('[data-find-sec]'), find: $('[data-find]'), findDetails: $('[data-find-details]'), issues: $('[data-issues]'), bcfInput: $('[data-bcf-input]'),
     cmp: $('[data-compare]'), cmpDetails: $('[data-compare-details]'),
     modelsSec: $('[data-models-sec]'), modelList: $('[data-model-list]'), modelInput: $('[data-model-input]'), placebar: $('[data-placebar]'), ifcEquip: $('[data-ifc-equip]'),
   };
@@ -156,6 +171,7 @@ function init(root) {
   let viewer = null;       // Viewer3D, created on the first IFC
   let busy = false;
   let previewUrl = null;
+  let rvtOpen = null;      // the RVT/RFA on the card: { file, path, info } (the lab preview converts it)
   let pickToken = 0;
   let folder = null;       // { scan, index } while a folder is open
   let editor = null;       // IfcEditor for the open IFC
@@ -176,6 +192,10 @@ function init(root) {
   let placing = null;      // { entry, rot, snap, faces, at } while placing an item
   let swapTarget = null;   // { id, name } after "Swap item…"
   let modelTag = '';       // this open IFC's session tag: a clip copied from it can be pasted "like" its source
+  let modelUi = null;      // Draw (0.5 track BM, model-ui.js): mounted at the end of init
+  let pc = null;           // point clouds (0.5 SG.1): cloud-ui.js, made on the first cloud
+  let bimMaps = null;      // map layers on the ground (0.5 SG.3): maps-bim.js, made on first use
+  const CLOUD_RE = /\.(las|laz|xyz|pts)$/i;
   let selInfo = null;      // { id, p (IfcModel.properties), placement (bool) } for the picked element
   const libItems = new Map();   // libKey → { item, meta } placed, swapped in or updated in this tab (Paste in another model)
 
@@ -202,7 +222,11 @@ function init(root) {
   //   snap    wall snap is on when placing or pasting starts               default off
   const SMALL_MODEL = 300000;
   //   corner  the corner indicator in the 3D views (IFC and a drawing in 3D): cube / axes / none   default cube
-  const SET_DEFAULTS = { spaces: false, edges: 'on', view: 'iso', snap: false, corner: 'cube' };
+  //   boxMargin  room "Section box round the pick" leaves round the pick, mm 0–5000 (0.5 WL.2)   default 300
+  //   geoCrs  latitude / longitude in Measure › Location: an EPSG code (geographic), or 'file' = the file's own datum (WL.4)
+  const SET_DEFAULTS = { spaces: false, edges: 'on', view: 'iso', snap: false, corner: 'cube', boxMargin: 300, geoCrs: '4326' };
+  const okMargin = (v) => Number.isFinite(v) && v >= 0 && v <= 5000;
+  const GEO_CRS = ['4326', 'file', '4258', '4269', '4283', '7844', '4167', '6668', '4490'];
   const settings = { ...SET_DEFAULTS, assistants: { enabled: false, groups: ['read'] } };
   // 0.4 X.7: assistants (AGENTS-SPEC §7): off unless the person turned them on; groups read and edit (BimCraft has no others)
   function readAssist(v) {
@@ -216,6 +240,8 @@ function init(root) {
     if (['iso', 'top', 'front', 'side'].includes(v.view)) settings.view = v.view;
     if (typeof v.snap === 'boolean') settings.snap = v.snap;
     if (['cube', 'axes', 'none'].includes(v.corner)) settings.corner = v.corner;
+    if (okMargin(v.boxMargin)) settings.boxMargin = v.boxMargin;
+    if (GEO_CRS.includes(v.geoCrs)) settings.geoCrs = v.geoCrs;
     readAssist(v);
   } catch (e) { /* private window or a damaged value: the defaults */ }
   window.bimcraftSettings = settings;   // for tests and the console
@@ -228,6 +254,8 @@ function init(root) {
     f('bcView').forEach((i) => { i.checked = i.value === settings.view; });
     f('bcSnap').forEach((i) => { i.checked = settings.snap; });
     f('bcCorner').forEach((i) => { i.checked = i.value === settings.corner; });
+    f('bcBoxMargin').forEach((i) => { i.value = String(settings.boxMargin); });
+    f('bcGeoCrs').forEach((i) => { i.value = settings.geoCrs; });
     const as = settings.assistants;
     f('bcAssist').forEach((i) => { i.checked = as.enabled; });
     f('bcAssistRead').forEach((i) => { i.checked = as.groups.includes('read'); i.disabled = !as.enabled; });
@@ -246,6 +274,8 @@ function init(root) {
         if (['iso', 'top', 'front', 'side'].includes(v.view)) settings.view = v.view;
         if (typeof v.snap === 'boolean') settings.snap = v.snap;
         if (['cube', 'axes', 'none'].includes(v.corner)) settings.corner = v.corner;
+        if (okMargin(v.boxMargin)) settings.boxMargin = v.boxMargin;
+        if (GEO_CRS.includes(v.geoCrs)) settings.geoCrs = v.geoCrs;
         readAssist(v);
       } catch (e) { /* keep what this tab has */ }
       syncSettingsForm();
@@ -258,6 +288,12 @@ function init(root) {
       else if (t.name === 'bcView') settings.view = t.value;
       else if (t.name === 'bcSnap') settings.snap = t.checked;
       else if (t.name === 'bcCorner') { settings.corner = t.value; applyCorner(); }
+      else if (t.name === 'bcBoxMargin') {
+        const v = Math.round(Number(t.value));
+        if (t.value.trim() === '' || !okMargin(v)) { t.value = String(settings.boxMargin); return; }
+        settings.boxMargin = v;
+      }
+      else if (t.name === 'bcGeoCrs') { if (!GEO_CRS.includes(t.value)) return; settings.geoCrs = t.value; }
       else if (t.name === 'bcAssist' || t.name === 'bcAssistRead' || t.name === 'bcAssistEdit') {
         const as = settings.assistants, on = (n) => settingsDlg.querySelector('[name="' + n + '"]')?.checked;
         if (t.name === 'bcAssist') { as.enabled = t.checked; if (t.checked && !as.groups.length) as.groups = ['read']; }
@@ -300,11 +336,62 @@ function init(root) {
     ui.file.value = '';
     if (f) guard(() => open(f, null));
   });
+  // ---- New building (0.5 part 3, BM.2 start; owner 2026-10-14) ----
+  // A blank IFC4 model (project, site, building, levels; new-model.js) opened like any file: items can be placed from the
+  // Library, and Save as IFC writes it under its own name. Walls, doors and windows are track BM's next items.
+  const metricDefault = !/^en-(US|LR|MM)$/i.test(navigator.language || 'en-US');
+  async function askNewBuilding() {
+    if (await keepEdits()) return;
+    const field = (label, input, hint) => el('label', { className: 'bc-new-field' }, el('span', {}, label), input, hint ? el('span', { className: 'bc-sub' }, hint) : null);
+    const name = el('input', { type: 'text', value: t('new.default.name'), maxLength: 120, required: true, 'data-new-name': '' });
+    const count = el('input', { type: 'number', value: '2', min: '1', max: '200', step: '1', required: true, 'data-new-levels': '' });
+    const height = el('input', { type: 'text', value: metricDefault ? '3000 mm' : "10'-0\"", required: true, 'data-new-height': '' });   // i18n-ignore: a length
+    const err = el('p', { className: 'bc-new-err', role: 'alert' });
+    const result = await new Promise((done) => {
+      const dlg = el('dialog', { className: 'bc-dialog bc-new', 'aria-labelledby': 'bc-new-h' },
+        el('form', { method: 'dialog', noValidate: true },
+          el('h2', { className: 'bc-h', id: 'bc-new-h' }, t('new.title')),
+          el('p', {}, t('new.lede')),
+          field(t('new.name'), name),
+          field(t('new.levels'), count),
+          field(t('new.height'), height, t('new.height.hint')),
+          err,
+          el('p', { className: 'bc-lib-actions' },
+            el('button', { type: 'submit', className: 'btn-plot btn-sm-cc', value: 'ok', 'data-new-ok': '' }, t('new.create')),
+            el('button', { type: 'submit', className: 'btn-line btn-sm-cc', value: 'cancel', formNoValidate: true }, t('dialog.cancel')))));
+      const read = () => {
+        const n = Math.round(Number(count.value)), h = parseLength(height.value, metricDefault ? 1 : 304.8);
+        const levels = Number.isFinite(n) && n >= 1 ? stackLevels(n, h, (i) => t('new.level', { n: i + 1 })) : [];
+        const bad = !name.value.trim() ? 'new.err.name' : levelsProblem(levels);
+        return { bad, levels, name: name.value.trim() };
+      };
+      dlg.querySelector('form').addEventListener('submit', (e) => {
+        if (e.submitter?.value !== 'ok') return;
+        const r = read();
+        if (r.bad) { e.preventDefault(); err.textContent = t(r.bad); return; }
+        dlg.result = r;
+      });
+      dlg.addEventListener('close', () => { dlg.remove(); done(dlg.returnValue === 'ok' ? dlg.result : null); });
+      document.body.append(dlg);
+      dlg.showModal();
+      name.select();
+    });
+    if (!result) return;
+    const fileName = result.name.replace(/[\\/:*?"<>|]+/g, '-') + '.ifc';   // i18n-ignore: a file name
+    const text = newBuilding({ name: result.name, siteName: t('new.site'), levels: result.levels, fileName, version: document.querySelector('[data-bimcraft]')?.dataset.version || '' });
+    const data = new TextEncoder().encode(text);
+    await openIfc(data, new File([data], fileName, { type: 'application/x-step' }), null);
+    editor.isNew = true;   // unsaved until Save as IFC writes it (keepEdits, autosave and Save treat it like edits)
+    renderChanges();
+    status(t('new.done', { name: result.name, n: result.levels.length }));
+    modelUi?.show(true);   // a new building opens with its plan, ready to draw
+  }
+  root.querySelectorAll('[data-new]').forEach((b) => b.addEventListener('click', () => guard(askNewBuilding)));
   // Files through the host adapter (host.js, W2.19): on the desktop the picker is the native dialog (the file keeps its
   // path), a double-clicked file opens at launch or while running; in the browser the same input as before.
   const fileHost = getHost({ app: 'bimcraft' });
   const IFC_TYPES = [{ description: 'IFC', extensions: ['.ifc'] }];   // i18n-ignore: a file type label the OS shows
-  const OPEN_TYPES = [{ description: 'IFC, RVT, RFA, DWG, DXF', extensions: ['.ifc', '.rvt', '.rfa', '.rte', '.rft', '.dwg', '.dxf', '.pln', '.pla', '.tpl', '.bpn'] }];   // i18n-ignore: OS file types
+  const OPEN_TYPES = [{ description: 'IFC, RVT, RFA, DWG, DXF, LAS, LAZ', extensions: ['.ifc', '.rvt', '.rfa', '.rte', '.rft', '.dwg', '.dxf', '.pln', '.pla', '.tpl', '.bpn', '.las', '.laz', '.xyz', '.pts'] }];   // i18n-ignore: OS file types
   const openHost = async (hf) => {
     if (!hf) return;
     const blob = await hf.file();
@@ -337,6 +424,16 @@ function init(root) {
   } });
   fileHost.onOpenFiles((files) => guard(() => openHost(files[0])));
   fileHost.launchFiles().then((files) => { if (files[0]) guard(() => openHost(files[0])); });
+  // Studio Live (0.5 LV.21, live.js): the open model for the adapter; `live` = the session's adapter while one runs
+  window.bimcraftLive = {
+    live: null,
+    get editor() { return editor; }, get name() { return ifcName; },
+    open: (bytes, name) => { window.bimcraftLive.joining = true; return guard(() => openIfc(bytes, new File([bytes], name, { type: 'application/x-step' }))); },
+    refresh: (geometry) => { if (!editor) return; if (geometry) guard(() => rebuild(null)); else afterEdit(); },
+    status: (m) => status(m),
+  };
+  // …and from a link (#live=<code> on a host's LAN page, ?live=<ROOM>#<secret> from an invite): join; the model comes from the host
+  if (/[#&]live=|[?&]live=/.test(location.hash + location.search)) import('./live.js').then((m) => m.joinFromPage(window.bimcraftLive, fileHost), (err) => status(err.message, true));
   ui.folderInput.addEventListener('change', () => {
     const picked = fromInput(ui.folderInput.files);
     ui.folderInput.value = '';
@@ -394,7 +491,7 @@ function init(root) {
 
   /** Unsaved edits? Ask before replacing the model. */
   /** Unsaved work in this editor: edits, or a model recovered from an autosaved copy (its edits are inside it). */
-  const unsavedIn = (ed) => !!(ed && (ed.dirty || ed.recovered));
+  const unsavedIn = (ed) => !!(ed && (ed.dirty || ed.recovered || ed.isNew));
   const anyDirty = () => models.some((m) => unsavedIn(m.editor)) || unsavedIn(editor);
   /** Unsaved edits (in `only`, or any open model)? Ask first. → true = cancel what was asked. */
   const keepEdits = async (only = null) => {
@@ -436,6 +533,8 @@ function init(root) {
 
   /** Open one file. `path` is its place in the open folder (null for a file opened on its own). */
   async function open(file, path) {
+    if (addons?.importerFor(file.name)) { await addons.openFromAddon(file); return; }   // 0.5 AO.7: an add-on reads it into IFC
+    if (CLOUD_RE.test(file.name)) { await openCloud(file); return; }   // 0.5 SG.1 (a LAS under another name: see the last branch)
     if (await keepEdits()) return;
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     status(t('open.reading', { file: file.name, size: bytes(file.size) }));
@@ -451,6 +550,8 @@ function init(root) {
       throw Object.assign(new Error(t('open.pln', { name: file.name })), { userFacing: true });   // 0.4 track N: not read yet; help pln-project-files
     } else if (ext === 'ifczip' || ext === 'ifcxml') {
       throw new Error(t('open.unsupported', { ext: '.' + ext }));
+    } else if (startsWith(head, 'LASF')) {
+      await openCloud(file);   // a LAS / LAZ point cloud with another extension
     } else {
       throw new Error(t('open.unknown', { name: file.name }));
     }
@@ -487,6 +588,20 @@ function init(root) {
     ui.props.replaceChildren(el('p', { className: 'bc-muted' }, t('folder.hint')));
   }
 
+  /** The 3D view, made on the first IFC model or point cloud. */
+  function ensureViewer() {
+    if (viewer) return viewer;
+    ui.canvasWrap.hidden = false;
+    viewer = new Viewer3D(ui.canvas, { onPick: (key) => { afterPick(); if (viewer.selection.size > 1) showMany(); else showProps(key); } });
+    ui.canvas.viewer = viewer;   // for tests and the console
+    // web-ifc hands the viewer Y-up coordinates: the adapter turns them so the cube's Top is the model's top
+    const ci = addCorner(ui.canvasWrap, threeCubeOptions({ camera: () => viewer.camera, controls: () => viewer.controls, render: () => viewer.render(), home: () => viewer.view('iso'), yUp: true }));
+    viewer.onRender = () => { ci.update(); placeMeasureLabels(); };
+    viewer.onUserMove = ci.stop;
+    viewer.onGrip = (phase, i, e) => onBoxGrip(phase, i, e);   // section box grips (0.5 WL.2)
+    ui.canvas.cube = ci.c;   // for tests
+    return viewer;
+  }
   // ---- IFC ----
   async function openIfc(data, file, path) {
     if (!ifc) {
@@ -494,16 +609,7 @@ function init(root) {
       await frame();
       ifc = await IfcModel.create(WebIFC);
     }
-    if (!viewer) {
-      ui.canvasWrap.hidden = false;
-      viewer = new Viewer3D(ui.canvas, { onPick: (key) => { afterPick(); if (viewer.selection.size > 1) showMany(); else showProps(key); } });
-      ui.canvas.viewer = viewer;   // for tests and the console
-      // web-ifc hands the viewer Y-up coordinates: the adapter turns them so the cube's Top is the model's top
-      const ci = addCorner(ui.canvasWrap, threeCubeOptions({ camera: () => viewer.camera, controls: () => viewer.controls, render: () => viewer.render(), home: () => viewer.view('iso'), yUp: true }));
-      viewer.onRender = () => { ci.update(); placeMeasureLabels(); };
-      viewer.onUserMove = ci.stop;
-      ui.canvas.cube = ci.c;   // for tests
-    }
+    ensureViewer();
     status(t('ifc.reading'));
     await frame();
     const t0 = performance.now();
@@ -511,6 +617,8 @@ function init(root) {
     for (const m of models.slice(1)) m.ifc.close();   // a new file: the scene starts again with this one model
     for (const m of models) m.asDoc?.close();          // … and the old models' recovery copies go (kept or discarded on purpose)
     models.length = 0;
+    const lv = window.bimcraftLive?.live;   // Studio Live: another file opened here ends the session for this window; a joiner's snapshot doesn't
+    if (lv && !window.bimcraftLive.joining) lv.client?.leave(); else lv?.reloading();
     model = await ifc.load(data, (done, total) => { status(t('ifc.building', { done, total })); });
     refC = [...ifc.api.GetCoordinationMatrix(model.modelID)];
     await frame();
@@ -532,8 +640,11 @@ function init(root) {
     models.push({ mi: 0, ifc, model, editor, name: file.name, size: file.size, file, tag: modelTag, offset: [0, 0, 0], visible: true });
     active = models[0];
     viewer.setModelMatrix(0, placementOf(models[0]));
+    pc?.modelChanged();   // an open point cloud is placed again against the new model
+    if (bimMaps || hasSavedMaps()) ensureMaps().then((m) => m.modelChanged(), () => {});   // map layers on the ground (SG.3)
     renderModels();
     selected = null;
+    if (window.bimcraftLive?.joining) { window.bimcraftLive.joining = false; window.bimcraftLive.live?.loaded(); }
     renderChanges();
     fillIfcInfo(model, file);
     ui.back.hidden = !fromFolder(path);
@@ -567,6 +678,7 @@ function init(root) {
     toolButton('edges').title = viewer.edgesAvailable ? t('edges.title') : t('edges.title.off');
     syncEdit();
     status(t('ifc.opened', { file: file.name, n: model.elements, count: num(model.elements), s: ((performance.now() - t0) / 1000).toFixed(1) }), false, true);
+    modelUi?.opened();
   }
 
   function fillIfcInfo(model, file) {
@@ -655,7 +767,7 @@ function init(root) {
     treeView.reveal([...viewer.selection]);
   }
   /** After any change of the pick: the Show menu's states and the tree's marks follow. */
-  function afterPick() { syncVis(); if (tree) treeView.reveal([...viewer.selection]); if (qtoScope === 'pick') renderQto(); }
+  function afterPick() { syncVis(); if (tree) treeView.reveal([...viewer.selection]); if (qtoScope === 'pick') renderQto(); modelUi?.picked(); }
   window.bimcraftTree = () => ({ tree, view: treeView });   // for tests
 
   // ---- Find (0.4 B14) ----
@@ -1118,7 +1230,51 @@ function init(root) {
 
   // ---- Issues: BCF (0.4 B9) ----
   let issues = [], issueForm = false, currentIssue = null, guidKeys = null;
-  const authorOf = () => { try { return localStorage.getItem('bimcraft.author') || ''; } catch (e) { return ''; } };
+  // Your name on issues (0.5 SI.9): signed in, it is your account's (fileHost.account()) with nothing to type; a name typed in
+  // Settings › BimCraft or in the issue form wins until it is cleared. Signed out: the form's name box, as before.
+  const typedAuthor = () => { try { return localStorage.getItem('bimcraft.author') || ''; } catch (e) { return ''; } };
+  const accountName = () => { const a = fileHost.account(); return a && typeof a.name === 'string' ? a.name.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 120) : ''; };
+  const authorOf = () => typedAuthor() || accountName();
+  /** A name typed for issues: kept unless it is the account's own (or empty: the account's from then on). */
+  const keepAuthor = (v) => {
+    try { if (!v || v === accountName()) localStorage.removeItem('bimcraft.author'); else localStorage.setItem('bimcraft.author', v); } catch (err) { /* this tab keeps it */ }
+  };
+  // Settings › BimCraft › Your name on issues: "From your account (<name>)" + "Use another name", or the typed name
+  let authorOther = false;
+  function syncAuthorForm() {
+    const box = settingsDlg && settingsDlg.querySelector('[data-bc-author-set]');
+    if (!box) return;
+    const acc = accountName(), typed = typedAuthor(), other = !!typed || authorOther;
+    const input = box.querySelector('[name="bcAuthor"]');
+    if (input && document.activeElement !== input) input.value = typed;
+    const from = box.querySelector('[data-bc-author-account]');
+    if (from) from.hidden = !acc;
+    const line = box.querySelector('[data-bc-author-from]');
+    if (line) line.textContent = acc ? t('set.author.account', { name: acc }) : '';
+    const ob = box.querySelector('[data-bc-author-other]');
+    if (ob) ob.hidden = other;
+    const row = box.querySelector('[data-bc-author-row]');
+    if (row) row.hidden = !!acc && !other;
+    const mine = box.querySelector('[data-bc-author-mine]');
+    if (mine) mine.hidden = !acc || !other;
+  }
+  if (settingsDlg) {
+    new MutationObserver(() => { if (settingsDlg.open) { authorOther = false; syncAuthorForm(); } }).observe(settingsDlg, { attributes: true, attributeFilter: ['open'] });
+    settingsDlg.addEventListener('change', (e) => {
+      if (e.target.name !== 'bcAuthor') return;
+      const v = e.target.value.trim().slice(0, 120);
+      keepAuthor(v);
+      if (!v) authorOther = false;
+      syncAuthorForm();
+      status(v && v !== accountName() ? t('set.author.done', { name: v }) : accountName() ? t('set.author.account.done', { name: accountName() }) : t('set.author.cleared'));
+    });
+    settingsDlg.addEventListener('click', (e) => {
+      if (e.target.closest('[data-bc-author-other]')) { authorOther = true; syncAuthorForm(); settingsDlg.querySelector('[name="bcAuthor"]')?.focus(); }
+      else if (e.target.closest('[data-bc-author-mine]')) { keepAuthor(''); authorOther = false; syncAuthorForm(); status(t('set.author.account.done', { name: accountName() })); }
+    });
+  }
+  fileHost.on('account', () => { syncAuthorForm(); if (issueForm) renderIssues(); });
+  syncAuthorForm();
   // i18n-ignore: the TopicStatus values written to the file; their labels come from the language file
   const STATUSES = [['Open', 'bcf.st.open'], ['In progress', 'bcf.st.progress'], ['Closed', 'bcf.st.closed']];
   /** GlobalId → key over every open model (built on first use, again after edits). */
@@ -1138,7 +1294,9 @@ function init(root) {
     const v = viewer.vis;
     const guids = (keys) => [...keys].map(guidOf).filter(Boolean);
     const visibility = v.isolated ? { defaultVisible: false, exceptions: guids(v.isolated) } : { defaultVisible: true, exceptions: guids(v.hidden) };
-    const clipping = (viewer.clip || []).map((pl) => {
+    // BCF holds one convex cut: a free-form volume of several boxes keeps its first (WL.1; the issue form says so)
+    const S = viewer.section, planes = S?.groups?.length > 1 ? S.groups[0].map((i) => viewer.clip[i]) : (viewer.clip || []);
+    const clipping = planes.map((pl) => {
       const at = pl.normal.clone().multiplyScalar(-pl.constant).toArray();   // the plane's point nearest the origin
       return { location: toIfcPoint(C, at), direction: toIfcDir(C, pl.normal.clone().negate().toArray()) };   // BCF: towards the side cut away
     });
@@ -1182,12 +1340,24 @@ function init(root) {
     renderIssues();
     status(t('bcf.shown', { title: tp0.title || t('bcf.untitled') }) + (missing ? ' ' + t('bcf.missing', { n: missing }) : '') + (clipNote ? ' ' + clipNote : ''));
   }
-  /** One plane, or six making a box, along the model's axes → BimCraft's section plane or box. → false when they do not line up. */
+  /**
+   * One plane, or six making a box, along the model's axes → BimCraft's section plane or box. Any other set of planes (up to
+   * MAX_PLANES, tilted or not) → a section volume: the whole model's box cut by those planes (WL.1). → false when too many.
+   */
   function applyBcfClipping(planes, C) {
     const vplanes = planes.map((p) => ({ at: fromIfcPoint(C, p.location), n: fromIfcDir(C, p.direction).map((x) => -x) }));   // n: towards what is kept
     const axisOf = (n) => { const a = n.map(Math.abs), i = a.indexOf(Math.max(...a)); return a[i] > 0.999 ? i : -1; };
-    if (vplanes.some((p) => axisOf(p.n) < 0)) return false;
     const lo = viewer.box.min.toArray(), hi = viewer.box.max.toArray();
+    if (vplanes.some((p) => axisOf(p.n) < 0) || (vplanes.length !== 1 && vplanes.length !== 6)) {
+      if (!vplanes.length || vplanes.length > MAX_PLANES) return false;
+      // viewer → IFC from the model's minimum corner: (x, y, z) → (x − lo.x, hi.z − z, y − lo.y); kept normal → outward
+      const size = viewer.sizeIfc(), box = { min: [0, 0, 0], max: [...size] };
+      const extra = vplanes.map((p) => planeFromPoint([-p.n[0], p.n[2], -p.n[1]], [p.at[0] - lo[0], hi[2] - p.at[2], p.at[1] - lo[1]], box));
+      cut = { axis: 'box', cells: [{ box, tilt: {}, planes: extra }], cell: 0 };
+      cut.box = cut.cells[0].box;
+      applySection();
+      return true;
+    }
     if (vplanes.length === 1) {
       const p = vplanes[0], i = axisOf(p.n), name = { 1: 'top', 2: 'front', 0: 'side' }[i];
       cut = { axis: name, offset: p.at[i] - lo[i], flip: p.n[i] > 0 };   // SECTION_AXES keep the low side unless flipped
@@ -1224,16 +1394,16 @@ function init(root) {
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         if (!title.value.trim()) { status(t('bcf.need.title'), true); title.focus(); return; }
-        try { localStorage.setItem('bimcraft.author', who.value.trim()); } catch (err) { /* this tab keeps it */ }
+        keepAuthor(who.value.trim());   // SI.9: the account's own name is not kept as a typed one
         const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
         const vp = captureViewpoint();
-        const tp = { guid: newGuid(), title: title.value.trim(), status: st.value, type: 'Issue', author: who.value.trim() || 'BimCraft', created: now, description: comment.value.trim(), comments: [], viewpoints: [vp] };
+        const tp = { guid: newGuid(), title: title.value.trim(), status: st.value, type: 'Issue', author: who.value.trim() || accountName() || 'BimCraft', created: now, description: comment.value.trim(), comments: [], viewpoints: [vp] };
         if (comment.value.trim()) tp.comments.push({ guid: newGuid(), date: now, author: tp.author, text: comment.value.trim(), viewpoint: vp.guid });
         issues.push(tp);
         issueForm = false;
         currentIssue = tp.guid;
         renderIssues();
-        status(t('bcf.created', { title: tp.title }));
+        status(t('bcf.created', { title: tp.title }) + (viewer.section?.groups?.length > 1 ? ' ' + t('bcf.clip.cells') : ''));
       });
       kids.push(form);
     }
@@ -1278,6 +1448,7 @@ function init(root) {
 
   // ---- Color by property (0.4 B15) ----
   let propIx = null, colorField = '', colorLegend = null, picked = new Set();
+  let colorScheme = null;   // 0.5 WL.5: a scheme opened from a file or made by changing a color; it keeps its colors over themes and edits
   const theme = () => (document.documentElement.dataset.space === 'model' ? 'dark' : 'light');
   const index = () => {
     if (!propIx && model) propIx = propertyIndex(WebIFC, ifc.api, model.modelID, model);
@@ -1300,15 +1471,60 @@ function init(root) {
     sel.addEventListener('change', () => { if (sel.value) applyColor(sel.value); else colorOff(); });
     const off = el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-color-off': '', disabled: !colorField, onClick: colorOff }, t('color.off'));
     const kids = [el('p', { className: 'bc-muted' }, t('color.intro')), el('div', { className: 'bc-color-pick' }, el('label', {}, t('color.field'), sel), off)];
+    // schemes (0.5 WL.5): save the colors as a file, open one a teammate saved
+    kids.push(el('div', { className: 'bc-color-scheme' },
+      el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-color-save': '', disabled: !colorField || !colorLegend, title: t('color.scheme.save.title'), onClick: saveScheme }, el('i', { className: 'bi bi-download', 'aria-hidden': 'true' }), ' ', t('color.scheme.save')),
+      el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-color-open': '', title: t('color.scheme.open.title'), onClick: () => ui.colorInput.click() }, el('i', { className: 'bi bi-folder2-open', 'aria-hidden': 'true' }), ' ', t('color.scheme.open'))));
+    if (colorScheme && colorLegend?.missing) kids.push(el('p', { className: 'bc-card-alert', 'data-color-missing': '' }, t('color.scheme.missing', { field: schemeFieldLabel(colorScheme) })));
     if (colorField && colorLegend) {
-      if (colorLegend.kind === 'range') kids.push(el('p', { className: 'bc-muted' }, t('color.ranges')));
-      kids.push(el('ul', { className: 'bc-legend', 'data-legend': '' }, colorLegend.legend.map((l, i) => el('li', {},
-        el('button', { type: 'button', 'aria-pressed': picked.has(i) ? 'true' : 'false', 'data-legend-row': String(i), onClick: (e) => isolateValue(i, e.ctrlKey || e.metaKey || e.shiftKey) },
-          el('span', { className: 'bc-sw', style: 'background:' + l.color, 'aria-hidden': 'true' }),
-          el('span', { className: 'bc-lv' + (l.none || l.other ? ' is-muted' : '') }, l.none ? t('color.none') : l.other ? t('color.other', { n: l.other }) : valueLabel(l.label)),
-          el('span', { className: 'n' }, num(l.count)))))));
+      if (colorLegend.kind === 'range') kids.push(el('p', { className: 'bc-muted' }, t(colorScheme ? 'color.ranges.scheme' : 'color.ranges')));
+      if (colorScheme) kids.push(el('p', { className: 'bc-muted', 'data-color-scheme-note': '' }, t('color.scheme.note')));
+      kids.push(el('ul', { className: 'bc-legend', 'data-legend': '' }, colorLegend.legend.map((l, i) => {
+        const name = l.none ? t('color.none') : l.outside ? t('color.scheme.outside', { n: typeof l.other === 'number' ? l.other : l.count }) : l.other ? t('color.other', { n: l.other }) : valueLabel(l.label);
+        const pick = el('input', { type: 'color', className: 'bc-sw-pick', value: l.color, 'aria-label': t('color.scheme.pick', { value: name }), 'data-legend-color': String(i) });
+        pick.addEventListener('change', () => recolor(i, pick.value));
+        return el('li', { className: l.count ? '' : 'is-empty' }, pick,
+          el('button', { type: 'button', 'aria-pressed': picked.has(i) ? 'true' : 'false', 'data-legend-row': String(i), disabled: !l.count, onClick: (e) => isolateValue(i, e.ctrlKey || e.metaKey || e.shiftKey) },
+            el('span', { className: 'bc-lv' + (l.none || l.other ? ' is-muted' : '') }, name),
+            el('span', { className: 'n' }, num(l.count))));
+      })));
     }
     ui.color.replaceChildren(...kids);
+  }
+  const schemeFieldLabel = (sc) => (sc.field.group ? sc.field.group + ' › ' + (sc.field.label || sc.field.id) : t('color.field.' + sc.field.id));
+  /** Change one row's color: the legend becomes this model's own scheme (kept over themes and edits, ready to save). */
+  function recolor(i, color) {
+    const ix = index(), f = ix.fields.find((x) => x.id === colorField) || colorScheme?.field;
+    if (!f || !colorLegend) return;
+    const legend = colorLegend.legend.map((l, j) => (j === i ? { ...l, color } : l));
+    colorScheme = schemeOf({ ...colorLegend, legend }, f);
+    colorLegend = applyScheme(ix, colorScheme);
+    viewer.setColors(colorLegend.colorOf);
+    renderColor();
+    status(t('color.scheme.changed'), false, true);
+  }
+  function saveScheme() {
+    if (!colorField || !colorLegend) return;
+    const ix = index(), f = ix.fields.find((x) => x.id === colorField) || colorScheme?.field;
+    const sc = colorScheme || schemeOf(colorLegend, f);
+    const name = (fieldLabel(f) || 'colors').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 80) + ' colors.json';   // i18n-ignore: file name
+    download(name, JSON.stringify(sc, null, 2) + '\n', 'application/json');
+    status(t('color.scheme.saved', { name }), false, true);
+  }
+  async function openScheme(file) {
+    if (mode !== 'ifc' || !model) return;
+    if (file.size > 2e6) { status(t('color.scheme.bad'), true); return; }
+    const r = readScheme(await file.text());
+    if (!r.ok) { status(t('color.scheme.bad'), true); return; }
+    if (fdOn) fdClear(true);
+    colorScheme = r.scheme;
+    colorField = r.scheme.field.id;
+    colorLegend = applyScheme(index(), colorScheme);
+    picked = new Set();
+    viewer.setColors(colorLegend.colorOf);
+    renderColor();
+    if (colorLegend.missing) status(t('color.scheme.missing', { field: schemeFieldLabel(colorScheme) }), true);
+    else status(t('color.scheme.opened', { field: schemeFieldLabel(colorScheme), n: colorLegend.legend.filter((l) => l.count && !l.none && !l.outside).length }) + (colorLegend.unmatched ? ' ' + t('color.scheme.unmatched', { n: colorLegend.unmatched }) : ''));
   }
   function applyColor(fid, quiet = false) {
     if (fdOn) fdClear(true);   // one painting at a time: 4D, Compare or Color by
@@ -1316,6 +1532,7 @@ function init(root) {
     const f = ix.fields.find((x) => x.id === fid);
     if (!f) { colorOff(); return; }
     colorField = fid;
+    colorScheme = null;   // choosing a field starts from its own colors again
     const c = colorBy(ix, fid, { theme: theme() });
     colorLegend = c;
     picked = new Set();
@@ -1324,7 +1541,7 @@ function init(root) {
     if (!quiet) status(t('color.done', { field: fieldLabel(f), n: c.legend.filter((l) => !l.none).length }));
   }
   function colorOff() {
-    colorField = ''; colorLegend = null; picked = new Set();
+    colorField = ''; colorLegend = null; picked = new Set(); colorScheme = null;
     viewer?.setColors(null);
     renderColor();
     status(t('color.cleared'));
@@ -1341,8 +1558,10 @@ function init(root) {
     status(t('color.isolated', { n: keys.length, value: l.none ? t('color.none') : l.other ? t('color.other', { n: l.other }) : valueLabel(l.label) }));
   }
   // the theme has its own steps of the same colors
-  new MutationObserver(() => { if (colorField && viewer) applyColor(colorField, true); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-space'] });
-  window.bimcraftColor = { apply: applyColor, off: colorOff, legend: () => colorLegend, index };   // for tests
+  // (a scheme keeps the colors it was given)
+  new MutationObserver(() => { if (colorField && viewer && !colorScheme) applyColor(colorField, true); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-space'] });
+  ui.colorInput?.addEventListener('change', () => { const f = ui.colorInput.files[0]; ui.colorInput.value = ''; if (f) guard(() => openScheme(f)); });
+  window.bimcraftColor = { apply: applyColor, off: colorOff, legend: () => colorLegend, index, scheme: () => colorScheme, recolor };   // for tests
 
   // ---- Properties ----
   function clearProps() {
@@ -1379,11 +1598,11 @@ function init(root) {
     });
     const basics = el('dl', { className: 'bc-dl' },
       attr(t('prop.name'), 'Name', p.name),
-      readRow(t('prop.type'), p.typeName),
+      copyRow(t('prop.type'), p.typeName),
       attr(t('prop.objtype'), 'ObjectType', p.objectType),
       attr(t('prop.tag'), 'Tag', p.tag),
       attr(t('prop.desc'), 'Description', p.description),
-      readRow(t('prop.guid'), p.guid), readRow(t('prop.line'), '#' + p.id));
+      copyRow(t('prop.guid'), p.guid), copyRow(t('prop.line'), '#' + p.id));
 
     const sets = p.sets.map((s, i) => {
       const dl = el('dl', { className: 'bc-dl' }, s.rows.map((r) => r.edit
@@ -1391,7 +1610,7 @@ function init(root) {
             editor.setProperty(id, r.edit, v);
             tagLast(label);
           })
-        : readRow(r.name, r.value)));
+        : copyRow(r.name, r.value)));
       return el('details', { className: 'bc-set', open: i < 3 },
         el('summary', {}, s.name),
         s.fromType ? el('p', { className: 'bc-type-note' }, t('prop.typenote')) : null,
@@ -1402,8 +1621,11 @@ function init(root) {
       el('p', { className: 'bc-prop-name' }, p.name || t('prop.unnamed')),
       libraryBlock(id, p),
       el('p', { className: 'bc-edit-hint' }, t('prop.edit.hint')),
+      copyAllBar(p, ifcName),
       basics, ...sets].filter(Boolean));
+    modelUi?.decorate(ui.props);   // a drawn wall, door or window: its numbers to change (0.5 BM.5)
     syncEdit();
+    addonSections([id], token);   // 0.5 AO.7
   }
 
   /** Several elements picked: how many, by class. Properties are shown for one element at a time. */
@@ -1419,7 +1641,9 @@ function init(root) {
       el('p', { className: 'bc-muted' }, t('pick.many.hint')),
       el('p', { className: 'bc-h' }, t('pick.many.classes')),
       el('ul', { className: 'bc-counts' }, [...byClass].sort((a, b) => b[1] - a[1]).map(([c, n]) => el('li', {}, el('span', {}, c), el('span', { className: 'n' }, num(n))))));
+    modelUi?.decorate(ui.props);   // several drawn walls, doors or windows: what they share (0.5 BM.5)
     syncEdit();
+    addonSections(addonSelection(), pickToken);   // 0.5 AO.7
   }
 
   /** Properties of an element in another model: read only, with a way to make that model the active one. */
@@ -1430,9 +1654,10 @@ function init(root) {
       el('div', { className: 'bc-card-alert', 'data-foreign': '' },
         el('p', {}, t('fed.foreign', { file: ent.name })),
         el('button', { type: 'button', className: 'btn-line btn-sm-cc', onClick: () => { const k = selected; setActive(ent); viewer.select([k]); afterPick(); showProps(k); } }, t('fed.make.active'))),
-      el('dl', { className: 'bc-dl' }, readRow(t('prop.type'), p.typeName), readRow(t('prop.tag'), p.tag), readRow(t('prop.guid'), p.guid), readRow(t('prop.line'), '#' + p.id)),
+      copyAllBar(p, ent.name),
+      el('dl', { className: 'bc-dl' }, copyRow(t('prop.type'), p.typeName), copyRow(t('prop.tag'), p.tag), copyRow(t('prop.guid'), p.guid), copyRow(t('prop.line'), '#' + p.id)),
       ...p.sets.map((s, i) => el('details', { className: 'bc-set', open: i < 3 }, el('summary', {}, s.name),
-        el('dl', { className: 'bc-dl' }, s.rows.map((r) => readRow(r.name, r.value))))));
+        el('dl', { className: 'bc-dl' }, s.rows.map((r) => copyRow(r.name, r.value))))));
     syncEdit();
   }
 
@@ -1628,13 +1853,66 @@ function init(root) {
 
   // ---- Editing ----
   const readRow = (k, v) => [el('dt', {}, k), el('dd', {}, v === null || v === undefined ? '' : String(v))];
+  // ---- Copy property values (0.5 WL.3): a copy button on every value in Properties (active or another model's element),
+  // and Copy all as text / CSV at the top. Values go out as shown. ----
+  const copyBtn = (name, value) => el('button', { type: 'button', className: 'bc-copy-val', title: t('prop.copy.title', { name }), 'aria-label': t('prop.copy.title', { name }), 'data-copy-value': name,
+    onClick: (e) => { e.stopPropagation(); copyValue(name, value); } }, el('i', { className: 'bi bi-copy', 'aria-hidden': 'true' }));
+  /** A read-only Properties row whose value can be copied. */
+  const copyRow = (k, v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return [el('dt', {}, k), el('dd', { className: 'bc-copyable' }, el('span', { className: 'bc-copy-text-val' }, s), s ? copyBtn(k, s) : null)];
+  };
+  async function copyValue(name, value) {
+    await copyText(value);
+    status(t('prop.copied', { name, value: value.length > 60 ? value.slice(0, 57) + '…' : value }), false, true);
+  }
+  /** Copy all / Copy as CSV for one element's properties (`p` from properties(); `file` names another model). */
+  const copyAllBar = (p, file) => el('p', { className: 'bc-copy-all', 'data-props-copy': '' },
+    el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-props-copy-text': '', title: t('prop.copyall.title'), onClick: async () => { await copyText(elementText(p)); status(t('prop.copied.all', { name: p.name || t('prop.unnamed') }), false, true); } },
+      el('i', { className: 'bi bi-copy', 'aria-hidden': 'true' }), ' ', t('prop.copyall')),
+    el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-props-copy-csv': '', title: t('prop.copycsv.title'), onClick: async () => { await copyText(elementCsv(p, { file: models.length > 1 ? file : undefined })); status(t('prop.copied.csv', { name: p.name || t('prop.unnamed') }), false, true); } },
+      el('i', { className: 'bi bi-filetype-csv', 'aria-hidden': 'true' }), ' ', t('prop.copycsv')));
 
   /** dt + a dd that turns into an input on click. Enter or leaving the field saves; Esc cancels. */
+  // ---- Add-ons (0.5 AO.7): the state the add-on API reads, its Properties sections and exporter buttons ----
+  /** The pick as the open model's express ids (add-ons see the active model only). */
+  function addonSelection() {
+    const m = cur();
+    if (!m || !viewer) return [];
+    return [...viewer.selection].filter((k) => entryOf(k) === m).map((k) => k - m.model.keyBase);
+  }
+  async function addonSections(ids, token) {
+    if (!addons || mode !== 'ifc' || !ids.length) return;
+    let secs;
+    try { secs = await addons.propsSections(ids, ifc); } catch (e) { return; }
+    if (token !== pickToken || !secs?.length) return;
+    for (const s of secs) {
+      ui.props.append(el('details', { className: 'bc-set', open: true, 'data-addon-props': s.key }, el('summary', {}, s.label),
+        el('dl', { className: 'bc-dl' }, s.fields.flatMap((f) => (f.edit ? editableRow(f.label, f.value, false, {}, (v) => f.edit(v)) : readRow(f.label, f.value))))));
+    }
+  }
+  /** One button per add-on exporter beside Save as IFC (the IFC with every edit goes to the add-on's write()). */
+  function renderAddonExports() {
+    if (!ui.save) return;
+    let box = ui.save.parentElement.querySelector('[data-addon-exports]');
+    const list = addons && mode === 'ifc' && model ? addons.exporters() : [];
+    if (!list.length) { box?.remove(); return; }
+    if (!box) { box = el('span', { className: 'bc-addon-exports', 'data-addon-exports': '' }); ui.save.after(box); }
+    box.replaceChildren(...list.map((x) => el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-addon-export': x.id, title: t('addon.export.title', { label: x.label }),
+      onClick: () => guard(async () => {
+        const stem = ifcName.replace(/\.ifc$/i, '');
+        const out = await x.write(addons.exportInput(ifcName));
+        if (out === null || out === undefined) { status(t('addon.export.nothing', { label: x.label }), true); return; }
+        await download(stem + x.extension, out instanceof Blob ? out : new Blob([out], { type: x.mime }), x.mime);
+        status(t('addon.export.done', { file: stem + x.extension }), false, true);
+      }) }, el('i', { className: 'bi bi-box-arrow-up-right', 'aria-hidden': 'true' }), ' ', x.label)));
+  }
+
   function editableRow(name, value, isEdited, { valueType }, commit) {
     const shown = value === null || value === undefined ? '' : String(value);
     const dd = el('dd', { className: 'bc-editable' + (isEdited ? ' is-edited' : '') });
-    const show = () => dd.replaceChildren(el('button', { type: 'button', className: 'bc-val', title: t('prop.change.title', { name }), onClick: start },
-      shown || el('span', { className: 'bc-empty-val' }, t('prop.empty'))));
+    const show = () => dd.replaceChildren(...[el('button', { type: 'button', className: 'bc-val', title: t('prop.change.title', { name }), onClick: start },
+      shown || el('span', { className: 'bc-empty-val' }, t('prop.empty'))), shown ? copyBtn(name, shown) : null].filter(Boolean));   // never hand replaceChildren a null
     function start() {
       const bool = valueType === 'IFCBOOLEAN' || valueType === 'IFCLOGICAL';
       const input = bool
@@ -1680,17 +1958,19 @@ function init(root) {
     ui.changes.hidden = !editor;
     const VERB = { place: t('changes.verb.place'), swap: t('changes.verb.swap'), update: t('changes.verb.update'), remove: t('edit.verb.removed'), paste: t('edit.verb.pasted') };
     const ATTR = { Name: t('prop.name'), ObjectType: t('prop.objtype'), Tag: t('prop.tag'), Description: t('prop.desc') };
-    ui.changeList.replaceChildren(...list.slice().reverse().slice(0, 50).map((c) => VERB[c.kind]
-      ? el('li', {}, el('span', { className: 'bc-change-what' }, t('changes.line', { verb: VERB[c.kind], what: c.label || '#' + c.id })), c.old ? el('span', { className: 'bc-sub' }, t('changes.was', { old: c.old })) : null)
+    ui.changeList.replaceChildren(...list.slice().reverse().slice(0, 50).map((c) => (VERB[c.kind] || c.verb)
+      ? el('li', {}, el('span', { className: 'bc-change-what' }, t('changes.line', { verb: VERB[c.kind] || c.verb, what: c.label || '#' + c.id })), c.old ? el('span', { className: 'bc-sub' }, t('changes.was', { old: c.old })) : null)
       : el('li', {},
         el('span', { className: 'bc-change-what' }, t(c.fromType ? 'changes.prop.type' : 'changes.prop', { what: c.label || '#' + c.id, prop: c.kind === 'attr' ? ATTR[c.attr] || c.attr : c.propName })),
         el('span', { className: 'bc-sub' }, t('changes.fromto', { from: fmtVal(c.old), to: fmtVal(c.value) })))));
     if (!list.length) ui.changeList.append(el('li', { className: 'bc-muted' }, t('changes.none')));
     ui.undo.disabled = !list.length;
-    ui.save.disabled = !list.length && !editor?.recovered;
+    ui.save.disabled = !list.length && !editor?.recovered && !editor?.isNew;
     syncAutosave();
     ui.save.lastChild.textContent = ' ' + (list.length ? t('save.ifc.count', { n: list.length }) : t('save.ifc'));
     syncEdit();
+    addons?.changed('model');   // 0.5 AO.7: after an edit, an undo, a rebuild or a new model
+    renderAddonExports();
   }
   const fmtVal = (v) => v === null || v === undefined || v === '' ? t('prop.empty') : v === true ? t('prop.yes') : v === false ? t('prop.no') : typeof v === 'string' ? '"' + v + '"' : String(v);   // i18n-ignore: quotes round a text value
 
@@ -1713,13 +1993,14 @@ function init(root) {
   async function saveIfc() {
     if (!unsavedIn(editor)) return true;
     const bytes = editor.save();
-    let name = ifcName.replace(/\.ifc$/i, '') + ' (edited).ifc';   // i18n-ignore: the saved file's name
+    let name = editor.isNew ? ifcName : ifcName.replace(/\.ifc$/i, '') + ' (edited).ifc';   // i18n-ignore: the saved file's name (a new building keeps its own)
     const r = await fileHost.saveAs({ data: new Blob([bytes], { type: 'application/x-step' }), name, types: IFC_TYPES });
     if (!r.ok) { status(r.cancelled ? t('save.cancelled') : (r.error?.message || String(r.error)), !r.cancelled); return false; }
     name = r.name || name;
     const n = editor.changes.length;
     editor.changes = [];   // saved: the downloaded file holds them; start a fresh change list
     editor.recovered = false;
+    editor.isNew = false;
     renderChanges();
     status(t('save.done', { file: name, n, bytes: bytes.length.toLocaleString('en-US') }));
     return true;
@@ -1732,6 +2013,7 @@ function init(root) {
     await frame();
     // A cut-off file opens as far as it is really there (info.partial); the card says so first.
     const info = await readRevit(file, file.name, { partial: true });
+    rvtOpen = { file, path, info };
     showStage('rvt');
     renderCard(info, fromFolder(path) ? path : null);
     ui.infoH.textContent = t('info.h.file');
@@ -1748,6 +2030,52 @@ function init(root) {
     ui.props.replaceChildren(el('p', { className: 'bc-muted' }, t('rvt.props.need')));
     // Not "Opened": a partial open is not a success, and the line stays until the next action.
     status(info.partial ? t('rvt.partly', { file: file.name }) : t('rvt.opened', { file: file.name }), false, !info.partial);
+  }
+
+  /** 0.5 SG.8 (b), lab only (ui.inc data-rvt-preview = the library's pinned rvt.js): the card's offer to read the model with the rvt library, or why
+   *  an older project gets none. Families, templates and cut-off copies get nothing (rvt-convert.js previewSupport). */
+  function rvtPreviewOffer(info) {
+    if (!root?.dataset.rvtPreview || rvtOpen?.info !== info) return null;
+    const pv = previewSupport(info, rvtOpen.file.name);
+    if (!pv.ok) return pv.why === 'old' ? el('p', { className: 'bc-card-sub', 'data-rvt-preview-old': '' }, t('rvt.preview.old', { release: pv.release })) : null;
+    return el('div', { className: 'bc-card-rvtpreview', 'data-rvt-preview-offer': pv.level },
+      el('p', {}, t('rvt.preview.what.' + pv.level, { release: pv.release })),
+      el('p', {}, el('button', { type: 'button', className: 'btn-plot btn-sm-cc', 'data-rvt-preview-go': '', onClick: () => guard(previewRevit) },
+        el('i', { className: 'bi bi-box', 'aria-hidden': 'true' }), ' ' + t('rvt.preview.button'))));
+  }
+
+  /** Convert the project on the card to IFC4 in a worker (rvt-convert.js) and open it like any IFC: the File panel then
+   *  says it is a preview, what read it and which classes are boxes. The original file is untouched. */
+  async function previewRevit() {
+    if (!rvtOpen) return;
+    const { file, path } = rvtOpen;
+    const t0 = performance.now();
+    status(t('rvt.preview.loading'));
+    await frame();
+    let out;
+    try {
+      out = await convertRevit(new Uint8Array(await file.arrayBuffer()), {
+        libUrl: new URL(root.dataset.rvtPreview, location.href).href, convertUrl: import.meta.resolve('./rvt-convert.js'),
+        workerUrl: import.meta.resolve('./rvt-convert-worker.js'),
+        onPhase: (p) => status(p === 'loading' ? t('rvt.preview.loading') : t('rvt.preview.converting', { file: file.name, size: bytes(file.size) })),
+      });
+    } catch (e) {
+      throw Object.assign(new Error(t('rvt.preview.failed', { error: e.message || String(e) })), { userFacing: true });
+    }
+    const { ifc: data, summary } = out;
+    if (!summary.elements) throw Object.assign(new Error(t('rvt.preview.empty', { file: file.name })), { userFacing: true });
+    const name = file.name.replace(/\.rvt$/i, '') + ' (preview).ifc';   // i18n-ignore: a file name
+    await openIfc(data, new File([data], name, { type: 'application/x-step' }), path);
+    const boxed = summary.byClass.filter((r) => r.boxes && r.cls !== 'IfcSpace');
+    ui.infoDl.append(
+      el('dt', {}, t('rvt.preview.of')), el('dd', { 'data-rvt-preview-of': '' }, file.name),
+      el('dt', {}, t('rvt.preview.reader')), el('dd', {}, t('rvt.preview.reader.value')),
+      el('dt', {}, t('rvt.preview.boxes')), el('dd', { 'data-rvt-preview-boxes': String(summary.boxes) },
+        ...(boxed.length ? boxed.map((r) => el('span', { className: 'bc-note-line' }, t('rvt.preview.boxes.row', { cls: r.cls.replace(/^Ifc/, ''), count: num(r.boxes) }))) : [t('rvt.preview.boxes.none')])));
+    // only fixtures and equipment came in (no wall, floor or roof): say so, never let it pass for the building
+    if (!summary.fabric) ui.infoDl.append(el('dt', {}, t('rvt.preview.fabric')), el('dd', { 'data-rvt-preview-nofabric': '' }, t('rvt.preview.fabric.none')));
+    window.bimcraftRvtPreview = { file: file.name, summary, ms: Math.round(performance.now() - t0) };   // for tests and the spike notes
+    status(t(summary.fabric ? 'rvt.preview.done' : 'rvt.preview.done.nofabric', { file: file.name, n: summary.elements, count: num(summary.elements), boxes: num(summary.boxes) }));
   }
 
   /** The RVT/RFA card. With `path` (opened from a folder) links are checked against the folder. */
@@ -1782,8 +2110,10 @@ function init(root) {
       el('p', { className: 'bc-card-kind' }, info.release ? t('rvt.kind.release', { kind: info.kind, release: info.release }) : info.kind),
       el('h1', {}, title),
       sub ? el('p', { className: 'bc-card-sub' }, sub) : null,
-      el('p', { className: 'bc-card-note' },
-        t('rvt.note')),
+      // (the "no one outside its maker can read" note was removed, owner 2026-10-14)
+      // 0.5 SG.8 (a): the export settings that open best here, in the help panel
+      el('p', {}, el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-rvt-export-help': '', onClick: () => window.cadcraftHelp?.open('rvt-to-ifc') }, t('rvt.export.help'))),
+      rvtPreviewOffer(info),
     )));
 
     const sections = [];
@@ -1954,6 +2284,7 @@ function init(root) {
         el('p', { className: 'bc-h' }, t('dwg.notdrawn.title')),
         el('ul', { className: 'bc-counts' }, missing.map(([ty, n]) => el('li', {}, el('span', {}, ty), el('span', { className: 'n' }, num(n))))),
         el('p', { className: 'bc-muted' }, t('dwg.notdrawn.note'))) : null,
+      dynamicBlock(db),   // 0.5 DB.11
       drawing.stats.truncated ? el('p', { className: 'bc-input-err' }, t('dwg.truncated')) : null,
     ].filter(Boolean));
     if (!drawing.spaces.some((sp) => sp.batches.size) && !drawing.xrefs.length) {
@@ -2146,6 +2477,25 @@ function init(root) {
   // ---- Picking in the drawing's 3D view (0.4 B2): dwg-view3d.js pick() → the model-space entity → dwg-props.js ----
   let props3dSummary = null;
   const modelSpaceOf = (db) => (db.blocks || []).find((b) => /^\*model_space$/i.test(b.name))?.entities || [];
+  /**
+   * 0.5 DB.11: dynamic blocks (dwg-dynamic.js). The drawing shows each reference in the state its file saved (other states'
+   * entities are invisible there); the drawing panel lists every dynamic block placed in model space with the states
+   * shown and the ones it also has, and a picked reference names its block, state and other states.
+   */
+  const dynCache = new WeakMap();
+  const defsOf = (db) => { let d = dynCache.get(db); if (!d) dynCache.set(db, (d = dynamicDefs(db))); return d; };
+  function dynamicBlock(db) {
+    const list = dynamicSummary(db, defsOf(db));
+    if (!list.length) return null;
+    return el('div', { className: 'bc-xrefs', 'data-dyn-blocks': '' },
+      el('p', { className: 'bc-h' }, t('dwg.dyn.title')),
+      el('ul', { className: 'bc-copies' }, list.map((d) => el('li', { 'data-dyn-block': d.name },
+        el('span', {}, d.name), el('span', { className: 'bc-sub' }, t('dwg.dyn.count', { n: d.count })),
+        d.states.length ? el('span', { className: 'bc-sub' }, t('dwg.dyn.shown', { list: d.shown.filter(([k]) => k).map(([k, n]) => t('dwg.dyn.shown.one', { state: k, n })).join(', ') || '—' })) : null,
+        d.states.length ? el('span', { className: 'bc-sub' }, t('dwg.dyn.states', { label: d.label || t('dwg.dyn.label'), list: d.states.join(', ') })) : el('span', { className: 'bc-sub' }, t('dwg.dyn.nostates'))))),
+      el('p', { className: 'bc-muted' }, t('dwg.dyn.note')));
+  }
+
   function pick3d(owner, add) {
     const cur = [...view3d.picked];
     let next;
@@ -2165,11 +2515,12 @@ function init(root) {
     }
     const e = ents[next[0]];
     if (!e) return;
-    const rows = entityRows(e, { units: dwg3d.compiled.units });
+    const dyn = dynamicOf(dwg3d.db, e, defsOf(dwg3d.db));   // 0.5 DB.11
+    const rows = entityRows(e, { units: dwg3d.compiled.units, dyn });
     const attrs = attributeRows(e);
     ui.props.replaceChildren(...[
-      el('p', { className: 'bc-prop-cls' }, e.type),
-      el('p', { className: 'bc-prop-name', 'data-dwg-pick': String(next[0]) }, e.block || e.layer || e.type),
+      el('p', { className: 'bc-prop-cls' }, dyn ? t('dwg.dyn.kind', { type: e.type }) : e.type),
+      el('p', { className: 'bc-prop-name', 'data-dwg-pick': String(next[0]) }, dyn?.name || e.block || e.layer || e.type),
       el('dl', { className: 'bc-dl' }, rows.flatMap((r) => [el('dt', {}, t(r.key)), el('dd', {}, r.valueKey ? t(r.value) : r.value)])),
       attrs.length ? el('details', { className: 'bc-set', open: true }, el('summary', {}, t('dwg.prop.attributes', { n: attrs.length })),
         el('dl', { className: 'bc-dl' }, attrs.flatMap((a) => [el('dt', {}, a.tag), el('dd', {}, a.value)]))) : null,
@@ -2224,9 +2575,35 @@ function init(root) {
   const secView = () => (secOnDwg() ? view3d : viewer);
   const secUnit = () => (secOnDwg() ? (dwg3d?.compiled?.units || t('sec.units')) : 'm');
   const ubox = { panel: $('[data-sec-box]'), plane: $('[data-sec-plane]'), boxBtn: $('[data-sec-axis="box"]'), fill: $('[data-sec-fill]') };
+  // Sections square to the building (0.5 BM.9): a building turned in its site (true north, shared coordinates) is cut along
+  // its own walls, not the model's axes. The turn is the direction most wall length runs in (IfcPlacer.planRotation),
+  // read once per model; the button shows only when it is more than half a degree.
+  const turnBtn = $('[data-sec-turn]');
+  let turnOf = null;
+  function buildingTurn() {
+    if (!editor || !model) return 0;
+    if (turnOf?.model !== model) { let deg = 0; try { deg = editor.placer().planRotation(null); } catch (e) { deg = 0; } turnOf = { model, deg: deg > 45 ? deg - 90 : deg }; }
+    return turnOf.deg;
+  }
+  function syncTurn() {
+    if (!turnBtn) return;
+    const deg = secOnDwg() ? 0 : buildingTurn();
+    turnBtn.hidden = Math.abs(deg) < 0.5;
+    if (turnBtn.hidden && viewer?.sectionTurn) viewer.setSectionTurn(0);
+    turnBtn.setAttribute('aria-pressed', viewer?.sectionTurn ? 'true' : 'false');
+  }
+  turnBtn?.addEventListener('click', () => {
+    if (!viewer || !cut) return;
+    const on = !viewer.sectionTurn, deg = buildingTurn();
+    viewer.setSectionTurn(on ? deg * Math.PI / 180 : 0);
+    cut.offset = null; cut.cells = null; cut.box = null;   // the numbers were in the other frame
+    applySection();
+    status(on ? t('sec.turn.on', { deg: Math.round(deg * 10) / 10 }) : t('sec.turn.off'));
+  });
   function applySection() {
     const v = secView();
     if (!v || !cut) return;
+    syncTurn();
     ubox.boxBtn.hidden = secOnDwg();   // the box is for IFC models
     ubox.fill.hidden = secOnDwg();     // so are filled cut faces (drawings are lines and faces, not solids)
     ubox.fill.setAttribute('aria-pressed', viewer?.capsOn ? 'true' : 'false');
@@ -2234,6 +2611,7 @@ function init(root) {
     ubox.panel.hidden = cut.axis !== 'box';
     ubox.plane.hidden = cut.axis === 'box';
     if (cut.axis === 'box') { applyBox(); return; }
+    viewer?.setGrips(null);
     const [, max] = v.sectionRange(cut.axis);
     if (cut.offset === null || cut.offset > max) cut.offset = cut.axis === 'top' ? Math.min(max, max * 0.5) : max * 0.5;
     v.setSection(cut);
@@ -2260,7 +2638,9 @@ function init(root) {
   new ResizeObserver(() => { if (!usec.bar.hidden) placeSectionBar(); }).observe(ui.toolbar);
   function sectionOff() {
     cut = null;
+    viewer?.setSectionTurn?.(0);   // the next section starts on the model's axes again
     viewer?.setSection(null);
+    viewer?.setGrips(null);
     view3d?.setSection(null);
     usec.bar.hidden = true;
     setPressed('section', false);
@@ -2268,11 +2648,21 @@ function init(root) {
   }
   function toggleSection() { if (cut) sectionOff(); else { cut = { axis: 'top', offset: null, flip: false }; applySection(); } }
   // ---- Section box (0.4 B4; viewer3d.js setSectionBox): from / to per IFC axis, metres from the model's minimum corner ----
+  // Free-form volumes (0.5 WL.1; section-volume.js): `cut.cells` = boxes kept as a union, each with tilted faces and extra
+  // planes; `cut.cell` = the one the sliders edit; `cut.box` is that cell's box (setting it to another object or null —
+  // Box round the pick, Whole model, tests — replaces the box of that cell).
+  const ushape = { cell: $('[data-sec-cell]'), add: $('[data-sec-cell-add]'), remove: $('[data-sec-cell-remove]'), details: $('[data-sec-shape]'),
+    face: $('[data-sec-tilt-face]'), a: $('[data-sec-tilt-a]'), b: $('[data-sec-tilt-b]'), alabel: $('[data-sec-tilt-alabel]'), blabel: $('[data-sec-tilt-blabel]'),
+    planes: $('[data-sec-planes]'), planeAdd: $('[data-sec-plane-add]'), note: $('[data-sec-shape-note]') };
   function applyBox() {
     const size = viewer.sizeIfc();
-    if (!cut.box) cut.box = { min: [0, 0, 0], max: [...size] };
-    for (let k = 0; k < 3; k++) { cut.box.max[k] = Math.min(cut.box.max[k], size[k]); cut.box.min[k] = Math.max(0, Math.min(cut.box.min[k], cut.box.max[k])); }
-    viewer.setSection(cut);
+    if (!cut.cells) cut.cells = [{ box: cut.box || { min: [0, 0, 0], max: [...size] } }];
+    cut.cell = Math.max(0, Math.min(cut.cells.length - 1, cut.cell | 0));
+    if (cut.box !== cut.cells[cut.cell].box) cut.cells[cut.cell] = { ...cut.cells[cut.cell], box: cut.box || { min: [0, 0, 0], max: [...size] } };
+    cut.cells = cleanVolume(cut.cells, size);
+    cut.box = cut.cells[cut.cell].box;
+    viewer.setSection({ axis: 'box', cells: cut.cells });
+    viewer.setGrips(boxGrips(cut.box), viewer.gripHover);
     usec.bar.hidden = false;
     ubox.panel.querySelectorAll('[data-box-axis]').forEach((row, k) => {
       const from = row.querySelector('[data-box-from]'), to = row.querySelector('[data-box-to]');
@@ -2280,11 +2670,92 @@ function init(root) {
       from.value = String(cut.box.min[k]); to.value = String(cut.box.max[k]);
       row.querySelector('[data-box-val]').textContent = t('sec.box.val', { from: metres(cut.box.min[k]), to: metres(cut.box.max[k]) });
     });
+    renderShape();
     usec.bar.querySelectorAll('[data-sec-axis]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.secAxis === 'box' ? 'true' : 'false'));
     placeSectionBar();
     setPressed('section', true);
     if (viewer.selection.size) viewer.select([...viewer.selection]);
   }
+  const AXIS = ['X', 'Y', 'Z'];   // i18n-ignore: axis letters, as on the sliders
+  /** The box list, the active cell's tilt and its extra planes. Inputs being typed in keep their text. */
+  function renderShape() {
+    const cells = cut.cells, cell = cells[cut.cell];
+    ushape.cell.replaceChildren(...cells.map((_, i) => el('option', { value: String(i) }, t('sec.cell', { n: i + 1 }))));
+    ushape.cell.value = String(cut.cell);
+    ushape.remove.hidden = cells.length < 2;
+    ushape.add.disabled = cells.length >= MAX_CELLS;
+    const f = ushape.face.value || 'x0', [ua, ub] = FACE_AXES[f], [ta, tb] = cell.tilt[f] || [0, 0];
+    ushape.alabel.textContent = t('sec.tilt.along', { axis: AXIS[ua] });
+    ushape.blabel.textContent = t('sec.tilt.along', { axis: AXIS[ub] });
+    if (document.activeElement !== ushape.a) ushape.a.value = String(ta);
+    if (document.activeElement !== ushape.b) ushape.b.value = String(tb);
+    const typing = ushape.planes.contains(document.activeElement);
+    if (!typing || ushape.planes.children.length !== cell.planes.length) {
+      ushape.planes.replaceChildren(...cell.planes.map((q, i) => el('span', { className: 'bc-sec-planerow', 'data-sec-plane-row': String(i) },
+        el('span', { className: 'bc-sec-boxlbl' }, t('sec.plane.n', { n: i + 1 })),
+        el('label', { title: t('sec.plane.az.title') }, t('sec.plane.az'), ' ', el('input', { type: 'number', className: 'bc-input bc-num', step: '5', min: '0', max: '360', value: String(Math.round(q.az * 10) / 10), 'data-pl': 'az' }), ' °'),
+        el('label', { title: t('sec.plane.el.title') }, t('sec.plane.el'), ' ', el('input', { type: 'number', className: 'bc-input bc-num', step: '5', min: '-90', max: '90', value: String(Math.round(q.el * 10) / 10), 'data-pl': 'el' }), ' °'),
+        el('label', { title: t('sec.plane.off.title') }, t('sec.plane.off'), ' ', el('input', { type: 'number', className: 'bc-input bc-num', step: '0.1', value: metres(q.off), 'data-pl': 'off' }), ' m'),
+        el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-sec-plane-remove': String(i), 'aria-label': t('sec.plane.remove', { n: i + 1 }) }, '×'))));
+    }
+    ushape.planeAdd.disabled = cell.planes.length >= MAX_PLANES;
+    ushape.note.textContent = viewer.section?.empty ? t('sec.box.empty') : '';
+  }
+  ushape.cell.addEventListener('change', () => { if (cut?.cells) { cut.cell = Number(ushape.cell.value) || 0; cut.box = cut.cells[cut.cell].box; applyBox(); } });
+  ushape.add.addEventListener('click', () => {
+    if (!cut?.cells) return;
+    if (cut.cells.length >= MAX_CELLS) { status(t('sec.cell.max', { n: MAX_CELLS })); return; }
+    // a new box starts as a copy of this one moved half its size along X (or back, when that runs off the model)
+    const size = viewer.sizeIfc(), b = cut.box, w = b.max[0] - b.min[0];
+    const dx = b.max[0] + w / 2 <= size[0] ? w / 2 : -Math.min(b.min[0], w / 2);
+    const box = { min: [b.min[0] + dx, b.min[1], b.min[2]], max: [b.max[0] + dx, b.max[1], b.max[2]] };
+    cut.cells.push({ box, tilt: {}, planes: [] });
+    cut.cell = cut.cells.length - 1; cut.box = box;
+    applyBox();
+    status(t('sec.cell.added', { n: cut.cells.length }));
+  });
+  ushape.remove.addEventListener('click', () => {
+    if (!cut?.cells || cut.cells.length < 2) return;
+    cut.cells.splice(cut.cell, 1);
+    cut.cell = Math.max(0, cut.cell - 1); cut.box = cut.cells[cut.cell].box;
+    applyBox();
+  });
+  ushape.face.addEventListener('change', () => { if (cut?.cells) renderShape(); });
+  const setTilt = (a, b) => {
+    const cell = cut.cells[cut.cell], f = ushape.face.value;
+    const cl = (v) => Math.max(-MAX_TILT, Math.min(MAX_TILT, Number.isFinite(v) ? v : 0));
+    if (Math.abs(a) > MAX_TILT || Math.abs(b) > MAX_TILT) status(t('sec.tilt.max', { n: MAX_TILT }));
+    cell.tilt = { ...cell.tilt, [f]: [cl(a), cl(b)] };
+    applyBox();
+  };
+  for (const inp of [ushape.a, ushape.b]) inp.addEventListener('input', () => { if (cut?.cells && inp.value.trim() !== '' && inp.value.trim() !== '-') setTilt(Number(ushape.a.value), Number(ushape.b.value)); });
+  ubox.panel.querySelector('[data-sec-tilt-level]').addEventListener('click', () => { if (cut?.cells) { ushape.a.value = ushape.b.value = '0'; setTilt(0, 0); } });
+  ushape.planeAdd.addEventListener('click', () => {
+    if (!cut?.cells) return;
+    const cell = cut.cells[cut.cell];
+    if (cell.planes.length >= MAX_PLANES) { status(t('sec.plane.max', { n: MAX_PLANES })); return; }
+    // a vertical plane cutting off the box's +X +Y corner, halfway between the centre and the corner
+    const half = Math.hypot(cell.box.max[0] - cell.box.min[0], cell.box.max[1] - cell.box.min[1]) / 2;
+    cell.planes = [...cell.planes, { az: 45, el: 0, off: Math.round(half * 0.5 * 100) / 100 }];
+    applyBox();
+    ushape.planes.lastElementChild?.querySelector('input')?.focus();
+  });
+  ushape.planes.addEventListener('input', (e) => {
+    const row = e.target.closest('[data-sec-plane-row]'), k = e.target.dataset.pl;
+    if (!row || !k || !cut?.cells) return;
+    const v = Number(String(e.target.value).replace(',', '.'));
+    if (!Number.isFinite(v) || e.target.value.trim() === '') return;
+    const cell = cut.cells[cut.cell], i = Number(row.dataset.secPlaneRow);
+    cell.planes = cell.planes.map((q, j) => (j === i ? { ...q, [k]: v } : q));
+    applyBox();
+  });
+  ushape.planes.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-sec-plane-remove]');
+    if (!b || !cut?.cells) return;
+    const cell = cut.cells[cut.cell];
+    cell.planes = cell.planes.filter((_, j) => j !== Number(b.dataset.secPlaneRemove));
+    applyBox();
+  });
   ubox.panel.addEventListener('input', (e) => {
     const row = e.target.closest('[data-box-axis]');
     if (!row || !cut || cut.axis !== 'box') return;
@@ -2295,16 +2766,41 @@ function init(root) {
   });
   ubox.panel.addEventListener('click', (e) => {
     if (!cut || cut.axis !== 'box') return;
-    if (e.target.closest('[data-sec-box-pick]')) {
-      if (!viewer.selection.size) { status(t('sec.box.nopick')); return; }
-      const b = viewer.boxAround([...viewer.selection]);
-      if (!b) return;
-      cut.box = b;
-      applyBox();
-      viewer.frameKeys([...viewer.selection]);
-      status(t('sec.box.picked', { n: viewer.selection.size }));
-    } else if (e.target.closest('[data-sec-box-all]')) { cut.box = null; applyBox(); }
+    if (e.target.closest('[data-sec-box-pick]')) boxRoundPick();
+    else if (e.target.closest('[data-sec-box-all]')) { cut.box = null; applyBox(); }
   });
+  /**
+   * Section box round the pick (0.4 B4; 0.5 WL.2: the margin is Settings › BimCraft › Section box, default 300 mm): from the
+   * box's own button, the Show menu or Shift+X; turns the section box on when it is off. A volume of several boxes keeps the
+   * others: the box being edited goes round the pick.
+   */
+  function boxRoundPick() {
+    if (!viewer || mode !== 'ifc') return;
+    if (!viewer.selection.size) { status(t('sec.box.nopick')); return; }
+    const b = viewer.boxAround([...viewer.selection], settings.boxMargin / 1000);
+    if (!b) return;
+    if (!cut) cut = { axis: 'box', offset: null, flip: false };
+    cut.axis = 'box';
+    cut.box = b;
+    applySection();
+    viewer.frameKeys([...viewer.selection]);
+    status(t('sec.box.picked', { n: viewer.selection.size, margin: settings.boxMargin }));
+  }
+  // Grips (0.5 WL.2): a face grip moves that face, an edge grip the two faces meeting there, a corner all three; the box
+  // being edited follows the pointer (section-volume.js dragDelta → dragBox), the sliders with it.
+  let gripDrag = null;
+  function onBoxGrip(phase, i, e) {
+    if (!cut || cut.axis !== 'box' || !cut.cells) { gripDrag = null; return; }
+    if (phase === 'start') { const g = viewer.grips[i]; gripDrag = { g, box: { min: [...cut.box.min], max: [...cut.box.max] } }; return; }
+    if (!gripDrag) return;
+    const r = viewer.rayIfc(e.clientX, e.clientY), d = dragDelta(r, gripDrag.g.p, gripDrag.g.axes, r.view);
+    if (d) { cut.box = dragBox(gripDrag.box, gripDrag.g.faces, d, viewer.sizeIfc()); applyBox(); }
+    if (phase === 'end') {
+      gripDrag = null;
+      const B = cut.box;
+      status(t('sec.box.dragged', { x: t('sec.box.val', { from: metres(B.min[0]), to: metres(B.max[0]) }), y: t('sec.box.val', { from: metres(B.min[1]), to: metres(B.max[1]) }), z: t('sec.box.val', { from: metres(B.min[2]), to: metres(B.max[2]) }) }));
+    }
+  }
   usec.bar.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b || !cut) return;
@@ -2399,11 +2895,12 @@ function init(root) {
   window.bimcraftWalk = { on: walkOn, off: walkOff, state: () => viewer?.walk && { pos: viewer.walk.pos.toArray(), o: { ...viewer.walk.o } } };   // for tests
 
   // ---- Measure (0.4 B6) ----
-  const um = { bar: $('[data-measurebar]'), out: $('[data-measure-out]'), labels: $('[data-measure-labels]') };
-  let meas = null;   // { mode: 'distance' | 'area', a: point | null, items: [{ kind, a, b, tris, center, text }], hover }
+  const um = { bar: $('[data-measurebar]'), out: $('[data-measure-out]'), labels: $('[data-measure-labels]'), copy: $('[data-measure-copy]') };
+  let meas = null;   // { mode: 'distance' | 'area' | 'point', a: point | null, items: [{ kind, a, b, tris, center, text, geo }], hover }
   const m3 = (v) => (Math.round(v * 1000) / 1000).toFixed(3);
   function measureOn(kind = 'distance') {
-    if (!viewer || mode !== 'ifc') return;
+    paintUi?.close();   // 0.5 RC.7: Measure and Paint both take the 3D view's clicks
+    if (!viewer || (mode !== 'ifc' && !pc?.has())) return;
     if (placing) stopPlacing();
     meas = { mode: kind, a: null, items: [], hover: null };
     viewer.measuring = { move: (x, y) => { meas.hover = viewer.measureAt(x, y); redrawMeasure(); }, click: (x, y) => measureClick(x, y) };
@@ -2424,11 +2921,14 @@ function init(root) {
   function syncMeasureBar() {
     um.bar.querySelectorAll('[data-measure-mode]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.measureMode === meas.mode ? 'true' : 'false'));
     const last = meas.items[meas.items.length - 1];
-    um.out.textContent = last ? last.text : '';
+    um.out.textContent = last ? (last.lines ? last.lines.join('\n') : last.text) : '';
+    um.out.classList.toggle('is-lines', !!last?.lines);
+    um.copy.hidden = !(last && last.kind === 'point' && last.geo);
   }
   function measureClick(x, y) {
     const h = viewer.measureAt(x, y);
     if (!h) { status(t('measure.nothing')); return; }
+    if (meas.mode === 'point') { guard(() => (h.snap === 'cloud' && (!models.length || h.key === null) ? locateCloudPoint(h) : locatePoint(h))); return; }
     if (meas.mode === 'area') {
       if (!h.face || !h.face.tris.length) { status(t('measure.nothing')); return; }
       const T = h.face.tris, c = [0, 0, 0];
@@ -2448,12 +2948,12 @@ function init(root) {
     if (!meas) return;
     const lines = [], points = [], faces = [];
     for (const it of meas.items) {
-      if (it.kind === 'distance') { lines.push([it.a, it.b]); points.push(it.a, it.b); } else faces.push(it.tris);
+      if (it.kind === 'distance') { lines.push([it.a, it.b]); points.push(it.a, it.b); } else if (it.kind === 'point') points.push(it.a); else faces.push(it.tris);
     }
     const h = meas.hover;
     if (meas.a) { points.push(meas.a); if (h) lines.push([meas.a, h.point]); }
     if (meas.mode === 'area' && h?.face?.tris.length) faces.push(h.face.tris);
-    viewer.setMeasureOverlay({ lines, points, faces, hover: h && meas.mode === 'distance' ? h : null });
+    viewer.setMeasureOverlay({ lines, points, faces, hover: h && meas.mode !== 'area' ? h : null });
     placeMeasureLabels();
   }
   /** Each measurement's value beside it (distances at the middle, areas at the face's centre), redrawn with the camera. */
@@ -2462,33 +2962,200 @@ function init(root) {
     const wrap = ui.canvasWrap.getBoundingClientRect();
     const tags = [];
     meas.items.forEach((it, i) => {
-      const at = it.kind === 'distance' ? it.a.map((v, k) => (v + it.b[k]) / 2) : it.center;
+      const at = it.kind === 'distance' ? it.a.map((v, k) => (v + it.b[k]) / 2) : it.kind === 'point' ? it.a : it.center;
       const p = viewer.project(at);
       if (!p) return;
-      tags.push(el('span', { className: 'bc-measure-label', 'data-measure-label': String(i), style: 'left:' + (p.x - wrap.left).toFixed(1) + 'px;top:' + (p.y - wrap.top).toFixed(1) + 'px' }, it.kind === 'distance' ? fmtLength(it.value) : fmtArea(it.value)));
+      tags.push(el('span', { className: 'bc-measure-label', 'data-measure-label': String(i), style: 'left:' + (p.x - wrap.left).toFixed(1) + 'px;top:' + (p.y - wrap.top).toFixed(1) + 'px' }, it.kind === 'distance' ? fmtLength(it.value) : it.kind === 'point' ? it.label : fmtArea(it.value)));
     });
     const h = meas.hover;
-    if (h && meas.mode === 'distance') {
+    if (h && meas.mode !== 'area') {
       const p = viewer.project(h.point);
       if (p) tags.push(el('span', { className: 'bc-measure-label', style: 'left:' + (p.x - wrap.left).toFixed(1) + 'px;top:' + (p.y - wrap.top).toFixed(1) + 'px;opacity:.75' }, t('measure.snap.' + h.snap)));
     }
     um.labels.replaceChildren(...tags);
   }
+  // ---- Location (0.5 WL.4; ifc-geo.js + the crs.js copy): where a picked point is on the earth. The point goes back to
+  // its model's own file coordinates (each federated model has its own georeference), then through IfcMapConversion to
+  // the map grid of its IfcProjectedCRS and on to latitude / longitude in Settings › BimCraft › Location's system; with
+  // no map conversion, from IfcSite's latitude / longitude (approximate). crs.js and its catalog load on the first use.
+  let crsLib = null;
+  const geoCache = new WeakMap();   // model entry → readGeoref result (null = none)
+  const fx = (v, n) => (Math.round(v * 10 ** n) / 10 ** n).toFixed(n);
+  async function locatePoint(h) {
+    const ent = entryOf(h.key) || cur();
+    if (!geoCache.has(ent)) geoCache.set(ent, readGeoref(ent.ifc.api, ent.model.modelID));
+    const g = geoCache.get(ent);
+    if (!g) { status(t('geo.none', { file: ent.name }), true); return; }
+    const C = [...ent.ifc.api.GetCoordinationMatrix(ent.model.modelID)];
+    const p = viewerToFile(h.point, viewer.modelMatrix(ent.mi), C, g.fileUnitM);
+    const rows = [];
+    let lonlat = null, sysName = '', note = '';
+    if (g.kind === 'map') {
+      const [E, N, H] = fileToMap(g, p);
+      const crsLabel = g.crs.name + (g.crs.description && g.crs.description !== g.crs.name ? ' (' + g.crs.description + ')' : '');
+      rows.push(t('geo.grid', { e: fx(E, 3), n: fx(N, 3), crs: crsLabel }));
+      rows.push(t('geo.height', { h: fx(H, 3), datum: g.crs.verticalDatum || t('geo.datum.unstated') }));
+      crsLib ||= await import('./crs.js');
+      if (!crsLib.catalogLoaded()) await crsLib.loadCatalog();
+      const entry = g.crs.code ? crsLib.byCode(g.crs.code) : null;
+      if (!entry || entry.geographic) note = t(g.crs.code ? 'geo.crs.unknown' : 'geo.crs.nocode', { crs: g.crs.name });
+      else {
+        const per = crsLib.METRES_PER[entry.unit] || 1;
+        const own = settings.geoCrs === 'file', target = own ? datumOf(entry.proj4) : settings.geoCrs === '4326' ? null : crsLib.byCode(Number(settings.geoCrs));
+        lonlat = crsLib.transformer(entry, target)(E / per, N / per);
+        sysName = own ? t('geo.sys.file', { datum: g.crs.geodeticDatum || entry.name.split(' / ')[0] }) : settings.geoCrs === '4326' ? 'WGS 84' : (target?.name || 'WGS 84');   // i18n-ignore: the system's own name
+        if (!own && entry.shiftAccuracy) note = t('geo.shift', { m: entry.shiftAccuracy, datum: g.crs.geodeticDatum || entry.name.split(' / ')[0] });
+      }
+      rows.push(t('geo.datum', { datum: g.crs.geodeticDatum || t('geo.datum.unstated') }));
+    } else {
+      const [lon, lat, hh] = siteLonLat(g, p);
+      lonlat = [lon, lat];
+      sysName = t('geo.sys.site');
+      rows.push(t('geo.height.site', { h: fx(hh, 3) }));
+      note = t('geo.site.note');
+    }
+    let label = rows[0];
+    if (lonlat) {
+      const [lon, lat] = lonlat;
+      rows.unshift(t('geo.latlon', { lat: fx(lat, 8), lon: fx(lon, 8), sys: sysName }), dms(lat, 'lat') + ', ' + dms(lon, 'lon'));
+      label = fx(lat, 6) + ', ' + fx(lon, 6);
+    }
+    // the bar shows three lines (lat/long, the map grid, height and datum); Copy and the tests get one line
+    const lines = lonlat ? [rows[0] + ' · ' + rows[1], rows[2], rows.slice(3).join(' · ')] : [rows[0], rows.slice(1).join(' · ')];
+    meas.items.push({ kind: 'point', a: h.point, label, text: rows.join(' · '), lines: lines.filter(Boolean), geo: { lonlat, text: rows.join(' · ') } });
+    syncMeasureBar();
+    redrawMeasure();
+    status(note || t('geo.done'), false, !note);
+  }
+  // ---- Render a picture (0.5 RC.11, session render): the shared renderer in render/ (a copy of ModelCraft's) through
+  // render-bim.js, both imported on first use. The settings and looks are this browser's (localStorage "bimcraft.render").
+  async function openRender() {
+    if (!viewer || mode !== 'ifc' || viewer.box.isEmpty()) { status(t('ui.render.none'), true); return; }
+    const [{ openRenderDialog }, R, PB] = await Promise.all([import('./render/render-ui.js'), import('./render-bim.js'), import('./paint-bim.js')]);
+    // painted elements (RC.7): each model's CadCraft_Render sets, read when a render starts
+    const lampModels = () => models.filter((m) => m.visible !== false).map((m) => ({ mi: m.mi, api: m.ifc.api, mid: m.model.modelID, keyBase: m.model.keyBase || 0 }));
+    const paints = () => new Map(models.map((m) => [m.mi, { paint: PB.readPaint(m.ifc.api, m.model.modelID), api: m.ifc.api, mid: m.model.modelID, keyBase: m.model.keyBase || 0, C: [...m.ifc.api.GetCoordinationMatrix(m.model.modelID)] }]));
+    const ent = cur();
+    const site = ent ? R.bimSite(ent.ifc.api, ent.model.modelID) : null;
+    const base = R.bimSunBase(site);
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('bimcraft.render') || 'null'); } catch { saved = null; }
+    openRenderDialog({
+      scene: (st) => ({ ...R.bimScene(viewer, st, R.bimSun(site, st, ent ? viewer.modelMatrix(ent.mi) : null), paints()), lights: R.bimLamps(viewer, lampModels()).filter((L) => L.on) }),
+      lamps: () => R.bimLamps(viewer, lampModels()),
+      setLamp: (key, patch) => {   // one undo step in the fixture's own model (its CadCraft_Light set)
+        const e = entryOf(key);
+        if (!e || !e.editor) return;
+        try { e.editor.modelChange(R.lampOp(key - (e.model.keyBase || 0), patch), { label: nameOfKey(key), verb: t('render.lamps') }); renderChanges(); } catch (err) { status(String(err.message || err), true); }
+      },
+      viewSize: () => ({ w: ui.canvas.clientWidth, h: ui.canvas.clientHeight }),
+      colors: () => R.bimColors(viewer),
+      modelSun: () => ({ month: base.month, day: base.day, hour: base.hour, src: site ? 'site' : 'assumed', lat: base.lat }),
+      settings: saved,
+      save: (st) => { try { localStorage.setItem('bimcraft.render', JSON.stringify(st)); } catch { /* private window: this dialog only */ } },
+      download: (blob, name) => fileHost.download(blob, name, 'image/png'),
+      fileBase: () => (ifcName || 'model').replace(/\.ifc$/i, ''),
+      parent: root,
+      onClose: () => viewer.render(),
+    });
+  }
+  // ---- Paint materials (0.5 RC.7, session render): paint-ui-bim.js + paint-bim.js + the library in render/, imported on
+  // first use. Painting writes the active model (one undo step each), then it reloads so the colour shows. ----
+  let paintUi = null;
+  async function openPaint() {
+    if (!viewer || mode !== 'ifc' || viewer.box.isEmpty() || !editor) { status(t('paint.nomodel'), true); return; }
+    if (!paintUi) {
+      const { mountPaint } = await import('./paint-ui-bim.js');
+      paintUi = mountPaint({
+        root, parent: ui.canvasWrap,
+        viewer: () => viewer,
+        target: (key) => { const ent = entryOf(key); if (!ent || ent !== cur() || !editor) return null; return { editor, id: key - (ent.model.keyBase || 0), C: [...ent.ifc.api.GetCoordinationMatrix(ent.model.modelID)], P: viewer.modelMatrix(ent.mi) }; },
+        selection: () => [...viewer.selection],
+        nameOfKey,
+        rebuild: (key) => rebuild(key),
+        afterEdit: () => renderChanges(),
+        status: (text, isError, fade) => status(text, isError, fade),
+        beforeOpen: () => { if (meas) measureOff(); },
+        onClose: () => { setPressed('paint', false, 'paint-open'); },
+      });
+    }
+    if (paintUi.isOpen()) { paintUi.close(); return; }
+    paintUi.open();
+    setPressed('paint', true, 'paint-open');
+  }
+  // ---- Views (0.5 RC.7, session render): saved cameras and walkthroughs in the IFC (views-ui-bim.js + views-bim.js) ----
+  let viewsUi = null;
+  async function openViews() {
+    if (!viewer || mode !== 'ifc' || viewer.box.isEmpty() || !editor) { status(t('views.nomodel'), true); return; }
+    if (!viewsUi) {
+      const { mountViews } = await import('./views-ui-bim.js');
+      viewsUi = mountViews({
+        root, parent: ui.canvasWrap,
+        viewer: () => viewer,
+        editor: () => (mode === 'ifc' ? editor : null),
+        frameC,
+        stopWalk: () => { if (walking) walkOff(); },
+        status: (text, isError, fade) => status(text, isError, fade),
+        afterEdit: () => renderChanges(),
+        onClose: () => setPressed('views', false, 'saved-views'),
+      });
+    }
+    if (viewsUi.isOpen()) { viewsUi.close(); return; }
+    viewsUi.open();
+    setPressed('views', true, 'saved-views');
+  }
+  // ---- Point clouds (0.5 SG.1; cloud-ui.js, pointcloud.js, pointcloud-three.js — imported on the first cloud) ----
+  // A cloud joins the 3D view beside the model (or on its own): it is not a document, so it never asks about unsaved
+  // edits and a new model keeps it. Measure snaps to its points; Location reads a cloud point through the cloud's own system.
+  ui.cloudInput = $('[data-cloud-input]');
+  ui.cloudInput.addEventListener('change', () => { const f = ui.cloudInput.files[0]; ui.cloudInput.value = ''; if (f) guard(() => openCloud(f)); });
+  async function openCloud(file) {
+    if (!pc) {
+      const { installClouds } = await import('./cloud-ui.js');
+      pc = installClouds({ root, viewer: () => viewer, ensureViewer: () => { const away = ui.toolbar.hidden || ui.canvasWrap.hidden; const v = ensureViewer(); if (away) showStage('ifc'); return v; },
+        models: () => models.filter((m) => m.visible !== false), status, frame, guard, sendHandoff, cloudShown: cloudPressed });
+      window.bimcraftCloud = pc;   // for tests and the console
+    }
+    await pc.open(file);
+    viewer.cloudSnap = (x, y) => pc.snap(x, y);
+  }
+  // ---- Map layers on the ground (0.5 SG.3; maps-bim.js + the shared maplayers.js, imported on first use) ----
+  let bimMapsLoading = null;
+  const hasSavedMaps = () => { try { return (JSON.parse(localStorage.getItem('bimcraft.maps') || '{}')?.layers || []).length > 0; } catch { return false; } };
+  function ensureMaps() {
+    return (bimMapsLoading ||= import('./maps-bim.js').then((m) => m.installBimMaps({
+      root, attrib: ui.canvasWrap, viewer: () => viewer, models: () => models.filter((x) => x.visible !== false),
+      say: (s) => status(s), busy: (s) => status(s), ask: null, refocus: () => {},
+    })).then((m) => { bimMaps = m; window.bimcraftMaps = m; return m; }, (e) => { bimMapsLoading = null; throw e; }));
+  }
+  const cloudPressed = (on) => ui.toolbar.querySelector('[data-cloud-open]')?.setAttribute('aria-pressed', on ? 'true' : 'false');
+  async function locateCloudPoint(h) {
+    const g = await pc.locate(h.point);
+    if (!g) { status(t('pc.locate.none'), true); return; }
+    const text = [t('geo.latlon', { lat: fx(g.lat, 8), lon: fx(g.lon, 8), sys: 'WGS 84' }), dms(g.lat, 'lat') + ', ' + dms(g.lon, 'lon'),   // i18n-ignore: the system's own name
+      t('pc.locate.grid', { e: fx(g.e, 3), n: fx(g.n, 3), h: fx(g.h, 3), crs: g.crs })];
+    meas.items.push({ kind: 'point', a: h.point, label: fx(g.lat, 6) + ', ' + fx(g.lon, 6), text: text.join(' · '), lines: [text[0] + ' · ' + text[1], text[2]], geo: { lonlat: [g.lon, g.lat], text: text.join(' · ') } });
+    syncMeasureBar();
+    redrawMeasure();
+    status(t('pc.locate.done'), false, true);
+  }
+  um.copy.addEventListener('click', () => { const last = meas?.items[meas.items.length - 1]; if (last?.geo) copyText(last.geo.text).then(() => status(t('geo.copied'), false, true)); });
   um.bar.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b || !meas) return;
-    if (b.dataset.measureMode) { meas.mode = b.dataset.measureMode; meas.a = null; syncMeasureBar(); redrawMeasure(); }
+    if (b.dataset.measureMode) { meas.mode = b.dataset.measureMode; meas.a = null; syncMeasureBar(); redrawMeasure(); if (meas.mode === 'point') status(t('geo.start')); }
     else if (b.hasAttribute('data-measure-clear')) { meas.items = []; meas.a = null; syncMeasureBar(); redrawMeasure(); status(t('measure.cleared')); }
     else if (b.hasAttribute('data-measure-done')) { measureOff(); status(t('measure.ended')); }
   });
-  window.bimcraftMeasure = { on: measureOn, off: measureOff, state: () => meas && { mode: meas.mode, a: meas.a, items: meas.items.map((i) => ({ kind: i.kind, value: i.value, delta: i.delta, text: i.text })) } };   // for tests
+  window.bimcraftMeasure = { on: measureOn, off: measureOff, state: () => meas && { mode: meas.mode, a: meas.a, items: meas.items.map((i) => ({ kind: i.kind, value: i.value, delta: i.delta, text: i.text, a: i.a, lonlat: i.geo?.lonlat || null })) },
+    fileOf: (pt, key) => { const ent = entryOf(key) || cur(); return viewerToFile(pt, viewer.modelMatrix(ent.mi), [...ent.ifc.api.GetCoordinationMatrix(ent.model.modelID)], readGeoref(ent.ifc.api, ent.model.modelID)?.fileUnitM ?? 0.001); } };   // for tests
 
   // ---- Hide and isolate (0.4 B12; ifc-vis.js through viewer.vis) ----
   // Hide = the picked elements go; Isolate = only they stay; See-through = only they stay solid, the rest faint (clicks
   // go through it); Show all = everything back. The pick is kept where it is still shown.
   const visButtons = [...ui.toolbar.querySelectorAll('[data-vis]')];
   const visMenu = ui.toolbar.querySelector('[data-vis-menu]');
-  const VIS_TITLE = { hide: 'vis.hide.title', isolate: 'vis.isolate.title', ghost: 'vis.ghost.title', all: 'vis.showall.title' };
+  const VIS_TITLE = { hide: 'vis.hide.title', isolate: 'vis.isolate.title', ghost: 'vis.ghost.title', all: 'vis.showall.title', secbox: 'vis.secbox.title' };
   function visWhyNot(name) {
     if (!viewer || mode !== 'ifc') return t('vis.need.pick');
     if (name === 'all') return viewer.vis.plain ? t('vis.nothing.hidden') : '';
@@ -2504,6 +3171,7 @@ function init(root) {
   function visAct(name) {
     const why = visWhyNot(name);
     if (why) { status(why); return; }
+    if (name === 'secbox') { boxRoundPick(); return; }
     const keys = [...viewer.selection], v = viewer.vis;
     if (name === 'hide') {
       const n = v.hide(keys);
@@ -2607,9 +3275,11 @@ function init(root) {
   // ---- Stage + toolbar ----
   function showStage(which) {
     ui.empty.hidden = true;
+    modelUi?.stage(which);
     ui.canvasWrap.hidden = which !== 'ifc';
     ui.toolbar.hidden = which !== 'ifc';
     usec.bar.hidden = which !== 'ifc' || !cut;   // the section plane bar belongs to the 3D model view
+    if (pc?.has()) { const b = root.querySelector('[data-cloudbar]'); if (which !== 'ifc') b.hidden = true; }
     ui.card.hidden = which !== 'rvt';
     ui.folder.hidden = which !== 'folder';
     ui.dwg.hidden = which !== 'dwg';
@@ -2634,7 +3304,12 @@ function init(root) {
     if (b.dataset.toggle === 'spaces') { viewer.setSpacesVisible(!viewer.spacesOn); setPressed('spaces', viewer.spacesOn); }
     if (b.dataset.toggle === 'section') toggleSection();
     if (b.dataset.toggle === 'measure') { if (meas) measureOff(); else measureOn(); }
+    if (b.hasAttribute('data-map-open')) { visMenu.open = false; guard(async () => (await ensureMaps()).open()); }
+    if (b.hasAttribute('data-cloud-open')) { visMenu.open = false; if (pc?.has()) cloudPressed(pc.toggleBar()); else ui.cloudInput.click(); }
     if (b.dataset.toggle === 'walk') { if (walking) walkOff(); else walkOn(); }
+    if (b.hasAttribute('data-render-open')) guard(openRender);
+    if (b.hasAttribute('data-paint-open')) guard(openPaint);
+    if (b.hasAttribute('data-saved-views')) guard(openViews);
     if (b.dataset.vis) { visMenu.open = false; visAct(b.dataset.vis); }
     if (b.dataset.libTool === 'library') showTab('library');
     if (b.dataset.libTool === 'equipment') toggleIfcEquipment();
@@ -2656,8 +3331,10 @@ function init(root) {
         if (e.key === 'Tab') { e.preventDefault(); toggleSnap(); return; }
       }
     }
-    if (!viewer || ui.canvasWrap.hidden || e.target.closest('input, textarea, select')) return;
+    // keys typed in a dialog (Settings, …) are the dialog's: Esc there closes it, and must not stop measuring or walking
+    if (!viewer || ui.canvasWrap.hidden || e.target.closest('input, textarea, select, dialog')) return;
     if (e.key === 'f' || e.key === 'F') viewer.view('iso');
+    if ((e.key === 'x' || e.key === 'X') && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && !placing && mode === 'ifc') { e.preventDefault(); visAct('secbox'); return; }
     if ((e.key === 'x' || e.key === 'X') && !e.ctrlKey && !e.metaKey && !e.altKey && !placing) toolButton('section')?.click();
     if (e.key === 'Escape' && walking) { e.preventDefault(); walkOff(); status(t('walk.off')); return; }
     if (e.key === 'Escape' && meas) { e.preventDefault(); if (meas.a) { meas.a = null; redrawMeasure(); status(''); } else { measureOff(); status(t('measure.ended')); } return; }
@@ -2673,13 +3350,16 @@ function init(root) {
 
   // ==== Library ====================================================================================
   const tabs = root.querySelectorAll('[data-rtab]');
+  const rPanel = tabs[0]?.closest('aside') || root;   // the right panel: its tabs and panes travel with it (panels window)
   const rpanes = root.querySelectorAll('[data-rpane]');   // kept: the right panel may move to the panels window
   let libraryLoaded = false;
   function showTab(name) {
     if (name === 'library' && !libraryOn) return;   // browser edition: no library tab at all
     if (name === 'library' && !libraryLoaded) { libraryLoaded = true; library.load(); }   // no request until the tab is opened
-    tabs.forEach((t) => { const on = t.dataset.rtab === name; t.setAttribute('aria-selected', on ? 'true' : 'false'); t.tabIndex = on ? 0 : -1; });
-    rpanes.forEach((p) => { p.hidden = p.dataset.rpane !== name; });
+    // looked up each time: add-ons add tabs of their own (0.5 AO.7) — inside the right panel kept at start, so it works
+    // when the panel has moved into the pop-out panels window (another document)
+    rPanel.querySelectorAll('[data-rtab]').forEach((t) => { const on = t.dataset.rtab === name; t.setAttribute('aria-selected', on ? 'true' : 'false'); t.tabIndex = on ? 0 : -1; });
+    rPanel.querySelectorAll('[data-rpane]').forEach((p) => { p.hidden = p.dataset.rpane !== name; if (!p.hidden && p.dataset.addon) p.dispatchEvent(new Event('cc-tab-shown')); });
     if (name === 'color') renderColor();   // after the pane shows: renderColor builds a hidden pane only when coloring
     if (name === 'issues') renderIssues();
   }
@@ -2875,11 +3555,14 @@ function init(root) {
   /** Rebuild the model from the editor's bytes (the simplest correct way to show new geometry), camera kept. */
   async function rebuild(selectId) {
     status(t('model.updating'));
+    modelUi?.rebuilding();
     await frame();
+    window.bimcraftLive?.live?.reloading();   // Studio Live: others' edits wait while the model reloads (live.js)
     const bytes_ = editor.save();
     model = await ifc.load(bytes_, undefined, { keyBase: model.keyBase });
     cur().model = model;
     editor.reindex();
+    window.bimcraftLive?.live?.loaded();
     const keys = new Set(); for (const b of model.batches) for (const k of b.elems.ids) keys.add(k);
     const mi = cur().mi;
     viewer.vis.prune((k) => Math.floor(k / KEY_SPAN) !== mi || keys.has(k));   // hidden / isolated stay so (keys survive a rebuild); deleted ones drop out
@@ -2900,6 +3583,7 @@ function init(root) {
     if (!ui.ifcEquip.hidden) renderIfcEquipment();
     if (selectId !== null && selectId !== undefined) { viewer.select(selectId); await showProps(selectId); }
     else { selected = null; clearProps(); }
+    modelUi?.rebuilt();
   }
 
   /** The one prompt per placement: item number (default next free), quantity, notes, and a stand-in height for a 2D-only item. */
@@ -3164,6 +3848,8 @@ function init(root) {
   }
 
   function act(name) {
+    if (addons?.runCommand(name)) return;   // 0.5 AO.7: an add-on's command
+    if (modelUi?.edit(name)) return;   // drawn walls, doors and windows (model-ui.js): their own delete; copy not yet
     const why = whyNot(name);
     if (name === 'undo') { if (why) status(why); else ui.undo.click(); return; }
     if (name === 'redo') { if (why) status(why); else redo(); return; }
@@ -3267,8 +3953,12 @@ function init(root) {
     const info = editor.placer().info();
     const st = info.storeys.find((x) => x.id === snap.storey);
     const zb = st ? st.elevation : 0;
-    let box = null, ax = 0, ay = 0;
-    if (bb) {
+    let box = null, ax = 0, ay = 0, rot = 0;
+    if (snap.frame) {
+      // turned like the element (ifc-place.js elementsFrame): a door in a building turned in its site keeps its own shape,
+      // and the ghost, wall snap and paste turn from there, not from the model's axes (Discord bug, 2026-10-14)
+      ({ x: ax, y: ay, rot, box } = snap.frame);
+    } else if (bb) {
       const pts = [];
       for (const x of [bb.min[0], bb.max[0]]) for (const y of [bb.min[1], bb.max[1]]) for (const z of [bb.min[2], bb.max[2]]) pts.push(fromViewer(C, [x, y, z]));
       const lo = [0, 1, 2].map((k) => Math.min(...pts.map((q) => q[k]))), hi = [0, 1, 2].map((k) => Math.max(...pts.map((q) => q[k])));
@@ -3279,7 +3969,7 @@ function init(root) {
       if (pl) { const w = ifc.api.GetWorldTransformMatrix(model.modelID, pl); ax = w[12] * info.unitMm; ay = w[13] * info.unitMm; }
     }
     const rows = list.map((id) => { const l = ifc.api.GetLine(model.modelID, id); return { id, name: l.Name?.value || '', cls: classOfId(id), guid: l.GlobalId?.value || '' }; });
-    clip = elementsClip(rows, { model: modelTag, file: ifcName, now, storey: snap.storey, storeyName: st?.name || '', storeyElevation: st ? st.elevation : null, x: ax, y: ay, box, cut: isCut });
+    clip = elementsClip(rows, { model: modelTag, file: ifcName, now, storey: snap.storey, storeyName: st?.name || '', storeyElevation: st ? st.elevation : null, x: ax, y: ay, rot, box, cut: isCut });
     elementSnaps.clear();   // one clip at a time: an older snapshot is never pasted
     elementSnaps.set(clip.copiedAt, { snap, cut: isCut, pasted: 0 });
     writeClip(store, clip);
@@ -3331,7 +4021,7 @@ function init(root) {
   async function pasteElementsAt(c, at, how) {
     const kept = elementSnaps.get(c.copiedAt);
     if (!kept || c.model !== modelTag) { status(whyNot('paste')); return; }
-    const r = editor.pasteElements(kept.snap, { storey: at.storey, dx: at.x - c.x, dy: at.y - c.y, rot: at.rot, about: [c.x, c.y], keepNumbers: kept.cut && !kept.pasted },
+    const r = editor.pasteElements(kept.snap, { storey: at.storey, ...pasteMove(c, at), keepNumbers: kept.cut && !kept.pasted },
       { label: c.count === 1 ? (c.cls || '').replace(/^Ifc/, '') + ' ' + (c.name || '') : t('edit.many', { n: c.count }) });
     kept.pasted++;
     await rebuild(r.ids[0]);
@@ -3353,7 +4043,7 @@ function init(root) {
     if (c.kind === 'elements') {
       // beside the originals while they are still in the model (an exact overlap helps no one), else exactly in place
       const still = c.ids.some((id) => model.classOf.has(editor.now(id)));
-      const at = still ? { storey: c.storey, ...besideSpot(c) } : { storey: c.storey, x: c.x, y: c.y, rot: 0 };
+      const at = still ? { storey: c.storey, ...besideSpot(c) } : { storey: c.storey, x: c.x, y: c.y, rot: c.rot || 0 };
       await pasteElementsAt(c, at, still ? 'beside' : 'place');
       return;
     }
@@ -3405,6 +4095,68 @@ function init(root) {
     act(name);
   });
   syncEdit();
+
+  // ---- Draw (0.5 part 3, track BM; model-ui.js): the plan view of a level and the building tools ----
+  modelUi = mountModel({
+    root,
+    editor: () => (mode === 'ifc' ? editor : null),
+    model: () => (mode === 'ifc' ? model : null),
+    ifc: () => ifc,
+    viewer: () => viewer,
+    rebuild: (key) => rebuild(key),
+    select: (keys) => {
+      if (!viewer) return;
+      viewer.select(keys.length ? keys : null);
+      afterPick();
+      if (viewer.selection.size > 1) showMany(); else if (viewer.selection.size) showProps(viewer.selected); else clearProps();
+    },
+    status: (text, isError) => status(text, isError),
+    afterEdit: () => renderChanges(),
+    download: (name, data, type) => download(name, data, type),   // schedules' CSV, the plan's PDF
+    fileName: () => ifcName,
+  });
+  if (modelUi) mountRes(modelUi);   // 0.5 part 4, track RC (res-ui.js): the residential tools join the plan's tools
+
+  // ---- Menus, keys and mouse (0.5 track IP): the shell's input engine (assets/js/app-input-ui.js, manifest "input":
+  // input-bimcraft.js) runs the styles; it asks BimCraft for the status line, downloads and whether a tool is running ----
+  window.ccInputHooks = {
+    status: (text, isError) => status(text, isError),
+    download: (name, text, type) => download(name, text, type),
+    busy: () => !!placing || walking,   // a running tool keeps its own letter keys (R, Tab; W A S D Q E)
+  };
+
+  // A phone (owner, 2026-10-15): the shell's app-phone.js (manifest "phone") — the view keeps the screen, the panels are sheets.
+
+  // ---- Add-ons (0.5 AO.7; addons/bimcraft-api.js is session `addons`' module, docs/ADDONS-SPEC.md §5.7). BimCraft runs its
+  // own loader (manifest "addons": "own"): add-ons get the open IFC model, the pick, one-undo-step edits, commands, sections
+  // in Properties, tabs on the right, importers (a file → IFC) and exporters (buttons beside Save as IFC). An add-on that
+  // fails never stops BimCraft. ----
+  // Only when the manifest says "addons": "own": then app-shell.inc prints no #cc-addons and the shell's generic loader stays
+  // away. Until then the shell's loader runs as before and this stays off (the build needs its addons/index.json first).
+  if (!document.getElementById('cc-addons')) startAddons({
+    editor: () => (mode === 'ifc' ? editor : null),
+    model: () => (mode === 'ifc' && model ? ifc : null),
+    name: () => ifcName,
+    selection: () => addonSelection(),
+    select: (ids) => {
+      if (!viewer || mode !== 'ifc' || !model) return;
+      viewer.select(ids.map((id) => (model.keyBase || 0) + Number(id)));
+      afterPick();
+      if (viewer.selection.size > 1) showMany(); else if (viewer.selection.size) showProps(viewer.selected); else clearProps();
+    },
+    afterEdit: (label) => { tagLast(label); afterEdit(); },
+    status: (text) => status(text),
+    openIfc: (bytes, name) => open(new File([bytes], name), null),
+    find: (sel) => root.querySelector(sel),
+    showTab: (k) => showTab(k || 'props'),
+  }).then((a) => {
+    addons = a;
+    // the Open picker offers the add-ons' importer extensions too (the picker filters by accept)
+    const baseAccept = ui.file.getAttribute('accept') || '';
+    const sync = () => { renderAddonExports(); const ext = [...new Set(a.importers().flatMap((x) => x.extensions || []))]; ui.file.setAttribute('accept', [baseAccept, ...ext].filter(Boolean).join(',')); };
+    a.onChange(sync); sync();
+  })
+    .catch((e) => console.warn('add-ons did not start:', e));   // i18n-ignore: a console note
 
   // ?library=<uuid>: open the panel on that item.
   const deep = new URLSearchParams(location.search).get('library');

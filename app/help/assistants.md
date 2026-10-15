@@ -3,12 +3,12 @@ title: Let an AI assistant work with your model
 summary: Turn on assistants in Settings so an assistant on your computer can find elements, read their properties and isolate them in the view, through CadCraft Studio. Off until you turn it on.
 section: tasks
 order: 60
-keywords: ai, assistant, claude, mcp, script, automation, studio, find elements, isolate, properties, permissions, disconnect, activity
+keywords: ai, assistant, mcp, script, automation, studio, find elements, isolate, properties, permissions, disconnect, activity
 ---
 
 ## What you will learn
 
-How to let an AI assistant (Claude, or another assistant that speaks MCP) look into the IFC model you have open, what it can and cannot do, and how to stop it.
+How to let an AI assistant (any assistant that speaks MCP) look into the IFC model you have open, what it can and cannot do, and how to stop it.
 
 ## What an assistant can do in BimCraft
 

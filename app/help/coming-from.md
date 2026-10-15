@@ -20,7 +20,7 @@ If you know Revit, most of BimCraft will feel familiar in words and unfamiliar i
 | Edit Type | No dialog: click a value in a "(type)" set and type |
 | Selecting many elements, filters, Select All Instances | One element at a time. Not built yet |
 | The view cube and the navigation wheel | A view cube in the bottom-right corner, four buttons ({{ui:Fit}}, {{ui:Top}}, {{ui:Front}}, {{ui:Side}}) and free orbit. No navigation wheel |
-| Shift and middle-drag to orbit, middle-drag to pan | Left-drag orbits, right-drag (or {{key:Shift}} and drag) pans, wheel zooms |
+| Shift and middle-drag to orbit, middle-drag to pan | Left-drag orbits, right-drag (or {{key:Shift}} and drag) pans, wheel zooms. The {{ui:BIM ribbon}} menu style switches to middle-drag pan and {{key:Shift}} with the middle button to orbit. [Menus, keys and mouse](topic:menus-keys-and-mouse) |
 | Floor plans, sections, section boxes | One {{ui:Section}} plane at a time ({{key:X}}); no section box or 2D plans. [Cut an IFC model with a section plane](topic:section-plane) |
 | Hide in view, isolate, visibility/graphics | {{ui:Storeys}} on and off, {{ui:Spaces}} and {{ui:Edges}}. No per-element hiding yet |
 | Rooms | IFC spaces, hidden at first. Click {{ui:Spaces}} |
@@ -29,6 +29,8 @@ If you know Revit, most of BimCraft will feel familiar in words and unfamiliar i
 | Manage Links | Open the project folder: every link is checked and marked **In this folder**, **Same name found**, **Library file** or **Not in this folder**. [Open a whole project folder](topic:open-project-folder) |
 | Audit, or opening a file to see if it is corrupt | The folder report checks every copy and backup for being cut off, in seconds. [Check a folder for damaged copies](topic:check-folder-health) |
 | Picking the right file from a messy folder | The {{ui:Start here}} box suggests one, with reasons |
+
+If you mostly open models to check them, as in a model checking or IFC viewing program, pick the {{ui:Viewer}} menu style: the viewing and checking tools come first and the building tools wait in one menu. See [Menus, keys and mouse](topic:menus-keys-and-mouse).
 
 ## From viewing DWG files
 
@@ -53,6 +55,6 @@ If you open DWGs in AutoCAD or a DWG viewer:
 - **Edits are copy-on-write.** Changing one element's value never changes its neighbors, even when the exporter shared that value between them. Type properties are the deliberate exception.
 - **No project, no views.** BimCraft shows one file at a time and remembers nothing about it after you close the tab, except the names of recent folders in Chrome and Edge.
 - **Mac keys.** Where Revit's Windows shortcuts use Ctrl, BimCraft's shortcuts use {{key:Mod}}: Command on a Mac.
-- **Your mouse habits.** Orbit is the left button, not Shift and the middle button. You will try the old way a few times.
+- **Your mouse habits.** Orbit is the left button, not Shift and the middle button, unless you pick the {{ui:BIM ribbon}} menu style or set the buttons yourself in [Menus, keys and mouse](topic:menus-keys-and-mouse).
 
 See [What is not built yet](topic:not-built-yet) for what to use instead today.

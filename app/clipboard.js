@@ -17,10 +17,12 @@
  *
  *   placementClip(p, ctx)  elementClip(p, ctx)  elementsClip(list, ctx)  validateClip(obj)  readClip(storage)  writeClip(storage, clip)
  *   libKey(p)  boxFromItem(item)  boxFromEquipment(eq, unitMm)  ghostItem(clip)  besideSpot(clip)  pickStorey(clip, storeys, same)
+ *   pasteMove(clip, at)  an elements clip → IfcEditor.pasteElements opts { dx, dy, rot (the turn BY), about }
  *   elementText(p)   the text Copy puts on the system clipboard for any element (IfcModel.properties() shape)
  */
 import { validateItem, planBounds } from './libitem.js';
 import { t } from "./i18n.js";
+import { tableCsv } from "./ifc-qto.js";
 
 export const CLIP_KEY = 'bimcraft.clipboard';
 export const CLIP_FORMAT = 'bimcraft-clipboard';
@@ -67,7 +69,9 @@ export function elementClip(p, ctx = {}) {
 
 /**
  * A clip for elements copied or cut in this model: list = [{ id, name, cls, guid }] (the elements asked for).
- * ctx: { model, file, now, storey, storeyName, storeyElevation, x, y (anchor, model mm), box (round the anchor, mm), cut }
+ * ctx: { model, file, now, storey, storeyName, storeyElevation, x, y (anchor, model mm), rot (degrees: the axes `box` is
+ * measured in — IfcEditor.snapshot().frame, turned like the element, so a door in a building turned in its site gets a
+ * ghost the shape of the door, not of its box along the model's axes), box (round the anchor, mm), cut }
  */
 export function elementsClip(list, ctx = {}) {
   const first = list[0] || {};
@@ -79,8 +83,20 @@ export function elementsClip(list, ctx = {}) {
     name: cut(first.name || t('clip.unnamed'), MAX.name), cls: cut(first.cls, MAX.cls), guid: cut(first.guid, MAX.guid),
     storey: Number.isInteger(ctx.storey) && ctx.storey > 0 ? ctx.storey : null,
     storeyName: cut(ctx.storeyName, MAX.name), storeyElevation: Number.isFinite(ctx.storeyElevation) ? ctx.storeyElevation : null,
-    x: ctx.x ?? 0, y: ctx.y ?? 0, rot: 0, box: ctx.box || null, cut: !!ctx.cut,
+    x: ctx.x ?? 0, y: ctx.y ?? 0, rot: Number.isFinite(ctx.rot) ? ((ctx.rot % 360) + 360) % 360 : 0, box: ctx.box || null, cut: !!ctx.cut,
   };
+}
+
+/**
+ * Where an elements clip goes: `at` = { x, y, rot } from the placing bar / ghost / wall snap (rot = the turn the ghost
+ * shows, in model axes, as for a library item). The snapshot is still turned clip.rot, so it is turned BY the
+ * difference; the anchor lands on at.x, at.y. → { dx, dy, rot, about } for IfcEditor.pasteElements.
+ */
+export function pasteMove(clip, at) {
+  let rot = (Number(at.rot) || 0) - (Number(clip.rot) || 0);
+  rot = ((rot % 360) + 360) % 360;
+  if (Math.abs(rot - 360) < 1e-9) rot = 0;
+  return { dx: at.x - clip.x, dy: at.y - clip.y, rot, about: [clip.x, clip.y] };
 }
 
 /**
@@ -251,4 +267,25 @@ export function elementText(p) {
     for (const r of rows) lines.push('  ' + t('clip.text.row', { label: r.name, value: v(r.value) }));
   }
   return lines.join('\n') + '\n';
+}
+
+/**
+ * Every value Properties shows for one element (0.5 WL.3), as [group, property, value] rows: the element's own fields under
+ * "Element", then each property set (instance sets, then type sets, as `properties()` orders them). Empty values are kept,
+ * so a CSV lists every field. `file` (federated models) adds a Model column.
+ */
+export function elementCopyRows(p) {
+  const v = (x) => (x === null || x === undefined ? '' : x === true ? t('dwg.yes') : x === false ? t('dwg.no') : String(x));
+  const own = t('prop.copy.element');
+  const rows = [[own, t('prop.copy.class'), String(p.cls || '').replace(/^Ifc/, '')], [own, t('prop.name'), v(p.name)],
+    [own, t('prop.type'), v(p.typeName)], [own, t('prop.objtype'), v(p.objectType)], [own, t('prop.tag'), v(p.tag)],
+    [own, t('prop.desc'), v(p.description)], [own, t('prop.guid'), v(p.guid)], [own, t('prop.line'), p.id === undefined ? '' : '#' + p.id]];
+  for (const s of p.sets || []) for (const r of s.rows || []) rows.push([s.name, r.name, v(r.value)]);
+  return rows;
+}
+/** The same rows as CSV (no BOM; formula-looking cells escaped as every other BimCraft CSV), with a Model column when given. */
+export function elementCsv(p, { file } = {}) {
+  const rows = elementCopyRows(p);
+  // i18n-ignore: CSV headers are file content (as the other CSVs here)
+  return file ? tableCsv(['Model', 'Group', 'Property', 'Value'], rows.map((r) => [file, ...r])) : tableCsv(['Group', 'Property', 'Value'], rows);
 }

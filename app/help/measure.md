@@ -1,9 +1,9 @@
 ---
-title: Measure distances and face areas in 3D
+title: Measure distances, face areas and locations in 3D
 summary: Measure between two points of an IFC model with snapping to corners and edges, read the difference along X, Y and Z, and measure the area of a flat face.
 section: tasks
 order: 28
-keywords: measure, measurement, distance, length, dimension, area, face area, snap, corner, edge, tape, ruler, clearance
+keywords: measure, measurement, distance, length, dimension, area, face area, snap, corner, edge, tape, ruler, clearance, location, latitude, longitude, lat long, coordinates, georeference, map conversion, EPSG, survey, eastings, northings, WGS 84, datum
 ---
 
 ## What you'll do
@@ -25,7 +25,26 @@ Check a clearance, a wall length or the size of a face straight from the model, 
 - Labels stay on their measurements while you orbit, pan and zoom.
 - While you measure, clicks do not pick elements. A section plane or box still cuts the model, and you can measure what it shows, cut faces included.
 
+## Where a point is on the earth
+
+Click {{ui:Location}} in the measure bar, then click a point on the model (it snaps to corners and edges as distances do). The bar shows:
+
+- the **latitude and longitude**, in decimal degrees and in degrees, minutes and seconds, in WGS 84 to start;
+- the **map coordinates** (eastings and northings in metres) in the model's own map system, for example `EPSG:28356`;
+- the **height** and the vertical datum the file names, and the file's **own datum** (for example GDA94).
+
+{{ui:Copy}} puts it all on the clipboard in one line. Change the system the latitude and longitude are in under {{ui:Settings}} › {{ui:BimCraft}} › {{ui:Location}}: WGS 84 (as GPS and web maps), the file's own datum, or another common one such as ETRS89 or NAD83.
+
+This needs a georeferenced model: one exported with map coordinates (a map conversion to a projected system with an EPSG code). A model that only has a site latitude and longitude gets an approximate position, worked out from the site's point and its true north, and the bar says so. With several models open, each point uses the georeference of its own model.
+
+:::note
+Moving between datums (for example GDA94 to WGS 84) is done without grid files, so it is good to a few metres; the status line says how good. The map coordinates themselves are exact.
+:::
+
 ## Common mistakes
+
+- **"…has no georeference".** The file has no map conversion and no site latitude and longitude. Export it again with its coordinate system set (shared coordinates / survey point in the authoring tool).
+- **Map coordinates but no latitude and longitude.** The file names its map system without an EPSG code, or with one that is not in the list; the status line says which.
 
 - **The point lands on the face, not the corner.** Snapping looks at the element under the pointer. Move closer to the corner, or zoom in.
 - **The area is smaller than expected.** Openings are left out, and a face that bends is several faces: click each.

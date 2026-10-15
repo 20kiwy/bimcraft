@@ -34,23 +34,170 @@
 export const FORMAT = 'cadcraft-library-item';
 export const FORMAT_VERSION = 1;
 
-/** Kept in step with core/classes/LibraryCatalog.php (CATEGORIES, KINDS, LICENSES, limits). */
-export const CATEGORIES = {
-  'foodservice/cooking': 'Cooking', 'foodservice/refrigeration': 'Refrigeration', 'foodservice/sinks': 'Sinks',
-  'foodservice/worktables': 'Work tables', 'foodservice/shelving': 'Shelving', 'foodservice/warewashing': 'Warewashing',
-  'foodservice/ventilation': 'Ventilation and hoods', 'foodservice/prep': 'Food preparation',
-  'foodservice/holding': 'Holding and warming', 'foodservice/beverage': 'Beverage', 'foodservice/ice': 'Ice',
-  'foodservice/serving': 'Serving and display', 'foodservice/other': 'Other foodservice',
-  'furniture/seating': 'Seating', 'furniture/tables': 'Tables', 'furniture/desks': 'Desks', 'furniture/storage': 'Storage',
-  'furniture/beds': 'Beds', 'furniture/other': 'Other furniture',
-  'casework/base': 'Base cabinets', 'casework/wall': 'Wall cabinets', 'casework/tall': 'Tall cabinets',
-  'plumbing/fixtures': 'Plumbing fixtures', 'plumbing/equipment': 'Plumbing equipment',
-  'electrical/fixtures': 'Light fixtures', 'electrical/equipment': 'Electrical equipment',
-  'mechanical/equipment': 'Mechanical equipment', 'appliances/residential': 'Residential appliances',
-  'site/landscape': 'Landscape', 'site/vehicles': 'Vehicles', 'people/entourage': 'People',
-  'symbols/annotation': 'Annotation symbols', 'symbols/electrical': 'Electrical symbols', 'symbols/plumbing': 'Plumbing symbols',
-  'details/generic': 'Details', 'other/other': 'Other',
+// ---- words (docs/LANG.md § Shared libraries; node tools/lang/lib-keys.mjs copies MESSAGES into the apps' lang/en.json)
+/* i18n-ignore-start: the English source of the keys below */
+export const MESSAGES = {
+  'libitem.cat.foodservice.cooking': 'Cooking',
+  'libitem.cat.foodservice.refrigeration': 'Refrigeration',
+  'libitem.cat.foodservice.sinks': 'Sinks',
+  'libitem.cat.foodservice.worktables': 'Work tables',
+  'libitem.cat.foodservice.shelving': 'Shelving',
+  'libitem.cat.foodservice.warewashing': 'Warewashing',
+  'libitem.cat.foodservice.ventilation': 'Ventilation and hoods',
+  'libitem.cat.foodservice.prep': 'Food preparation',
+  'libitem.cat.foodservice.holding': 'Holding and warming',
+  'libitem.cat.foodservice.beverage': 'Beverage',
+  'libitem.cat.foodservice.ice': 'Ice',
+  'libitem.cat.foodservice.serving': 'Serving and display',
+  'libitem.cat.foodservice.other': 'Other foodservice',
+  'libitem.cat.furniture.seating': 'Seating',
+  'libitem.cat.furniture.tables': 'Tables',
+  'libitem.cat.furniture.desks': 'Desks',
+  'libitem.cat.furniture.storage': 'Storage',
+  'libitem.cat.furniture.beds': 'Beds',
+  'libitem.cat.furniture.other': 'Other furniture',
+  'libitem.cat.casework.base': 'Base cabinets',
+  'libitem.cat.casework.wall': 'Wall cabinets',
+  'libitem.cat.casework.tall': 'Tall cabinets',
+  'libitem.cat.plumbing.fixtures': 'Plumbing fixtures',
+  'libitem.cat.plumbing.equipment': 'Plumbing equipment',
+  'libitem.cat.electrical.fixtures': 'Light fixtures',
+  'libitem.cat.electrical.equipment': 'Electrical equipment',
+  'libitem.cat.mechanical.equipment': 'Mechanical equipment',
+  'libitem.cat.appliances.residential': 'Residential appliances',
+  'libitem.cat.site.landscape': 'Landscape',
+  'libitem.cat.site.vehicles': 'Vehicles',
+  'libitem.cat.people.entourage': 'People',
+  'libitem.cat.symbols.annotation': 'Annotation symbols',
+  'libitem.cat.symbols.electrical': 'Electrical symbols',
+  'libitem.cat.symbols.plumbing': 'Plumbing symbols',
+  'libitem.cat.details.generic': 'Details',
+  'libitem.cat.other.other': 'Other',
+  'libitem.v.not_object': 'not a JSON object',
+  'libitem.v.not_json': 'cannot be written as JSON',
+  'libitem.v.too_large': 'larger than 8 MB',
+  'libitem.v.number': 'must be a number',
+  'libitem.v.range': 'out of range',
+  'libitem.v.positive': 'must be greater than 0',
+  'libitem.v.whole': 'must be a whole number',
+  'libitem.v.text': 'must be text',
+  'libitem.v.too_long': 'longer than {n} characters',
+  'libitem.v.empty': 'is empty',
+  'libitem.v.object': 'must be an object',
+  'libitem.v.unknown_key': 'is not part of the format',
+  'libitem.v.aci': 'ACI colour must be 0–256',
+  'libitem.v.color': 'must be null, 0–256 or #rrggbb',
+  'libitem.v.required': 'is required',
+  'libitem.v.must_be': 'must be "{value}"',
+  'libitem.v.must_be_1': 'must be 1',
+  'libitem.v.uuid': 'must be a UUID',
+  'libitem.v.one_of': 'must be one of {list}',
+  'libitem.v.taxonomy': 'is not in the taxonomy',
+  'libitem.v.ifc_class': 'must be an IFC class name',
+  'libitem.v.enum': 'must be an enumeration value',
+  'libitem.v.list': 'must be a list',
+  'libitem.v.too_many_entities': 'more than {n} entities',
+  'libitem.v.entity_type': 'unknown entity type',
+  'libitem.v.boolean': 'must be true or false',
+  'libitem.v.two_points': 'needs at least 2 points',
+  'libitem.v.point': 'must be [x, y] or [x, y, bulge]',
+  'libitem.v.one_loop': 'needs at least one loop',
+  'libitem.v.loop': 'must be a flat list of at least 3 points',
+  'libitem.v.bad_coord': 'has a bad coordinate',
+  'libitem.v.solid_hatch': 'only solid hatches are part of format 1',
+  'libitem.v.positions': 'must be a flat list of x, y, z',
+  'libitem.v.bad_coord_at': 'has a bad coordinate at {i}',
+  'libitem.v.triangles': 'must be a flat list of triangles',
+  'libitem.v.too_many_triangles': 'more than {n} triangles',
+  'libitem.v.index_range': 'index out of range at {i}',
+  'libitem.v.body_type': 'must be box or mesh (or body null)',
+  'libitem.v.attr_name': 'a name is longer than 255 characters',
+  'libitem.v.license': 'is not an allowed license',
+  'libitem.elec.direct': 'direct connection',
+  'libitem.elec.plug': 'cord and plug',
+  'libitem.elec.plug_nema': 'cord and plug {nema}',
+  'libitem.csv.no_rows': 'The CSV has no data rows (the first row must be the column names).',
+  'libitem.csv.no_name_column': 'The CSV needs a "name" column.',
+  'libitem.csv.no_units': 'Row {row}: {column} has no units; give a units column or a "(in)"/"(mm)" header.',
+  'libitem.csv.not_length': 'Row {row}: {column} "{value}" is not a length.',
+  'libitem.csv.no_name': 'Row {row} has no name; skipped.',
+  'libitem.csv.no_size': 'Row {row} ({name}) needs a width and a depth; skipped.',
+  'libitem.csv.category_unknown': 'Row {row} ({name}): category "{category}" is not in the taxonomy; set to {set}.',
+  'libitem.csv.category_missing': 'Row {row} ({name}): category not given; set to {set}.',
+  'libitem.csv.no_height': 'Row {row} ({name}) has no height: a 2D symbol only.',
+  'libitem.mesh.obj_units': 'OBJ files carry no units: read as millimeters. Choose the units if that is wrong.',
+  'libitem.mesh.obj_up': 'Read with Y up (the usual OBJ convention). Choose Z up if the item lies on its back.',
+  'libitem.mesh.stl_units': 'STL files carry no units: read as millimeters. Choose the units if that is wrong.',
+  'libitem.mesh.stl_up': 'Read with Z up (the usual STL convention). Choose Y up if the item lies on its back.',
+  'libitem.mesh.gltf_units': 'glTF is in meters by definition; read as {units} as asked.',
+  'libitem.mesh.too_many': 'The mesh has {n} triangles; the limit is {limit}.',
+  'libitem.mesh.flat': 'The mesh is flat or empty.',
+  'libitem.mesh.moved': 'Moved so the middle of the back, at the bottom, is the insertion point.',
+  'libitem.mesh.obj_faces_skipped': { one: '{n} face pointed at missing vertices and was left out.', other: '{n} faces pointed at missing vertices and were left out.' },
+  'libitem.mesh.obj_none': 'No triangles found in the OBJ file.',
+  'libitem.mesh.stl_unreadable': 'Not a readable STL file.',
+  'libitem.mesh.stl_corner': 'The STL file has a corner that is not a number.',
+  'libitem.mesh.stl_degenerate': { one: '{n} triangle with no area was left out.', other: '{n} triangles with no area were left out.' },
+  'libitem.mesh.stl_none': 'No triangles found in the STL file.',
+  'libitem.mesh.gltf_version': 'Only glTF 2.0 is supported.',
+  'libitem.mesh.gltf_unreadable': 'Not a readable glTF file.',
+  'libitem.mesh.gltf_extension': 'The file needs the {extension} extension, which is not supported.',
+  'libitem.mesh.gltf_buffer': 'Buffer {n} is a separate file ({uri}); only embedded buffers are read. Use .glb.',
+  'libitem.mesh.gltf_lines': { one: '{n} part is lines or points, not triangles, and was left out.', other: '{n} parts are lines or points, not triangles, and were left out.' },
+  'libitem.mesh.gltf_none': 'No triangles found in the glTF file.',
+  'libitem.category.suggested_name': 'Category {category} suggested from the name; check it.',
+  'libitem.category.suggested_from': 'Category {category} suggested from "{from}"; check it.',
+  'libitem.category.suggested_family': 'Category {category} suggested from the family; check it.',
+  'libitem.category.set': 'Category set to {category}; choose one.',
+  'libitem.units.unknown': 'Unknown units "{units}". Use one of {list}.',
+  'libitem.units.assumed_mm': 'The drawing does not say what its units are; read as millimeters (its measurement setting is metric). Choose the units if that is wrong.',
+  'libitem.units.assumed_in': 'The drawing does not say what its units are; read as inches (its measurement setting is imperial). Choose the units if that is wrong.',
+  'libitem.block.empty': 'Block {name} draws nothing; skipped.',
+  'libitem.block.not_in_drawing': 'No block named {name} in the drawing.',
+  'libitem.block.missing': 'No block named {name}.',
+  'libitem.block.skip.limit': 'over the entity limit',
+  'libitem.block.skip.missing': 'INSERT (missing block)',
+  'libitem.block.skip.xref': 'linked drawing',
+  'libitem.block.skip.deep': 'INSERT (nested too deep)',
+  'libitem.block.faces_body': { one: 'Body made from the block\'s {n} 3D face triangle.', other: 'Body made from the block\'s {n} 3D face triangles.' },
+  'libitem.block.faces_over': 'The block\'s 3D faces are over the triangle limit; no body.',
+  'libitem.block.box_body': 'Body is a box from the plan outline, {h} mm tall.',
+  'libitem.block.no_height': 'No height in the block\'s data: a 2D symbol (no 3D body). A height can be given when placing.',
+  'libitem.block.draws_nothing': 'The block draws nothing that the format keeps.',
+  'libitem.block.not_converted': 'Not converted: {list}.',
+  'libitem.block.from_tag': 'Item data comes from the item tag that names this block.',
+  'libitem.rfa.no_family': 'This file has no family data (PartAtom); it may be a project, not a family.',
+  'libitem.rfa.box': 'Geometry not read from this family; a box stands in.',
+  'libitem.rfa.outline': 'Geometry not read from this family; no height parameter, so a 2D outline only.',
+  'libitem.rfa.no_geometry': 'Geometry not read from this family, and it has no Width and Depth parameters: the item has no geometry (data only).',
 };
+/* i18n-ignore-end */
+
+const FILL_RE_ = /\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+/** The text for key (libitem.*) with its fills: the page's language through globalThis.ccI18n (i18n.js) when it has the key,
+ * else the English in MESSAGES — so Node and the site's converter read that English (docs/LANG.md § Shared libraries). */
+function msg(key, fills = {}) {
+  const i18n = globalThis.ccI18n;
+  if (i18n && typeof i18n.has === 'function' && i18n.has(key)) return i18n.t(key, fills);
+  let s = MESSAGES[key];
+  if (s === undefined) return key;
+  if (typeof s === 'object') s = s['=' + fills.n] ?? (Number(fills.n) === 1 ? s.one : s.other) ?? s.other;
+  return s.replace(FILL_RE_, (m, k) => (m === '{{' ? '{' : m === '}}' ? '}' : fills[k] !== undefined && fills[k] !== null ? String(fills[k]) : m));
+}
+
+/** Kept in step with core/classes/LibraryCatalog.php (CATEGORIES, KINDS, LICENSES, limits). Labels in the page's language. */
+export const CATEGORIES = {};
+for (const k of [
+  'foodservice/cooking', 'foodservice/refrigeration', 'foodservice/sinks', 'foodservice/worktables', 'foodservice/shelving',
+  'foodservice/warewashing', 'foodservice/ventilation', 'foodservice/prep', 'foodservice/holding', 'foodservice/beverage',
+  'foodservice/ice', 'foodservice/serving', 'foodservice/other', 'furniture/seating', 'furniture/tables',
+  'furniture/desks', 'furniture/storage', 'furniture/beds', 'furniture/other', 'casework/base', 'casework/wall',
+  'casework/tall', 'plumbing/fixtures', 'plumbing/equipment', 'electrical/fixtures', 'electrical/equipment',
+  'mechanical/equipment', 'appliances/residential', 'site/landscape', 'site/vehicles', 'people/entourage',
+  'symbols/annotation', 'symbols/electrical', 'symbols/plumbing', 'details/generic', 'other/other',
+]) {
+  Object.defineProperty(CATEGORIES, k, { enumerable: true, get: () => msg('libitem.cat.' + k.replace('/', '.')) });
+}
 export const KINDS = ['equipment', 'furniture', 'fixture', 'symbol', 'detail'];
 export const LICENSES = ['CC0-1.0', 'CC-BY-4.0', 'CC-BY-3.0', 'CC-BY-SA-4.0', 'MAKER-TERMS', 'TEAM-ONLY'];
 export const LIMITS = { bytes: 8 * 1024 * 1024, triangles: 200000, entities: 50000, text: 500, coord: 1e7 };
@@ -74,56 +221,56 @@ const TOP_KEYS = ['format', 'format_version', 'uuid', 'version', 'name', 'kind',
 
 export function validateItem(obj, { partial = false } = {}) {
   const errors = [];
-  const err = (path, msg) => { if (errors.length < 50) errors.push(path + ': ' + msg); };
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { ok: false, errors: ['item: not a JSON object'] };
+  const err = (path, text) => { if (errors.length < 50) errors.push(path + ': ' + text); };
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { ok: false, errors: ['item: ' + msg('libitem.v.not_object')] };
   let size = 0;
-  try { size = new TextEncoder().encode(JSON.stringify(obj)).length; } catch (e) { return { ok: false, errors: ['item: cannot be written as JSON'] }; }
-  if (size > LIMITS.bytes) err('item', 'larger than 8 MB');
+  try { size = new TextEncoder().encode(JSON.stringify(obj)).length; } catch (e) { return { ok: false, errors: ['item: ' + msg('libitem.v.not_json')] }; }
+  if (size > LIMITS.bytes) err('item', msg('libitem.v.too_large'));
 
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
   const num = (path, v, { min = -LIMITS.coord, max = LIMITS.coord, positive = false, int = false } = {}) => {
-    if (!isNum(v)) return err(path, 'must be a number');
-    if (v < min || v > max) return err(path, 'out of range');
-    if (positive && !(v > 0)) return err(path, 'must be greater than 0');
-    if (int && !Number.isInteger(v)) err(path, 'must be a whole number');
+    if (!isNum(v)) return err(path, msg('libitem.v.number'));
+    if (v < min || v > max) return err(path, msg('libitem.v.range'));
+    if (positive && !(v > 0)) return err(path, msg('libitem.v.positive'));
+    if (int && !Number.isInteger(v)) err(path, msg('libitem.v.whole'));
   };
   const str = (path, v, { required = false } = {}) => {
-    if (typeof v !== 'string') return err(path, 'must be text');
-    if (v.length > LIMITS.text) err(path, 'longer than ' + LIMITS.text + ' characters');
-    if (required && !v.trim()) err(path, 'is empty');
+    if (typeof v !== 'string') return err(path, msg('libitem.v.text'));
+    if (v.length > LIMITS.text) err(path, msg('libitem.v.too_long', { n: LIMITS.text }));
+    if (required && !v.trim()) err(path, msg('libitem.v.empty'));
   };
-  const obj_ = (path, v) => { if (!v || typeof v !== 'object' || Array.isArray(v)) { err(path, 'must be an object'); return false; } return true; };
-  const keys = (path, v, allowed) => { for (const k of Object.keys(v)) if (!allowed.includes(k)) err(path + '.' + k, 'is not part of the format'); };
+  const obj_ = (path, v) => { if (!v || typeof v !== 'object' || Array.isArray(v)) { err(path, msg('libitem.v.object')); return false; } return true; };
+  const keys = (path, v, allowed) => { for (const k of Object.keys(v)) if (!allowed.includes(k)) err(path + '.' + k, msg('libitem.v.unknown_key')); };
   const color = (path, v) => {
     if (v === null) return;
-    if (typeof v === 'number') { if (!Number.isInteger(v) || v < 0 || v > 256) err(path, 'ACI colour must be 0–256'); return; }
-    if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) err(path, 'must be null, 0–256 or #rrggbb');
+    if (typeof v === 'number') { if (!Number.isInteger(v) || v < 0 || v > 256) err(path, msg('libitem.v.aci')); return; }
+    if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) err(path, msg('libitem.v.color'));
   };
 
   keys('item', obj, TOP_KEYS);
   const required = ['format', 'format_version', 'name', 'kind', 'category', 'plan', 'body', 'params'];
   if (!partial) required.push('uuid', 'version', 'license');
-  for (const k of required) if (!(k in obj)) err(k, 'is required');
+  for (const k of required) if (!(k in obj)) err(k, msg('libitem.v.required'));
 
-  if ('format' in obj && obj.format !== FORMAT) err('format', 'must be "' + FORMAT + '"');
-  if ('format_version' in obj && obj.format_version !== FORMAT_VERSION) err('format_version', 'must be 1');
-  if ('uuid' in obj && (typeof obj.uuid !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(obj.uuid))) err('uuid', 'must be a UUID');
+  if ('format' in obj && obj.format !== FORMAT) err('format', msg('libitem.v.must_be', { value: FORMAT }));
+  if ('format_version' in obj && obj.format_version !== FORMAT_VERSION) err('format_version', msg('libitem.v.must_be_1'));
+  if ('uuid' in obj && (typeof obj.uuid !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(obj.uuid))) err('uuid', msg('libitem.v.uuid'));
   if ('version' in obj) num('version', obj.version, { min: 1, int: true });
   if ('name' in obj) str('name', obj.name, { required: true });
-  if ('kind' in obj && !KINDS.includes(obj.kind)) err('kind', 'must be one of ' + KINDS.join(', '));
-  if ('category' in obj && !Object.prototype.hasOwnProperty.call(CATEGORIES, obj.category)) err('category', 'is not in the taxonomy');
+  if ('kind' in obj && !KINDS.includes(obj.kind)) err('kind', msg('libitem.v.one_of', { list: KINDS.join(', ') }));
+  if ('category' in obj && !Object.prototype.hasOwnProperty.call(CATEGORIES, obj.category)) err('category', msg('libitem.v.taxonomy'));
   for (const k of ['description', 'maker', 'model']) if (k in obj) str(k, obj[k]);
 
   if ('ifc' in obj && obj_('ifc', obj.ifc)) {
     keys('ifc', obj.ifc, ['class', 'predefined']);
-    if (typeof obj.ifc.class !== 'string' || !/^Ifc[A-Za-z]{2,60}$/.test(obj.ifc.class)) err('ifc.class', 'must be an IFC class name');
-    if ('predefined' in obj.ifc && (typeof obj.ifc.predefined !== 'string' || !/^[A-Z_]{1,60}$/.test(obj.ifc.predefined))) err('ifc.predefined', 'must be an enumeration value');
+    if (typeof obj.ifc.class !== 'string' || !/^Ifc[A-Za-z]{2,60}$/.test(obj.ifc.class)) err('ifc.class', msg('libitem.v.ifc_class'));
+    if ('predefined' in obj.ifc && (typeof obj.ifc.predefined !== 'string' || !/^[A-Z_]{1,60}$/.test(obj.ifc.predefined))) err('ifc.predefined', msg('libitem.v.enum'));
   }
 
   if ('plan' in obj && obj_('plan', obj.plan)) {
     const plan = obj.plan;
     keys('plan', plan, ['layers', 'entities']);
-    if (!Array.isArray(plan.layers)) err('plan.layers', 'must be a list');
+    if (!Array.isArray(plan.layers)) err('plan.layers', msg('libitem.v.list'));
     else plan.layers.forEach((l, i) => {
       const p = 'plan.layers[' + i + ']';
       if (!obj_(p, l)) return;
@@ -131,39 +278,39 @@ export function validateItem(obj, { partial = false } = {}) {
       str(p + '.name', l.name, { required: true });
       if ('color' in l) color(p + '.color', l.color);
     });
-    if (!Array.isArray(plan.entities)) err('plan.entities', 'must be a list');
+    if (!Array.isArray(plan.entities)) err('plan.entities', msg('libitem.v.list'));
     else {
-      if (plan.entities.length > LIMITS.entities) err('plan.entities', 'more than ' + LIMITS.entities + ' entities');
+      if (plan.entities.length > LIMITS.entities) err('plan.entities', msg('libitem.v.too_many_entities', { n: LIMITS.entities }));
       plan.entities.slice(0, LIMITS.entities).forEach((e, i) => {
         const p = 'plan.entities[' + i + ']';
         if (!obj_(p, e)) return;
         const want = ENTITY_KEYS[e.type];
-        if (!want) return err(p + '.type', 'unknown entity type');
+        if (!want) return err(p + '.type', msg('libitem.v.entity_type'));
         keys(p, e, ['type', 'layer', 'color', ...want]);
-        if (!('layer' in e)) err(p + '.layer', 'is required'); else str(p + '.layer', e.layer);
-        if (!('color' in e)) err(p + '.color', 'is required'); else color(p + '.color', e.color);
+        if (!('layer' in e)) err(p + '.layer', msg('libitem.v.required')); else str(p + '.layer', e.layer);
+        if (!('color' in e)) err(p + '.color', msg('libitem.v.required')); else color(p + '.color', e.color);
         for (const k of want) {
-          if (!(k in e)) { err(p + '.' + k, 'is required'); continue; }
+          if (!(k in e)) { err(p + '.' + k, msg('libitem.v.required')); continue; }
           const v = e[k];
           if (k === 'value') str(p + '.value', v);
-          else if (k === 'closed' || k === 'solid') { if (typeof v !== 'boolean') err(p + '.' + k, 'must be true or false'); }
+          else if (k === 'closed' || k === 'solid') { if (typeof v !== 'boolean') err(p + '.' + k, msg('libitem.v.boolean')); }
           else if (k === 'pts') {
-            if (!Array.isArray(v) || v.length < 2) err(p + '.pts', 'needs at least 2 points');
+            if (!Array.isArray(v) || v.length < 2) err(p + '.pts', msg('libitem.v.two_points'));
             else v.forEach((q, j) => {
-              if (!Array.isArray(q) || (q.length !== 2 && q.length !== 3)) return err(p + '.pts[' + j + ']', 'must be [x, y] or [x, y, bulge]');
+              if (!Array.isArray(q) || (q.length !== 2 && q.length !== 3)) return err(p + '.pts[' + j + ']', msg('libitem.v.point'));
               q.forEach((c) => num(p + '.pts[' + j + ']', c));
             });
           } else if (k === 'loops') {
-            if (!Array.isArray(v) || !v.length) err(p + '.loops', 'needs at least one loop');
+            if (!Array.isArray(v) || !v.length) err(p + '.loops', msg('libitem.v.one_loop'));
             else v.forEach((loop, j) => {
-              if (!Array.isArray(loop) || loop.length < 6 || loop.length % 2) return err(p + '.loops[' + j + ']', 'must be a flat list of at least 3 points');
-              for (const c of loop) if (!isNum(c) || Math.abs(c) > LIMITS.coord) { err(p + '.loops[' + j + ']', 'has a bad coordinate'); break; }
+              if (!Array.isArray(loop) || loop.length < 6 || loop.length % 2) return err(p + '.loops[' + j + ']', msg('libitem.v.loop'));
+              for (const c of loop) if (!isNum(c) || Math.abs(c) > LIMITS.coord) { err(p + '.loops[' + j + ']', msg('libitem.v.bad_coord')); break; }
             });
           } else if (k === 'r' || k === 'h') num(p + '.' + k, v, { positive: true });
           else if (k === 'ratio') num(p + '.ratio', v, { positive: true, max: 1 });
           else num(p + '.' + k, v);
         }
-        if (e.type === 'hatch' && e.solid !== true) err(p + '.solid', 'only solid hatches are part of format 1');
+        if (e.type === 'hatch' && e.solid !== true) err(p + '.solid', msg('libitem.v.solid_hatch'));
       });
     }
   }
@@ -179,18 +326,18 @@ export function validateItem(obj, { partial = false } = {}) {
     else if (b.type === 'mesh') {
       keys('body', b, ['type', 'positions', 'indices']);
       const P = b.positions, I = b.indices;
-      if (!Array.isArray(P) || P.length < 9 || P.length % 3) err('body.positions', 'must be a flat list of x, y, z');
-      else for (let i = 0; i < P.length; i++) if (!isNum(P[i]) || Math.abs(P[i]) > LIMITS.coord) { err('body.positions', 'has a bad coordinate at ' + i); break; }
-      if (!Array.isArray(I) || !I.length || I.length % 3) err('body.indices', 'must be a flat list of triangles');
+      if (!Array.isArray(P) || P.length < 9 || P.length % 3) err('body.positions', msg('libitem.v.positions'));
+      else for (let i = 0; i < P.length; i++) if (!isNum(P[i]) || Math.abs(P[i]) > LIMITS.coord) { err('body.positions', msg('libitem.v.bad_coord_at', { i })); break; }
+      if (!Array.isArray(I) || !I.length || I.length % 3) err('body.indices', msg('libitem.v.triangles'));
       else {
-        if (I.length / 3 > LIMITS.triangles) err('body.indices', 'more than ' + LIMITS.triangles + ' triangles');
+        if (I.length / 3 > LIMITS.triangles) err('body.indices', msg('libitem.v.too_many_triangles', { n: LIMITS.triangles }));
         const n = Array.isArray(P) ? P.length / 3 : 0;
-        for (let i = 0; i < I.length; i++) if (!Number.isInteger(I[i]) || I[i] < 0 || I[i] >= n) { err('body.indices', 'index out of range at ' + i); break; }
+        for (let i = 0; i < I.length; i++) if (!Number.isInteger(I[i]) || I[i] < 0 || I[i] >= n) { err('body.indices', msg('libitem.v.index_range', { i })); break; }
       }
-    } else err('body.type', 'must be box or mesh (or body null)');
+    } else err('body.type', msg('libitem.v.body_type'));
   }
   if ('clearances' in obj) {
-    if (!Array.isArray(obj.clearances)) err('clearances', 'must be a list');
+    if (!Array.isArray(obj.clearances)) err('clearances', msg('libitem.v.list'));
     else obj.clearances.forEach((c, i) => { if (obj_('clearances[' + i + ']', c)) { box('clearances[' + i + ']', c, true); str('clearances[' + i + '].name', c.name); } });
   }
 
@@ -209,13 +356,13 @@ export function validateItem(obj, { partial = false } = {}) {
   }
   if ('source_attrs' in obj && obj_('source_attrs', obj.source_attrs)) {
     for (const [k, v] of Object.entries(obj.source_attrs)) {
-      if (k.length > 255) err('source_attrs', 'a name is longer than 255 characters');
+      if (k.length > 255) err('source_attrs', msg('libitem.v.attr_name'));
       str('source_attrs.' + k.slice(0, 40), v);
     }
   }
   if ('license' in obj && obj_('license', obj.license)) {
     keys('license', obj.license, ['id', 'holder', 'attribution', 'url']);
-    if (!LICENSES.includes(obj.license.id)) err('license.id', 'is not an allowed license');
+    if (!LICENSES.includes(obj.license.id)) err('license.id', msg('libitem.v.license'));
     for (const k of ['holder', 'attribution', 'url']) if (k in obj.license) str('license.' + k, obj.license[k]);
   }
   if ('provenance' in obj && obj_('provenance', obj.provenance)) {
@@ -244,8 +391,39 @@ export function canonicalJson(v) {
 export async function itemHash(obj) {
   const { provenance, ...rest } = obj || {};
   const data = new TextEncoder().encode(canonicalJson(rest));
-  const buf = await globalThis.crypto.subtle.digest('SHA-256', data);
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  // crypto.subtle exists only in secure contexts; a Studio Live browser joiner's page is plain http on the LAN (0.5): then
+  // the same SHA-256 in plain JS
+  const subtle = globalThis.crypto?.subtle;
+  const buf = subtle ? new Uint8Array(await subtle.digest('SHA-256', data)) : sha256(data);
+  return [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** SHA-256 (FIPS 180-4) of bytes, in plain JS — itemHash's fallback where crypto.subtle is missing. */
+export function sha256(bytes) {
+  const K = new Uint32Array([0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+  const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const n = bytes.length, total = Math.ceil((n + 9) / 64) * 64, m = new Uint8Array(total);
+  m.set(bytes); m[n] = 0x80;
+  const bits = n * 8, dv = new DataView(m.buffer);
+  dv.setUint32(total - 8, Math.floor(bits / 0x100000000)); dv.setUint32(total - 4, bits >>> 0);
+  const W = new Uint32Array(64), rot = (x, k) => (x >>> k) | (x << (32 - k));
+  for (let off = 0; off < total; off += 64) {
+    for (let i = 0; i < 16; i++) W[i] = dv.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const a = W[i - 15], b = W[i - 2];
+      W[i] = (W[i - 16] + (rot(a, 7) ^ rot(a, 18) ^ (a >>> 3)) + W[i - 7] + (rot(b, 17) ^ rot(b, 19) ^ (b >>> 10))) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (h + (rot(e, 6) ^ rot(e, 11) ^ rot(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + W[i]) >>> 0;
+      const t2 = ((rot(a, 2) ^ rot(a, 13) ^ rot(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+  }
+  const out = new Uint8Array(32), ov = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) ov.setUint32(i * 4, H[i]);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +521,7 @@ export function convexHull(points) {
 
 function baseItem(name) {
   return {
-    format: FORMAT, format_version: FORMAT_VERSION, name: clip(name || 'Unnamed item'), kind: 'equipment', category: 'other/other',
+    format: FORMAT, format_version: FORMAT_VERSION, name: clip(name || 'Unnamed item'), kind: 'equipment', category: 'other/other',   // i18n-ignore: item data, the same in every language (the server converter writes it too)
     description: '', maker: '', model: '', ifc: { class: 'IfcFurnishingElement', predefined: 'NOTDEFINED' },
     plan: { layers: [], entities: [] }, body: null, clearances: [], params: {}, source_attrs: {},
   };
@@ -380,7 +558,7 @@ export function decodeElec(s) {
   return String(s).split('^').map((c) => {
     const f = c.split('~').map((v) => v.trim());
     return { amps: f[0] || '', kw: f[1] || '', hp: f[2] || '', volts: f[3] || '', phase: f[4] || '', hz: f[5] || '',
-      conn: f[6] ? 'direct' : f[7] ? 'cord and plug' : '', nema: f[8] || '' };
+      conn: f[6] ? 'direct' : f[7] ? 'cord and plug' : '', nema: f[8] || '' };   // i18n-ignore: an internal value, never shown
   }).filter((c) => Object.values(c).some(Boolean));
 }
 
@@ -390,7 +568,7 @@ export function elecText(c) {
   if (c.amps) parts.push(c.amps + ' A');
   if (c.kw) parts.push(c.kw + ' kW');
   if (c.hp) parts.push(c.hp + ' HP');
-  if (c.conn) parts.push(c.conn === 'direct' ? 'direct connection' : 'cord and plug' + (c.nema ? ' ' + c.nema : ''));
+  if (c.conn) parts.push(c.conn === 'direct' ? msg('libitem.elec.direct') : c.nema ? msg('libitem.elec.plug_nema', { nema: c.nema }) : msg('libitem.elec.plug'));
   return parts.join(', ');
 }
 
@@ -467,7 +645,7 @@ export function paramsFromAttrs(attrs, { mmPerUnit = 1 } = {}) {
     const join = (f) => { const vs = conns.map(f); return vs.some(Boolean) ? (vs.length > 1 ? vs.map((v) => v || '-').join(' + ') : vs[0]) : ''; };
     Object.assign(elec, { volts: join((c) => c.volts), phase: join((c) => c.phase), amps: join((c) => c.amps), kw: join((c) => c.kw),
       hp: join((c) => c.hp), hz: join((c) => c.hz), nema: join((c) => c.nema),
-      direct: join((c) => (c.conn === 'direct' ? 'yes' : '')), plug: join((c) => (c.conn === 'cord and plug' ? 'yes' : '')) });
+      direct: join((c) => (c.conn === 'direct' ? 'yes' : '')), plug: join((c) => (c.conn === 'cord and plug' ? 'yes' : '')) });   // i18n-ignore: an internal value, never shown
   }
   for (const [k, names] of Object.entries({ volts: ['VOLTS', 'VOLTAGE'], phase: ['PHASE'], amps: ['AMPS'], kw: ['KW'], hp: ['HP'], hz: ['HZ'], nema: ['NEMA'], plug: ['PLUG'] })) {
     if (!elec[k]) { const v = pick(a, ...names); if (v) elec[k] = clip(v); }
@@ -542,13 +720,13 @@ function parseCsv(text) {
  */
 export function itemsFromCsv(text, { category = null, kind = null } = {}) {
   const rows = parseCsv(text), notes = [], items = [];
-  if (rows.length < 2) return { items, notes: ['The CSV has no data rows (the first row must be the column names).'] };
+  if (rows.length < 2) return { items, notes: [msg('libitem.csv.no_rows')] };
   const head = rows[0].map((h) => {
     const m = h.trim().toLowerCase().match(/^(.*?)\s*(?:\((in|mm|cm|m|ft)\))?$/);
     return { key: m[1].replace(/[\s-]+/g, '_'), unit: m[2] || null };
   });
   const col = (name) => head.findIndex((h) => h.key === name);
-  if (col('name') < 0) return { items, notes: ['The CSV needs a "name" column.'] };
+  if (col('name') < 0) return { items, notes: [msg('libitem.csv.no_name_column')] };
   rows.slice(1).forEach((r, n) => {
     const line = n + 2;
     const get = (name) => { const i = col(name); return i >= 0 ? clean(r[i]) : ''; };
@@ -557,26 +735,26 @@ export function itemsFromCsv(text, { category = null, kind = null } = {}) {
       const raw = get(name);
       if (!raw) return null;
       const u = unitOf(name);
-      if (!u && /^-?\d+(\.\d+)?$/.test(raw)) { notes.push('Row ' + line + ': ' + name + ' has no units; give a units column or a "(in)"/"(mm)" header.'); return NaN; }
+      if (!u && /^-?\d+(\.\d+)?$/.test(raw)) { notes.push(msg('libitem.csv.no_units', { row: line, column: name })); return NaN; }
       const v = parseLength(raw, UNIT_MM[u] || 1);
-      if (!Number.isFinite(v)) { notes.push('Row ' + line + ': ' + name + ' "' + raw + '" is not a length.'); return NaN; }
+      if (!Number.isFinite(v)) { notes.push(msg('libitem.csv.not_length', { row: line, column: name, value: raw })); return NaN; }
       return v;
     };
     const name = get('name');
-    if (!name) { notes.push('Row ' + line + ' has no name; skipped.'); return; }
+    if (!name) { notes.push(msg('libitem.csv.no_name', { row: line })); return; }
     const w = mm('width'), d = mm('depth'), h = mm('height'), z = mm('z');
-    if (!(w > 0) || !(d > 0)) { notes.push('Row ' + line + ' (' + name + ') needs a width and a depth; skipped.'); return; }
+    if (!(w > 0) || !(d > 0)) { notes.push(msg('libitem.csv.no_size', { row: line, name })); return; }
     const it = baseItem(name);
     it.maker = clip(get('maker')); it.model = clip(get('model')); it.description = clip(get('description'));
     const cat = get('category') || category;
     if (cat && CATEGORIES[cat]) it.category = cat;
-    else { const s = suggestCategory(name); it.category = s || 'other/other'; notes.push('Row ' + line + ' (' + name + '): category ' + (cat ? '"' + cat + '" is not in the taxonomy; ' : 'not given; ') + 'set to ' + it.category + '.'); }
+    else { const s = suggestCategory(name); it.category = s || 'other/other'; notes.push(cat ? msg('libitem.csv.category_unknown', { row: line, name, category: cat, set: it.category }) : msg('libitem.csv.category_missing', { row: line, name, set: it.category })); }
     const k = get('kind') || kind;
     it.kind = KINDS.includes(k) ? k : it.category.startsWith('furniture') || it.category.startsWith('casework') ? 'furniture' : 'equipment';
     const cls = get('ifc_class');
     if (/^Ifc[A-Za-z]{2,60}$/.test(cls)) it.ifc.class = cls;
     boxItemGeometry(it, w, d, h > 0 ? h : 0, z > 0 ? z : 0, name);
-    if (!(h > 0)) notes.push('Row ' + line + ' (' + name + ') has no height: a 2D symbol only.');
+    if (!(h > 0)) notes.push(msg('libitem.csv.no_height', { row: line, name }));
     const elec = {}, plumb = {};
     for (const f of ELEC_KEYS) { const v = get(f); if (v) elec[f] = clip(v); }
     for (const f of PLUMB_KEYS) { const v = get(f); if (v) plumb[f] = clip(v); }
@@ -602,21 +780,21 @@ export function itemFromMesh(bytes, kind, { units = null, upAxis = null, name = 
   let tri;
   if (kind === 'obj') {
     tri = readObj(new TextDecoder().decode(u8), notes);
-    if (!units) notes.push('OBJ files carry no units: read as millimeters. Choose the units if that is wrong.');
-    if (!upAxis) notes.push('Read with Y up (the usual OBJ convention). Choose Z up if the item lies on its back.');
+    if (!units) notes.push(msg('libitem.mesh.obj_units'));
+    if (!upAxis) notes.push(msg('libitem.mesh.obj_up'));
   } else if (kind === 'stl') {
     tri = readStl(u8, notes);
-    if (!units) notes.push('STL files carry no units: read as millimeters. Choose the units if that is wrong.');
-    if (!upAxis) notes.push('Read with Z up (the usual STL convention). Choose Y up if the item lies on its back.');
+    if (!units) notes.push(msg('libitem.mesh.stl_units'));
+    if (!upAxis) notes.push(msg('libitem.mesh.stl_up'));
   } else {
     tri = readGltf(u8, notes);
-    if (units && units !== 'm') notes.push('glTF is in meters by definition; read as ' + units + ' as asked.');
+    if (units && units !== 'm') notes.push(msg('libitem.mesh.gltf_units', { units }));
   }
   if (!tri) return { items: [], notes };
   const scale = UNIT_MM[units || (kind === 'obj' || kind === 'stl' ? 'mm' : 'm')] || 1;
   const up = upAxis || (kind === 'stl' ? 'z' : 'y');
   const P = tri.positions, n = P.length / 3;
-  if (tri.indices.length / 3 > LIMITS.triangles) return { items: [], notes: [...notes, 'The mesh has ' + tri.indices.length / 3 + ' triangles; the limit is ' + LIMITS.triangles + '.'] };
+  if (tri.indices.length / 3 > LIMITS.triangles) return { items: [], notes: [...notes, msg('libitem.mesh.too_many', { n: tri.indices.length / 3, limit: LIMITS.triangles })] };
   const out = new Array(P.length);
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (let i = 0; i < n; i++) {
@@ -625,19 +803,19 @@ export function itemFromMesh(bytes, kind, { units = null, upAxis = null, name = 
     out[i * 3] = x; out[i * 3 + 1] = y; out[i * 3 + 2] = z;
     if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
-  if (!(maxX > minX) || !(maxY > minY)) return { items: [], notes: [...notes, 'The mesh is flat or empty.'] };
+  if (!(maxX > minX) || !(maxY > minY)) return { items: [], notes: [...notes, msg('libitem.mesh.flat')] };
   const cx = (minX + maxX) / 2;
   for (let i = 0; i < n; i++) { out[i * 3] = r4(out[i * 3] - cx); out[i * 3 + 1] = r4(out[i * 3 + 1] - maxY); out[i * 3 + 2] = r4(out[i * 3 + 2] - minZ); }
-  notes.push('Moved so the middle of the back, at the bottom, is the insertion point.');
-  const it = baseItem(name || tri.name || 'Mesh item');
+  notes.push(msg('libitem.mesh.moved'));
+  const it = baseItem(name || tri.name || 'Mesh item');   // i18n-ignore: item data, the same in every language (the server converter writes it too)
   it.body = { type: 'mesh', positions: out, indices: Array.from(tri.indices) };
   const hull = convexHull(Array.from({ length: n }, (_, i) => [out[i * 3], out[i * 3 + 1]]));
   it.plan.layers = [{ name: 'EQUIP', color: 7 }];
   if (hull.length >= 3) it.plan.entities.push({ type: 'poly', layer: 'EQUIP', color: null, pts: hull, closed: true });
   it.params = { width: r4(maxX - minX), depth: r4(maxY - minY), height: r4(maxZ - minZ) };
   const s = suggestCategory(it.name);
-  if (s) { it.category = s; notes.push('Category ' + s + ' suggested from the name; check it.'); }
-  else notes.push('Category set to other/other; choose one.');
+  if (s) { it.category = s; notes.push(msg('libitem.category.suggested_name', { category: s })); }
+  else notes.push(msg('libitem.category.set', { category: 'other/other' }));
   return { items: [it], notes };
 }
 
@@ -653,8 +831,8 @@ function readObj(text, notes) {
       for (let i = 1; i + 1 < ids.length; i++) idx.push(ids[0], ids[i], ids[i + 1]);
     } else if (!name && (line.startsWith('o ') || line.startsWith('g '))) name = line.slice(2).trim();
   }
-  if (skipped) notes.push(skipped + ' faces pointed at missing vertices and were left out.');
-  if (!idx.length || v.some((x) => !Number.isFinite(x))) { notes.push('No triangles found in the OBJ file.'); return null; }
+  if (skipped) notes.push(msg('libitem.mesh.obj_faces_skipped', { n: skipped }));
+  if (!idx.length || v.some((x) => !Number.isFinite(x))) { notes.push(msg('libitem.mesh.obj_none')); return null; }
   return { positions: v, indices: idx, name };
 }
 
@@ -683,18 +861,18 @@ function readStl(u8, notes) {
     }
   } else {
     const text = new TextDecoder().decode(u8);
-    if (!/^\s*solid\b/.test(text)) { notes.push('Not a readable STL file.'); return null; }
+    if (!/^\s*solid\b/.test(text)) { notes.push(msg('libitem.mesh.stl_unreadable')); return null; }
     name = clip((/^\s*solid[ \t]*([^\r\n]*)/.exec(text) || [])[1] || '', 120).trim();
     let v = [];
     for (const m of text.matchAll(/vertex\s+(\S+)\s+(\S+)\s+(\S+)|endloop/g)) {
       if (m[0] === 'endloop') { for (let i = 1; i + 1 < v.length; i++) tri(v[0], v[i], v[i + 1]); v = []; continue; }
       const x = +m[1], y = +m[2], z = +m[3];
-      if (![x, y, z].every(Number.isFinite)) { notes.push('The STL file has a corner that is not a number.'); return null; }
+      if (![x, y, z].every(Number.isFinite)) { notes.push(msg('libitem.mesh.stl_corner')); return null; }
       v.push(corner(x, y, z));
     }
   }
-  if (degenerate) notes.push(degenerate + ' triangles with no area were left out.');
-  if (!indices.length || positions.some((x) => !Number.isFinite(x))) { notes.push('No triangles found in the STL file.'); return null; }
+  if (degenerate) notes.push(msg('libitem.mesh.stl_degenerate', { n: degenerate }));
+  if (!indices.length || positions.some((x) => !Number.isFinite(x))) { notes.push(msg('libitem.mesh.stl_none')); return null; }
   return { positions, indices, name };
 }
 
@@ -703,7 +881,7 @@ function readGltf(u8, notes) {
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   try {
     if (u8.length >= 12 && dv.getUint32(0, true) === 0x46546c67) {   // 'glTF'
-      if (dv.getUint32(4, true) !== 2) { notes.push('Only glTF 2.0 is supported.'); return null; }
+      if (dv.getUint32(4, true) !== 2) { notes.push(msg('libitem.mesh.gltf_version')); return null; }
       let off = 12;
       while (off + 8 <= u8.length) {
         const len = dv.getUint32(off, true), type = dv.getUint32(off + 4, true), body = u8.subarray(off + 8, off + 8 + len);
@@ -712,13 +890,13 @@ function readGltf(u8, notes) {
         off += 8 + len;
       }
     } else json = JSON.parse(new TextDecoder().decode(u8));
-  } catch (e) { notes.push('Not a readable glTF file.'); return null; }
-  if (!json || !json.asset || String(json.asset.version || '').split('.')[0] !== '2') { notes.push('Only glTF 2.0 is supported.'); return null; }
-  for (const ext of json.extensionsRequired || []) { notes.push('The file needs the ' + ext + ' extension, which is not supported.'); return null; }
+  } catch (e) { notes.push(msg('libitem.mesh.gltf_unreadable')); return null; }
+  if (!json || !json.asset || String(json.asset.version || '').split('.')[0] !== '2') { notes.push(msg('libitem.mesh.gltf_version')); return null; }
+  for (const ext of json.extensionsRequired || []) { notes.push(msg('libitem.mesh.gltf_extension', { extension: ext })); return null; }
   const buffers = (json.buffers || []).map((b, i) => {
     if (b.uri === undefined) return i === 0 ? bin : null;
     const m = /^data:[^,]*;base64,(.*)$/.exec(b.uri);
-    if (!m) { notes.push('Buffer ' + i + ' is a separate file (' + clip(b.uri, 80) + '); only embedded buffers are read. Use .glb.'); return null; }
+    if (!m) { notes.push(msg('libitem.mesh.gltf_buffer', { n: i, uri: clip(b.uri, 80) })); return null; }
     const s = atob(m[1]), out = new Uint8Array(s.length);
     for (let k = 0; k < s.length; k++) out[k] = s.charCodeAt(k);
     return out;
@@ -774,8 +952,8 @@ function readGltf(u8, notes) {
   const scene = json.scenes?.[json.scene ?? 0];
   const roots = scene ? scene.nodes || [] : (json.nodes || []).map((_, i) => i);
   for (const r of roots) visit(r, I, 0);
-  if (skippedModes) notes.push(skippedModes + ' parts are lines or points, not triangles, and were left out.');
-  if (!indices.length) { notes.push('No triangles found in the glTF file.'); return null; }
+  if (skippedModes) notes.push(msg('libitem.mesh.gltf_lines', { n: skippedModes }));
+  if (!indices.length) { notes.push(msg('libitem.mesh.gltf_none')); return null; }
   return { positions, indices, name: clip(scene?.name || json.meshes?.[0]?.name || '', 120) };
 }
 
@@ -785,14 +963,14 @@ function readGltf(u8, notes) {
 /** Drawing units → mm per unit, the key, and a note when the drawing does not say. */
 export function drawingUnits(db, override) {
   if (override) {
-    if (!UNIT_MM[override]) throw new Error('Unknown units "' + override + '". Use one of ' + Object.keys(UNIT_MM).join(', ') + '.');
+    if (!UNIT_MM[override]) throw new Error(msg('libitem.units.unknown', { units: override, list: Object.keys(UNIT_MM).join(', ') }));
     return { key: override, mm: UNIT_MM[override], note: null };
   }
   const key = INSUNITS[db.header?.INSUNITS ?? 0];
   if (key) return { key, mm: UNIT_MM[key], note: null };
   const metric = Number(db.header?.MEASUREMENT) === 1;
   const k = metric ? 'mm' : 'in';
-  return { key: k, mm: UNIT_MM[k], note: 'The drawing does not say what its units are; read as ' + (metric ? 'millimeters' : 'inches') + ' (its measurement setting is ' + (metric ? 'metric' : 'imperial') + '). Choose the units if that is wrong.' };
+  return { key: k, mm: UNIT_MM[k], note: msg(metric ? 'libitem.units.assumed_mm' : 'libitem.units.assumed_in') };
 }
 
 const attText = (t) => clean(t?.value);
@@ -825,11 +1003,11 @@ export function blockCandidates(db) {
     let attrs = {}, from = null;
     // An item-tag block (it defines KCL-ITEM) carries one placement's data, never an item's: its values stay out.
     const isTag = defs.some((d) => PLACEMENT_ATTRS.includes(String(d.tag || '').toUpperCase()));
-    if (isTag) from = 'item tag block';
+    if (isTag) from = 'item tag block';   // i18n-ignore: an internal value, never shown
     else if (firstAttrs.has(b.name)) { attrs = firstAttrs.get(b.name); from = 'instance'; }
     else if (defs.length) { for (const d of defs) if (d.tag) attrs[d.tag] = attText(d); from = 'defaults'; }
     const tag = tagFor.get(name.toUpperCase());
-    if (tag) { attrs = { ...tag, ...Object.fromEntries(Object.entries(attrs).filter(([, v]) => v)) }; from = 'item tag'; }
+    if (tag) { attrs = { ...tag, ...Object.fromEntries(Object.entries(attrs).filter(([, v]) => v)) }; from = 'item tag'; }   // i18n-ignore: an internal value, never shown
     const has3d = drawn.some((e) => e.type === '3DFACE');
     let key = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'block';
     let k = key, n = 2;
@@ -837,10 +1015,30 @@ export function blockCandidates(db) {
     keys.add(k);
     const visible = Object.fromEntries(Object.entries(attrs).filter(([t]) => !PLACEMENT_ATTRS.includes(t.toUpperCase())));
     const p = paramsFromAttrs(visible);
-    out.push({ key: k, name, entities: drawn.length, attdefs: defs.map((d) => d.tag).filter(Boolean), attrs: visible, attrs_from: from, tag: isTag,
-      has_body: has3d || !!p.height });
+    const base = { attdefs: defs.map((d) => d.tag).filter(Boolean), attrs: visible, attrs_from: from, tag: isTag, has_body: has3d || !!p.height };
+    // 0.5 DB.11: a dynamic block with visibility states offers each state as its own candidate ("Sink: Double bowl"), drawn
+    // with only that state's objects (the definition's handles per state, cc-dwg DB.2)
+    const states = visibilityStates(b);
+    if (states) {
+      for (const st of states) {
+        const nm = name + ': ' + st.name;
+        let sk = (key + '-' + st.name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-')).replace(/-+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || key;
+        let s2 = sk, n2 = 2;
+        while (keys.has(s2)) s2 = sk + '-' + n2++;
+        keys.add(s2);
+        out.push({ key: s2, name: nm, block: name, state: st.name, entities: drawn.filter((e) => st.handles.has(String(e.handle))).length, ...base });
+      }
+      continue;
+    }
+    out.push({ key: k, name, entities: drawn.length, ...base });
   }
   return out;
+}
+
+/** A dynamic block definition's visibility states (DB.2: block.dynamic.params[].states), each with its entity handles, or null. */
+function visibilityStates(b) {
+  const p = (b?.dynamic?.params || []).find((x) => Array.isArray(x.states) && x.states.length > 1);
+  return p ? p.states.map((st) => ({ name: clean(String(st.name ?? '')) || '?', handles: new Set((st.entities || []).map(String)) })) : null;
 }
 
 /**
@@ -863,12 +1061,12 @@ export function itemsFromDwg(db, { units = null, blocks = null, fileName = '', l
   const items = [];
   for (const c of candidates) {
     if (want && !want.has(c.name.toLowerCase()) && !want.has(c.key)) continue;
-    if (!c.entities) { notes.push('Block ' + c.name + ' draws nothing; skipped.'); continue; }
+    if (!c.entities) { notes.push(msg('libitem.block.empty', { name: c.name })); continue; }
     const r = itemFromBlock(db, c.name, { units, fileName, candidate: c });
     if (r.item) { r.item._key = c.key; items.push(r.item); }
     for (const n of r.notes) notes.push(c.name + ': ' + n);
   }
-  if (want) for (const w of want) if (!candidates.some((c) => c.name.toLowerCase() === w || c.key === w)) notes.push('No block named ' + w + ' in the drawing.');
+  if (want) for (const w of want) if (!candidates.some((c) => c.name.toLowerCase() === w || c.key === w)) notes.push(msg('libitem.block.not_in_drawing', { name: w }));
   return { items, notes, candidates };
 }
 
@@ -881,8 +1079,12 @@ export function itemFromBlock(db, name, { units = null, fileName = '', candidate
   const notes = [];
   const blocks = new Map((db.blocks || []).map((b) => [b.name, b]));
   for (const b of db.blocks || []) { const n = itemBlockName(b, db.blocks); if (n !== b.name && !blocks.has(n)) blocks.set(n, b); }
-  const blk = blocks.get(name);
-  if (!blk) return { item: null, notes: ['No block named ' + name + '.'] };
+  // 0.5 DB.11: "Sink: Double bowl" (a state candidate) is found through the candidates when no candidate was handed in
+  if (!candidate && !blocks.has(name)) candidate = blockCandidates(db).find((x) => x.name === name) || null;
+  const blk = blocks.get(candidate?.block || name);
+  if (!blk) return { item: null, notes: [msg('libitem.block.missing', { name })] };
+  // one visibility state of a dynamic block — its own objects only, whatever state the definition was saved in
+  const only = candidate?.state ? (visibilityStates(blk) || []).find((x) => x.name === candidate.state)?.handles || null : null;
   const u = drawingUnits(db, units);
   const rec = (db.tables?.blockRecords || []).find((r) => r.handle === blk.record);
   const blockUnits = INSUNITS[rec?.insertUnits] || null;
@@ -913,7 +1115,7 @@ export function itemFromBlock(db, name, { units = null, fileName = '', candidate
   };
   const layerOf = (e, ctx) => { const l = e.layer || '0'; return l === '0' && ctx.layer ? ctx.layer : l; };
   const push = (ent) => {
-    if (entities.length >= LIMITS.entities) { skip('over the entity limit'); return; }
+    if (entities.length >= LIMITS.entities) { skip(msg('libitem.block.skip.limit')); return; }
     usedLayers.set(ent.layer, true);
     entities.push(ent);
   };
@@ -1021,9 +1223,9 @@ export function itemFromBlock(db, name, { units = null, fileName = '', candidate
       }
       case 'INSERT': case 'MINSERT': {
         const sub = blocks.get(e.block);
-        if (!sub) { skip('INSERT (missing block)'); break; }
-        if (sub.flags & 4) { skip('linked drawing'); break; }
-        if (ctx.depth > 20) { skip('INSERT (nested too deep)'); break; }
+        if (!sub) { skip(msg('libitem.block.skip.missing')); break; }
+        if (sub.flags & 4) { skip(msg('libitem.block.skip.xref')); break; }
+        if (ctx.depth > 20) { skip(msg('libitem.block.skip.deep')); break; }
         const b = sub.base || { x: 0, y: 0, z: 0 };
         const sx = e.scale?.x || 1, sy = e.scale?.y || 1, sz = e.scale?.z || 1, ip = e.insert;
         const cols = Math.max(1, e.cols || 1), rows = Math.max(1, e.rows || 1);
@@ -1041,12 +1243,16 @@ export function itemFromBlock(db, name, { units = null, fileName = '', candidate
       default: skip(e.type === 'UNKNOWN' ? e.dxfName || 'UNKNOWN' : /DIMENSION/.test(e.type) ? 'DIMENSION' : e.type);   // IMAGE, MULTILEADER, ACAD_TABLE, VIEWPORT, …
     }
   };
-  for (const e of blk.entities || []) { if (e.type === 'ATTDEF') continue; emit(e, root); }
+  for (const e of blk.entities || []) {
+    if (e.type === 'ATTDEF') continue;
+    if (only) { if (only.has(String(e.handle))) emit({ ...e, invisible: false }, root); continue; }
+    emit(e, root);
+  }
 
   const info = attrsInfo(attrs);
   const it = baseItem(info.title || name);
   it.maker = clip(info.maker); it.model = clip(info.model);
-  it.description = clip('Block ' + name + (fileName ? ' in ' + fileName : '') + '.');
+  it.description = clip('Block ' + (candidate?.state ? (candidate.block || name) + ' (' + candidate.state + ')' : name) + (fileName ? ' in ' + fileName : '') + '.');   // i18n-ignore: item data the converter writes too
   it.plan.layers = [...usedLayers.keys()].map((n) => {
     const l = layerTable.get(n);
     const c = l?.color || { index: 7 };
@@ -1071,23 +1277,23 @@ export function itemFromBlock(db, name, { units = null, fileName = '', candidate
       let zMin = Infinity, zMax = -Infinity;
       for (let i = 2; i < positions.length; i += 3) { zMin = Math.min(zMin, positions[i]); zMax = Math.max(zMax, positions[i]); }
       if (!it.params.height) it.params.height = r4(zMax - zMin);
-      notes.push('Body made from the block\'s ' + faces.length / 3 + ' 3D face triangles.');
+      notes.push(msg('libitem.block.faces_body', { n: faces.length / 3 }));
       if (!entities.length) {
         const hull = convexHull(faces.map((p) => [p[0], p[1]]));
         if (hull.length >= 3) { it.plan.entities.push({ type: 'poly', layer: '0', color: null, pts: hull, closed: true }); if (!it.plan.layers.length) it.plan.layers.push({ name: '0', color: 7 }); }
       }
-    } else notes.push('The block\'s 3D faces are over the triangle limit; no body.');
+    } else notes.push(msg('libitem.block.faces_over'));
   } else if (it.params.height) {
     it.body = boxFromPlan(it.plan, it.params.height);
-    notes.push('Body is a box from the plan outline, ' + Math.round(it.params.height) + ' mm tall.');
-  } else notes.push('No height in the block\'s data: a 2D symbol (no 3D body). A height can be given when placing.');
-  if (!entities.length) notes.push('The block draws nothing that the format keeps.');
+    notes.push(msg('libitem.block.box_body', { h: Math.round(it.params.height) }));
+  } else notes.push(msg('libitem.block.no_height'));
+  if (!entities.length) notes.push(msg('libitem.block.draws_nothing'));
   const sk = Object.entries(skipped);
-  if (sk.length) notes.push('Not converted: ' + sk.map(([t, n]) => t + ' ' + n).join(', ') + '.');
+  if (sk.length) notes.push(msg('libitem.block.not_converted', { list: sk.map(([t, n]) => t + ' ' + n).join(', ') }));
   const sug = suggestCategory(info.title || name);
-  if (sug) { it.category = sug; notes.push('Category ' + sug + ' suggested from "' + (info.title || name) + '"; check it.'); }
-  else { it.category = Object.keys(attrs).some((k) => /^KCL-/i.test(k)) ? 'foodservice/other' : 'other/other'; notes.push('Category set to ' + it.category + '; choose one.'); }
-  if (c && c.attrs_from === 'item tag') notes.push('Item data comes from the item tag that names this block.');
+  if (sug) { it.category = sug; notes.push(msg('libitem.category.suggested_from', { category: sug, from: info.title || name })); }
+  else { it.category = Object.keys(attrs).some((k) => /^KCL-/i.test(k)) ? 'foodservice/other' : 'other/other'; notes.push(msg('libitem.category.set', { category: it.category })); }
+  if (c && c.attrs_from === 'item tag') notes.push(msg('libitem.block.from_tag'));   // i18n-ignore: an internal value, never shown
   return { item: it, notes };
 }
 
@@ -1158,27 +1364,27 @@ function mtextLines(s) {
 /** info = readRevit() result. Title, category, params; geometry is not read (undocumented): a box from W/D/H, else no body. */
 export function itemFromRfa(info) {
   const fam = info && info.family;
-  if (!fam) return { items: [], notes: ['This file has no family data (PartAtom); it may be a project, not a family.'] };
+  if (!fam) return { items: [], notes: [msg('libitem.rfa.no_family')] };
   const notes = [];
   const it = baseItem(fam.title || info.fileName || 'Family');
   const params = {};
   for (const g of fam.groups || []) for (const p of g.params || []) if (p.name && p.value !== undefined && p.value !== '') params[p.name] = String(p.value);
   it.source_attrs = sourceAttrs(params);
   const find = (...names) => { for (const n of names) for (const k of Object.keys(params)) if (k.toLowerCase() === n) { const v = parseLength(params[k], 304.8); if (Number.isFinite(v) && v > 0) return v; } return null; };
-  const w = find('width', 'overall width', 'length'), d = find('depth', 'overall depth'), h = find('height', 'overall height');
+  const w = find('width', 'overall width', 'length'), d = find('depth', 'overall depth'), h = find('height', 'overall height');   // i18n-ignore: parameter names in the file
   const pinfo = attrsInfo({ MANUFACTURER: params.Manufacturer || '', MODEL: params.Model || '' });
   it.maker = clip(pinfo.maker); it.model = clip(pinfo.model);
   it.description = clip('Family ' + (fam.title || '') + (fam.categories?.length ? ' (' + fam.categories.join(', ') + ')' : '') + '.');
   if (w && d) {
     boxItemGeometry(it, w, d, h || 0, 0, it.name);
-    notes.push(h ? 'Geometry not read from this family; a box stands in.' : 'Geometry not read from this family; no height parameter, so a 2D outline only.');
+    notes.push(msg(h ? 'libitem.rfa.box' : 'libitem.rfa.outline'));
   } else {
     it.body = null;
-    notes.push('Geometry not read from this family, and it has no Width and Depth parameters: the item has no geometry (data only).');
+    notes.push(msg('libitem.rfa.no_geometry'));
   }
   const sug = suggestCategory((fam.categories || []).join(' ') + ' ' + it.name);
-  if (sug) { it.category = sug; notes.push('Category ' + sug + ' suggested from the family; check it.'); }
-  else notes.push('Category set to other/other; choose one.');
+  if (sug) { it.category = sug; notes.push(msg('libitem.category.suggested_family', { category: sug })); }
+  else notes.push(msg('libitem.category.set', { category: 'other/other' }));
   if (/furniture/i.test((fam.categories || []).join(' '))) { it.kind = 'furniture'; it.category = sug || 'furniture/other'; }
   return { items: [it], notes };
 }

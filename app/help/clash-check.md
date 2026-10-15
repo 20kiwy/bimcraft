@@ -32,5 +32,5 @@ Find the places where two sets of elements run into each other, for example ever
 
 ## Next
 
-- [Measure distances and face areas in 3D](topic:measure)
+- [Measure distances, face areas and locations in 3D](topic:measure)
 - [Hide, isolate and see through elements](topic:hide-and-isolate)

@@ -5,9 +5,9 @@
         "slug": "bimcraft",
         "name": "BimCraft",
         "layer": "blue",
-        "role": "BIM authoring",
-        "tagline": "One model. Every plan, section and schedule.",
-        "short": "Parametric walls, doors and windows on levels and grids, with views, schedules, sheets and clash checks from one model."
+        "role": "BIM review & editing",
+        "tagline": "Open the model. Check it. Change it.",
+        "short": "Open, check and edit IFC building models, with 3D, sections, schedules and clash checks."
     },
     "others": {
         "cadcraft": "CadCraft",
@@ -19,12 +19,22 @@
         "partcraft": "PartCraft"
     },
     "vendor": {
+        "delaunator": "5.1.0",
+        "geotiff": "3.0.5",
+        "laz-perf": "0.0.7",
         "manifold-3d": "3.5.4",
-        "three": "0.186.1"
+        "noble-ciphers": "2.4.0",
+        "noble-curves": "2.4.0",
+        "noble-hashes": "2.4.0",
+        "proj4": "2.22.0",
+        "robust-predicates": "3.0.3",
+        "three": "0.186.1",
+        "three-gpu-pathtracer": "0.0.26",
+        "three-mesh-bvh": "0.9.15"
     },
     "origin": "https://getcadcraft.com",
     "packed": {
-        "at": "2026-10-13T20:37:14Z",
-        "build": "0.4"
+        "at": "2026-10-15T10:30:17Z",
+        "build": "dev"
     }
 }

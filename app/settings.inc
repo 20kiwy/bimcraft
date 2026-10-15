@@ -9,8 +9,16 @@
  *   bcView    the view a model opens in: Fit / Top / Front / Side            default Fit
  *   bcSnap    wall snap is on when placing or pasting a library item starts   default off
  *   bcCorner  the corner indicator in the 3D views: view cube / axis icon / none   default view cube
+ *   bcBoxMargin  room left round the pick by "Section box round the pick", in mm (0.5 WL.2)   default 300
+ *   bcGeoCrs  the system Measure › Location gives latitude and longitude in (0.5 WL.4): WGS 84, the file's own datum, or
+ *             one of a few common geographic systems (EPSG codes)                         default WGS 84
+ *   bcAuthor  your name on BCF issues (localStorage bimcraft.author; 0.5 SI.9): signed in, [data-bc-author-account] says
+ *             "From your account (<name>)" with "Use another name"; a typed name wins until cleared; not reset
  *   bcAssist, bcAssistRead, bcAssistEdit   AI assistants and scripts (0.4 X.7, AGENTS-SPEC §7): on/off, then which groups
  *             (read on, edit off when first turned on); the Activity list is filled by bimcraft.js        default off
+ *   Menus, keys and mouse (0.5 track IP): the shell prints that fieldset first (app-settings.inc, manifest "input") and
+ *             assets/js/app-input-ui.js fills it (localStorage bimcraft.input — not reset by "cc-settings-reset")
+ * The dialog is wider, in two columns: the shell's own since IP.6 (app-shell.css .shell-settings-wide).
  */
 ?>
 <fieldset class="shell-set" data-bc-settings>
@@ -48,7 +56,48 @@
   </div>
   <p class="shell-hint-text"><?= Lang::e('set.corner.hint') ?></p>
 </fieldset>
-<fieldset class="shell-set" data-bc-assist-set>
+<fieldset class="shell-set">
+  <legend><?= Lang::e('set.box.legend') ?></legend>
+  <div class="shell-row">
+    <label for="bc-set-box-margin"><?= Lang::e('set.box.margin') ?></label>
+    <span class="bc-set-margin"><input type="number" id="bc-set-box-margin" class="bc-input" name="bcBoxMargin" min="0" max="5000" step="50" inputmode="numeric"> <?= Lang::e('set.box.mm') ?></span>
+  </div>
+  <p class="shell-hint-text"><?= Lang::e('set.box.hint') ?></p>
+</fieldset>
+<fieldset class="shell-set">
+  <legend><?= Lang::e('set.geo.legend') ?></legend>
+  <div class="shell-row">
+    <label for="bc-set-geo-crs"><?= Lang::e('set.geo.crs') ?></label>
+    <select id="bc-set-geo-crs" class="select-cc" name="bcGeoCrs">
+      <option value="4326"><?= Lang::e('set.geo.wgs84') ?></option>
+      <option value="file"><?= Lang::e('set.geo.file') ?></option>
+      <?php /* i18n-ignore-start: names of geodetic systems, as EPSG writes them */ ?>
+      <option value="4258">ETRS89 (EPSG:4258)</option>
+      <option value="4269">NAD83 (EPSG:4269)</option>
+      <option value="4283">GDA94 (EPSG:4283)</option>
+      <option value="7844">GDA2020 (EPSG:7844)</option>
+      <option value="4167">NZGD2000 (EPSG:4167)</option>
+      <option value="6668">JGD2011 (EPSG:6668)</option>
+      <option value="4490">CGCS2000 (EPSG:4490)</option>
+      <?php /* i18n-ignore-end */ ?>
+    </select>
+  </div>
+  <p class="shell-hint-text"><?= Lang::e('set.geo.hint') ?></p>
+</fieldset>
+<fieldset class="shell-set" data-bc-author-set>
+  <legend><?= Lang::e('set.author.legend') ?></legend>
+  <div data-bc-author-account hidden>
+    <p class="shell-hint-text" data-bc-author-from></p>
+    <p><button type="button" class="btn-line btn-sm-cc" data-bc-author-other><?= Lang::e('set.author.other') ?></button></p>
+  </div>
+  <div class="shell-row" data-bc-author-row>
+    <label for="bc-set-author"><?= Lang::e('set.author.label') ?></label>
+    <input type="text" id="bc-set-author" class="bc-input" name="bcAuthor" maxlength="120" autocomplete="name">
+    <button type="button" class="btn-line btn-sm-cc" data-bc-author-mine hidden><?= Lang::e('set.author.mine') ?></button>
+  </div>
+  <p class="shell-hint-text"><?= Lang::e('set.author.hint') ?></p>
+</fieldset>
+<fieldset class="shell-set bc-set-wide" data-bc-assist-set>
   <legend><?= Lang::e('set.assist.legend') ?></legend>
   <label class="shell-check"><input type="checkbox" name="bcAssist"> <?= Lang::e('set.assist.on') ?></label>
   <p class="shell-hint-text"><?= Lang::e('set.assist.hint') ?></p>

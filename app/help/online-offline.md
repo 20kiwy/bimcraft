@@ -56,6 +56,5 @@ Once BimCraft is open in the tab, these work offline even without a saved copy:
 ## What is not available yet
 
 - **Cloud saving.** Files are saved to your computer only.
-- **Desktop builds.** BimCraft runs in the browser only.
 
 See [Where your files go](common:your-files).

@@ -18,6 +18,8 @@
  *   v.focusModelPoint(x, y, sheetKey);   // go to a model point (on that sheet if it shows it) and ring it
  */
 
+import { wheelFactor } from './input-mouse.js';   // 0.5 IP.1: buttons and wheel from the input profile
+
 export class DrawingView {
   constructor(canvas, { onCursor = () => {} } = {}) {
     this.canvas = canvas;
@@ -202,7 +204,7 @@ export class DrawingView {
       e.preventDefault();
       const r = c.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
       const [wx, wy] = this.toWorld(px, py);
-      const f = Math.exp(-Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 120) / 120 * 0.2);
+      const f = Math.exp(-Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 120) / 120 * 0.2 * wheelFactor());   // 0.5 IP.1: the profile's wheel
       this.zoom = Math.min(Math.max(this.zoom * f, 1e-9), 1e9);
       const W = c.clientWidth, H = c.clientHeight;   // keep the point under the cursor still
       this.cx = wx - (px - W / 2) / this.zoom;

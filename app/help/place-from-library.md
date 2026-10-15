@@ -16,7 +16,7 @@ Put a library item into an IFC model: a sink, a work table, a chair. BimCraft wr
 2. Click the {{ui:Library}} tab beside {{ui:Properties}} on the right, or {{ui:Library}} in the toolbar above the model.
 3. Pick a source:
    - **LibraryCraft**: the CadCraft library on this site. Public items need no sign-in.
-   - **This file**: the blocks of an open DWG or DXF drawing.
+   - **This file**: the blocks of an open DWG or DXF drawing. A dynamic block with visibility states is offered once per state, named "Sink: Double bowl", each drawn with only that state's objects.
    - **Files…**: a DWG, DXF, IFC, glTF/GLB, OBJ, RFA or CSV file on your computer. It is read in this tab; nothing is uploaded.
    - **Other feeds**: another library that speaks the same feed format. Add its address once; it is kept in this browser.
 4. Search or pick a category, then click a card. The card shows a plan preview, the name, maker and model, the license and the version.
@@ -41,6 +41,7 @@ Put a library item into an IFC model: a sink, a work table, a chair. BimCraft wr
 - More of the same: pick a placed item and use {{ui:Copy}} and {{ui:Paste}}, or {{key:Mod+D}}. See [Copy, paste and duplicate library items](topic:copy-paste).
 - To start every placement with wall snap on, turn on **Start with wall snap on** in [BimCraft settings](topic:settings).
 - Lengths are converted to the model's own units, whatever they are.
+- **Entourage** (trees, shrubs, people, cars) is in the library too: search for "tree", "person" or "car". These are drawn by CadCraft (CC0) and keep their colors when placed (a trunk brown, leaves green, a car's windows see-through), in BimCraft and in other BIM programs. They show in [rendered pictures](topic:render).
 - In an IFC2X3 file the body is written as a faceted solid; in IFC4 as a triangulated face set. Both open in other IFC tools.
 - A drawing (DWG or DXF) cannot be saved here, so items are placed into IFC models only. Use **This file** on a drawing to see what its blocks would become.
 

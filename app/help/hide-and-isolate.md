@@ -19,6 +19,7 @@ Clear the view down to what you are looking at: hide elements that are in the wa
    - {{ui:Isolate}} ({{key:I}}) shows only the picked elements.
    - {{ui:See-through}} ({{key:T}}) shows the picked elements as they are and everything else see-through.
 4. Click {{ui:Show all}} in the same menu, or press {{key:Shift+H}}, to show every element again.
+5. To cut away everything round the picked elements instead, click {{ui:Section box round the pick}} in the same menu, or press {{key:Shift+X}}. See [Cut an IFC model with a section plane](topic:section-plane).
 
 ## What you should see
 

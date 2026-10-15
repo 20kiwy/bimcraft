@@ -17,7 +17,10 @@
  *   pl.schedule()                   the Equipment tab's list, same shape as dwg-equipment.js equipmentList()
  *   pl.nextItemNumber()             next free whole number
  *   pl.wallFaces(storey)            [{ a:[x,y], b:[x,y], n:[nx,ny] }] wall faces in model mm (n points away from the wall)
+ *   pl.elementsFrame(snap, { zBase }) { rot, x, y, box } the plan frame of copied elements (turned like the first one)
+ *   pl.planRotation(storey)         the building's turn in plan, degrees [0, 90), from its walls
  *   snapToWall(p, item, faces)      → { x, y, rot, face } back of the item against the nearest face
+ *   orientedBox(points, rot)        bounds of points in plan axes turned rot → { x, y, box }
  *   undoJournal(api, mid, journal)  deletes what a place/swap created and writes back what it changed
  *
  * Geometry is stored once per type (one IfcTypeProduct per item uuid@version, or per sha256 for items from files):
@@ -229,6 +232,39 @@ export class IfcPlacer {
 
   // ---- geometry → IFC ----
   /** Body items for a mesh or box in mm → [ids], representation type. */
+  /** CC-RENDER-PARTS ('from-to #rrggbb[/alpha];…', triangle ranges of the mesh) → {items, type} with each part styled, or null. */
+  partBodyItems(item, body) {
+    const text = item.source_attrs && item.source_attrs['CC-RENDER-PARTS'];
+    if (!text || body.type !== 'mesh' || typeof text !== 'string' || text.length > 2000) return null;
+    const parts = [], nTri = body.indices.length / 3;
+    for (const sPart of text.split(';')) {
+      const m = /^\s*(\d{1,7})-(\d{1,7}) (#[0-9a-fA-F]{6})(?:\/(0(?:\.\d+)?|1(?:\.0+)?))?\s*$/.exec(sPart);
+      if (!m) return null;
+      const from = Number(m[1]), to = Number(m[2]);
+      if (to < from || to >= nTri || (parts.length && from <= parts[parts.length - 1].to) || parts.length >= 64) return null;
+      parts.push({ from, to, rgb: [1, 3, 5].map((o) => Math.round((parseInt(m[3].slice(o, o + 2), 16) / 255) * 1e4) / 1e4), tr: m[4] === undefined ? 0 : Math.round((1 - Number(m[4])) * 100) / 100 });
+    }
+    const out = [];
+    let type = null;
+    for (const pt of parts) {
+      // the part's own mesh: its triangles, its vertices renumbered
+      const map = new Map(), positions = [], indices = [];
+      for (let t = pt.from; t <= pt.to; t++) for (let k = 0; k < 3; k++) {
+        const v = body.indices[t * 3 + k];
+        if (!map.has(v)) { map.set(v, positions.length / 3); positions.push(body.positions[v * 3], body.positions[v * 3 + 1], body.positions[v * 3 + 2]); }
+        indices.push(map.get(v));
+      }
+      const b = this.bodyItems({ type: 'mesh', positions, indices });
+      if (type && b.type !== type) return null;   // one representation type for the whole body (IFC2X3: Brep / SurfaceModel)
+      type = b.type;
+      const col = this.make('IFCCOLOURRGB', null, ...pt.rgb);
+      const shade = this.v4 ? this.make('IFCSURFACESTYLESHADING', this.H(col), pt.tr) : this.make('IFCSURFACESTYLESHADING', this.H(col));
+      const style = this.make('IFCSURFACESTYLE', null, 'BOTH', [this.H(shade)]);
+      for (const it of b.items) this.make('IFCSTYLEDITEM', this.H(it), this.v4 ? [this.H(style)] : [this.H(this.make('IFCPRESENTATIONSTYLEASSIGNMENT', [this.H(style)]))], null);
+      out.push(...b.items);
+    }
+    return out.length ? { items: out, type } : null;
+  }
   bodyItems(body) {
     const tri = body.type === 'box' ? boxMesh(body) : { positions: body.positions, indices: body.indices };
     const P = tri.positions.map((v) => this.u(v)), I = tri.indices;
@@ -275,7 +311,10 @@ export class IfcPlacer {
     let body = item.body;
     if (!body && opts.standInHeight > 0) body = boxFromPlan(item.plan, opts.standInHeight);
     if (body) {
-      const b = this.bodyItems(body);
+      // 0.5 RC.11 (e), session render: an item whose source attribute CC-RENDER-PARTS gives its parts' colours (the CC0
+      // entourage: a tree's trunk and leaves, a car's body and glass) gets one body item per part, each styled in its colour,
+      // so every viewer and BIM program shows them; anything else as before
+      const b = this.partBodyItems(item, body) || this.bodyItems(body);
       const rep = this.make('IFCSHAPEREPRESENTATION', this.H(ctx.body), this.L('Body'), this.L(b.type), b.items.map((i) => this.H(i)));
       maps.push(this.make('IFCREPRESENTATIONMAP', this.H(this.origin()), this.H(rep)));
     }
@@ -572,6 +611,72 @@ export class IfcPlacer {
     }
     return out;
   }
+
+  /**
+   * The plan frame Copy gives an elements clip (bimcraft.js copyElements), so the ghost, wall snap and paste turn with the
+   * element and not with the model's axes — a building turned in its site (true north, shared coordinates: Revit exports)
+   * has every door and wall at an angle to them. rot = the first top-level element's own X axis in plan (degrees, model
+   * axes), else the storey's, else 0; box = its meshes (openings and spaces left out) measured in those axes, round the
+   * centre (x, y) in model mm, z from zBase (the storey's elevation). → { rot, x, y, box: { x0, y0, z0, x1, y1, z1 } } | null
+   * (no geometry, or more than `maxPoints` vertices: the page then measures the viewer's box, turned 0°).
+   */
+  elementsFrame(snap, { zBase = 0, maxPoints = 2e6 } = {}) {
+    const api = this.api, mid = this.mid;
+    const turn = (w) => (w && Math.hypot(w[0], w[1]) > 1e-6 ? Math.atan2(w[1], w[0]) / D2R : null);
+    const top = snap.elements.find((e) => e.top);
+    let rot = turn(top?.world);
+    if (rot === null && snap.storey) { const st = api.GetLine(mid, snap.storey, false); rot = st?.ObjectPlacement ? turn(api.GetWorldTransformMatrix(mid, st.ObjectPlacement.value)) : null; }
+    rot = Math.round(norm(rot ?? 0) * 1e6) / 1e6;
+    const Ci = inv4(api.GetCoordinationMatrix(mid)), pts = [];
+    for (const e of snap.elements) {
+      if (/^Ifc(OpeningElement|OpeningStandardCase|Space)$/i.test(e.line?.constructor?.name || '')) continue;
+      let tri;
+      try { tri = productTriangles(api, mid, e.id, this.unitMm, Ci); } catch (err) { continue; }
+      if (pts.length + tri.positions.length > maxPoints * 3) return null;
+      for (let i = 0; i < tri.positions.length; i++) pts.push(tri.positions[i] * this.unitMm);
+    }
+    const b = orientedBox(pts, rot);
+    return b ? { rot, x: b.x, y: b.y, box: { ...b.box, z0: b.box.z0 - zBase, z1: b.box.z1 - zBase } } : null;
+  }
+
+  /**
+   * How far the building is turned in plan, in degrees [0, 90): the direction most wall length runs in (walls of the
+   * storey, or every wall), folded into a quarter turn. 0 for a model drawn along its axes or without walls. The fix for
+   * sections that cut a turned building at an angle would turn the section box / planes by this (not built yet).
+   */
+  planRotation(storey = null) {
+    const bins = new Map();
+    for (const f of this.wallFaces(storey)) {
+      const len = Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]);
+      let a = Math.atan2(f.b[1] - f.a[1], f.b[0] - f.a[0]) / D2R;
+      a = ((a % 90) + 90) % 90;
+      const k = Math.round(a * 10) % 900;   // 0.1° bins
+      bins.set(k, (bins.get(k) || 0) + len);
+    }
+    let best = null;
+    for (const [k, w] of bins) if (!best || w > best.w) best = { k, w };
+    return best ? best.k / 10 : 0;
+  }
+}
+
+/**
+ * Bounds of points [x, y, z, x, y, z, …] (model mm, Z up) in plan axes turned `rotDeg`: → { x, y (the box centre in
+ * model mm), box: { x0, y0, z0, x1, y1, z1 } (x/y round that centre in the turned axes, z as given) } | null.
+ */
+export function orientedBox(points, rotDeg) {
+  if (!points || points.length < 3) return null;
+  const r = rotDeg * D2R, c = Math.cos(r), s = Math.sin(r);
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (let i = 0; i + 2 < points.length; i += 3) {
+    const x = points[i], y = points[i + 1], z = points[i + 2];
+    const u = x * c + y * s, v = -x * s + y * c;
+    if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v; if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2;
+  return {
+    x: cu * c - cv * s, y: cu * s + cv * c,
+    box: { x0: u0 - cu, y0: v0 - cv, z0, x1: Math.max(u1 - cu, u0 - cu + 1), y1: Math.max(v1 - cv, v0 - cv + 1), z1: Math.max(z1, z0) },
+  };
 }
 
 /** Back of the item against the nearest wall face: rotation so the front (−Y) points along the face normal. */

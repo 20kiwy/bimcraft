@@ -1,7 +1,7 @@
 {
     "name": "bimcraft",
     "private": true,
-    "description": "BimCraft — BIM authoring (the CadCraft family)",
+    "description": "BimCraft — BIM review & editing (the CadCraft family)",
     "scripts": {
         "start": "node devshell/serve.mjs",
         "test": "node devshell/test.mjs",

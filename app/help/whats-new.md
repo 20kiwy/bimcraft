@@ -1,58 +1,88 @@
 ---
-title: What's new in 0.4
-summary: Our own IFC engine, delete and paste any element, hide and isolate, a model tree, several models at once, clash check, find, measure, walk, BCF issues, quantities, compare versions, a 4D schedule, and touch screens.
+title: What's new in 0.5
+summary: BimCraft starts to draw buildings: walls, doors and windows, rooms, floors and roofs, a residential set with stairs, framing, terrain and sheets, rendered pictures and materials, point clouds and map layers, work together live, menu styles, and phones.
 section: start
 order: 5
-keywords: whats new, what's new, release notes, changelog, changes, 0.4, version, new features, ifc engine, model tree, hide, isolate, clash, bcf, measure, walk, compare, quantities, 4d, touch, language, spanish
+keywords: whats new, what's new, release notes, changelog, changes, 0.5, version, new features, new building, walls, doors, windows, rooms, roofs, foundations, stairs, railings, framing, terrain, sheets, electrical, takeoff, render, paint, materials, views, walkthrough, section box, point clouds, map layers, live, menu style, phone, studio
 ---
 
-This is what changed in BimCraft 0.4, compared with 0.3, the version Try ran before.
+This is what changed in BimCraft 0.5, compared with 0.4. BimCraft starts to draw buildings: everything you draw is saved as plain IFC4, so other BIM programs open it.
 
 ## New
 
-- **Delete, cut, copy and paste any element.** Pick walls, doors, furniture or anything else and press {{key:Delete}}, {{key:Mod+X}}, {{key:Mod+C}} or {{key:Mod+V}}. {{ui:Select all}} ({{key:Mod+A}}) picks every element shown. A stair takes its flights and a wall its openings, and deleting a door closes the wall. Each is one step to undo. See [Delete, cut, copy and paste building elements](topic:edit-elements).
-- **Hide, isolate and see through.** Pick several elements with {{key:Mod}}+click or {{key:Shift}}+click, then use the {{ui:Show}} menu: {{ui:Hide}} ({{key:H}}), {{ui:Isolate}} ({{key:I}}), {{ui:See-through}} ({{key:T}}) and {{ui:Show all}} ({{key:Shift+H}}). See [Hide, isolate and see through elements](topic:hide-and-isolate).
-- **Model tree.** The left panel shows project, site, building, storeys and spaces, with the elements on each grouped by kind. Untick a row to hide it, click to pick, double-click to zoom. See [Find your way with the model tree](topic:model-tree).
-- **Several models together.** {{ui:Add a model…}} under {{ui:Models}} opens more IFC files into the same scene, in the first model's coordinates. Hide, move or remove each one. You edit and save one model at a time. See [See several IFC models together](topic:several-models).
-- **Color by property.** The {{ui:Color}} tab paints every element by one property, such as class, storey, material or any value in the file, with a legend. Click a value to show only those elements. See [Color elements by a property](topic:color-by-property).
-- **Find.** {{ui:Find}} in the left panel picks every element that matches your rules, by class, name, type, storey, material or any property. Save the rules as named search sets. See [Find elements by class, name or property](topic:find).
-- **Clash check.** {{ui:Clash check}} finds where two sets of elements run into each other, in one model or across several, with a tolerance. Click a clash to see it, or make an issue of it. See [Check for clashes](topic:clash-check).
-- **Issues and BCF.** The {{ui:Issues}} tab saves the current view as an issue: camera, picked and hidden elements, and the section. Save and open BCF 2.1 files to share issues with other coordination tools. See [Issues and BCF files](topic:issues-bcf).
-- **Measure in 3D.** {{ui:Measure}} ({{key:M}}): click two points for a distance, with corner and edge snaps, or click a face for its area. See [Measure distances and face areas in 3D](topic:measure).
-- **Walk mode.** Click {{ui:Walk}}, then a floor, and walk through the model at eye height with {{key:W}} {{key:A}} {{key:S}} {{key:D}}. Walls stop you. See [Walk through a model](topic:walk).
-- **Section box and filled cuts.** {{ui:Box}} in the section bar keeps only what is inside a box. Cut walls and slabs are now filled, like a drawn section; {{ui:Fill}} turns that off. See [Cut an IFC model with a section plane](topic:section-plane).
-- **Model checks.** {{ui:Model checks}} lists elements missing a property you require, GlobalIds used twice, elements on no storey, and copies stacked on each other. See [Check a model for common problems](topic:model-checks).
-- **Quantity totals.** {{ui:Quantity totals}} counts elements and adds up lengths, areas and volumes, grouped by class, storey or any property. It can also list one row per element, or every space with its area and volume. Each downloads as a CSV. See [Add up quantities, list elements and schedule spaces](topic:quantity-totals).
-- **Compare versions.** With two versions of a model open, {{ui:Compare versions}} shows what was added, removed, changed or moved, matched by GlobalId, with a CSV of every change. See [Compare two versions of a model](topic:compare-versions).
-- **4D schedule.** Open a task list as a CSV, or start from a template, and drag through the dates to see what is built, in progress and not started. See [Play a construction schedule on the model](topic:4d-schedule).
-- **Open in DetailCraft.** An IFC model goes to the detailing app in a new tab, unsaved changes included. Nothing is uploaded. See [Open a file in another app](topic:open-in-another-app).
-- **Pick objects in a drawing's 3D view.** Click a line, face or block in a DWG or DXF in {{ui:3D}} and {{ui:Properties}} shows its data. A drawing's 3D view also has {{ui:Section}} ({{key:X}}), and shows text, attributes and wide polylines. See [See a DWG or DXF drawing in 3D](topic:dwg-in-3d).
-- **Touch screens.** Bigger buttons, tap to pick, pinch to zoom, long press to add to the pick, a walk pad, and {{ui:Turn 90°}} while placing. See [Use BimCraft on a touch screen or tablet](topic:touch-screens).
-- **Recover your work.** If the tab or browser closes before you save an edited model, BimCraft offers it back next time. See [Recover unsaved work](common:recover).
-- **Find anything.** Press {{key:Mod+K}}, or click {{ui:Find}} in the bar at the top, to run a tool, jump to a setting or open a help topic. See [Find tools, settings and help](common:find-tools).
-- **Recent files.** The start screen lists the files you opened lately (Chrome and Edge). Click one to open it again.
-- **Language.** Every word on screen now comes from a language file. {{ui:Settings}}, {{ui:General}}, {{ui:Language}} offers Español (México). It is a machine-made draft that has not been reviewed yet, and help topics are still in English.
+### Draw a building
 
-## Improved
+- **Start a new building.** {{ui:File}} › {{ui:New building}} makes a blank model with a site, a building and its levels. Rename levels, change their heights and add more in the {{ui:Levels}} panel. See [Start a new building](topic:start-a-new-building).
+- **Walls.** Click from point to point on the plan of a level, or type lengths such as `12'6"`. Walls snap to ends, corners and other walls, come in nine starter types with their layers, and clean up their own corners and crossings. See [Draw walls](topic:draw-walls).
+- **Doors and windows.** Point at a wall and click, or type the distance from a corner. The opening cuts itself, and moving or deleting the wall takes its doors and windows along. See [Doors and windows](topic:doors-and-windows).
+- **Click to change it.** Properties for a drawn wall, door or window, {{ui:Change type…}} for several at once, and grips on the plan. See [Change a wall, door or window](topic:change-a-wall-or-door).
+- **Rooms, floors, ceilings and roofs.** Rooms appear as walls close them, with their number and area, and floors, ceilings and roofs follow the walls when they change. See [Rooms, floors, ceilings and roofs](topic:floors-and-roofs).
+- **Schedules and a plan PDF.** Door, window, wall and room schedules that change as you draw, dimensions on the plan, and the plan of a level as a PDF at a standard scale. See [Schedules, dimensions and a PDF of the plan](topic:plan-schedules-and-pdf).
 
-- **BimCraft's own IFC engine.** IFC files are read by an engine that is part of the app. Big files are read without freezing the page. Curved surfaces are drawn as curves, IFC4X3 road and rail alignments are drawn, and exports from Archicad open with their zones, layered walls, stairs and property sets. The file panel lists anything the engine could not draw yet under **Not drawn yet**. See [What BimCraft reads from each format](topic:file-formats).
-- **Smaller offline copy.** {{ui:Save for offline}} keeps about half as much as in 0.3. See [Online and offline](topic:online-offline).
-- **Swapping changes the IFC class.** Swap a table for a sink and the element becomes a sanitary terminal, keeping its GlobalId, place and item number. See [Swap a placed item, and update items from the library](topic:swap-and-update-library-items).
-- **More panels windows.** Give each panel its own window, up to four, and drag panels between windows. A floating panel resizes by touch or pen too. See [Arrange the panels and use a second monitor](common:arrange-panels).
-- **Drawings read in the background.** A DWG is read without holding up the page.
-- **Meshes in 2D.** Polyface and polygon meshes now draw in a drawing's 2D view. See [View a DWG or DXF drawing](topic:view-dwg).
-- **Project files from Archicad.** Opening a `.pln`, `.pla`, `.tpl` or `.bpn` file says what it is and what to export instead. See [Open .pln and .pla project files](topic:pln-project-files).
+### Residential design
+
+- **Roofs over any outline,** with a pitch for each wall, gables, sheds and roof planes. See [Roofs: a pitch for each wall, gables, sheds and roof planes](topic:roofs).
+- **Foundations:** slab on grade, stem walls, crawlspace or basement, with footings that follow the walls. See [Foundations under the walls](topic:foundations).
+- **Stairs and railings:** straight, L, U and winder stairs sized from the height between levels, with handrails and the stairwell cut in the floor above. See [Stairs and railings](topic:stairs-and-railings).
+- **Kitchens, baths and furniture:** a residential library of cabinets, appliances, fixtures and furniture that snap to walls, countertops, and more door and window types. See [Kitchens, baths and furniture from the residential set](topic:kitchens-and-baths).
+- **Framing** of walls, floors and roofs, with a lumber cut list. The sizes are labeled defaults: a designer or engineer checks them. See [Framing walls, floors and roofs](topic:framing).
+- **Terrain:** the ground from survey points, contours, a scan or spot heights, a building pad with cut and fill, and paving. See [The site's ground, the building pad and paving](topic:terrain).
+- **Elevations, sections and sheets:** a drawing set made from the model as one PDF. See [Elevations, sections and sheets](topic:sheets).
+- **The electrical plan:** outlets, switches and lights with circuits, and their schedules. See [The electrical plan](topic:electrical-plan).
+- **Takeoff:** the model bar's {{ui:Takeoff}} hands walls, roofs, footings, openings, cabinets, devices and the cut list to TakeoffCraft. See [Quantities to TakeoffCraft](topic:takeoff).
+
+### Pictures and materials
+
+- **Render** makes a daylight picture of the 3D view, on your own computer. {{ui:High quality (path traced)}} traces the light for glass, mirrors and metal. Light fixtures in the model light the picture. See [Render a picture of the model](topic:render).
+- **Paint** puts materials such as brick, siding, roofing and wood on a whole element or one side, saved in the IFC. See [Paint materials onto walls, floors and roofs](topic:paint-materials).
+- **Views** saves camera views by name, plays them in order and records walkthroughs. See [Save views and walkthroughs](topic:views-and-walkthroughs).
+- **Trees, people and cars** in the library, for pictures of the site.
+
+### Models you receive
+
+- **Section volumes:** a section box of several boxes, faces that lean and extra planes, and a section box round what you pick, with grips. See [Cut an IFC model with a section plane](topic:section-plane).
+- **Copy property values,** one at a time, all of them or as CSV. See [Properties panel fields](topic:properties-panel).
+- **Latitude and longitude** of any point on a georeferenced model, from {{ui:Measure}}. See [Measure distances, face areas and locations in 3D](topic:measure).
+- **Save and open color schemes** from the color legend. See [Color elements by a property](topic:color-by-property).
+- **Point clouds:** open LAS, LAZ, XYZ or PTS on their own or beside a model, cut slices, and measure to points. See [Show a point cloud beside the model](topic:point-clouds).
+- **Map layers:** a street map, aerial pictures or a map service on the ground under a georeferenced model. Nothing is asked of a map server until you turn it on. See [A map on the ground under the model](topic:map-layers).
+- **Dynamic blocks in drawings:** BimCraft lists each block's visibility states, and the library offers each state as its own item. See [View a DWG or DXF drawing](topic:view-dwg).
+
+### Working together and your name
+
+- **Work on one model together.** In CadCraft Studio, several people rename, set properties, place, draw and remove elements in one IFC model at once. See [Work on one model together, live](topic:work-live).
+- **Your name on issues comes from your account.** Signed in, issues carry your account's name with no question. {{ui:Settings}} › {{ui:BimCraft}} › {{ui:Your name on issues}} shows {{ui:From your account (<name>)}} and {{ui:Use another name}}. See [BimCraft settings](topic:settings#your-name-on-issues).
+
+## Changed
+
+- **From a project file to IFC:** the topic on which IFC export settings open best is rewritten. See [From a project file to BimCraft through IFC](topic:rvt-to-ifc).
+- **Five menu styles:** BimCraft's own toolbar, {{ui:Home design}}, {{ui:BIM ribbon}}, {{ui:Drafting classic}} and {{ui:Viewer}}, for opening and checking models rather than drawing them. See [Menus, keys and mouse](topic:menus-keys-and-mouse).
+- Messages about damaged or unsupported drawings now come in your language.
 
 ## Fixed
 
-- The {{ui:Spaces}} button showed nothing, because spaces were never loaded. It shows a model's rooms now.
-- Columns placed on a grid were drawn at the origin. They stand where the file puts them.
-- Opening a binary DXF gave a general error. It now says what the file is and how to save one BimCraft reads.
-- {{ui:Cut}}, {{ui:Delete}} and {{ui:Select all}} said "not built yet". They work.
-- Counts read properly: "1 file", not "1 files".
+- A door copied in a model turned on its site lined up with the model's axes, not with the building. The copy now lines up with the wall.
+- Sections of a turned building cut along the model's axes. {{ui:Square to the building}} in the section bar turns the planes and the box to the walls.
+- Section caps painted open elements, such as tree foliage, in the cut color, and a section box round the whole model could speckle the outer walls. Only closed elements are capped now.
+- {{key:Esc}} in Settings stopped {{ui:Measure}}.
+
+## In every app
+
+- **CadCraft Studio is the desktop app.** From 0.5 the desktop download is CadCraft Studio: all eight apps in one install. The separate installer for each app stops. BimCraft still runs in the browser, and as a browser edition you can download.
+- **Installers are not signed yet.** Code signing comes with 0.6. On Windows, if SmartScreen stops the installer, choose {{ui:More info}}, then {{ui:Run anyway}}. The macOS disk image (Apple silicon and Intel, macOS 13 or later) is not signed or notarized: the first time, right-click the app and choose {{ui:Open}}. iPad, Android and iPhone come with 0.6.
+- **Work together live.** In CadCraft Studio, {{ui:Live}} shares the file you have open: teammates on the same network join with a short code and edit with you, each with their own undo. Sessions on your own network are free, for everyone. Invite links over the internet aren't open yet. See [Work together live](common:work-together-live) and [Work on one model together, live](topic:work-live).
+- **Menus, keys and mouse.** In {{ui:Settings}} › {{ui:BimCraft}} › {{ui:Menus, keys and mouse}}, pick a menu style, give any command your own key, move commands between menus, set the wheel and the mouse buttons, and export or import a style as a `.ccinput.json` file. {{ui:Use this style in every app}} opens every app in its matching style. The command finder ({{key:Mod+K}}) shows each command's key. See [Menus, keys and mouse](topic:menus-keys-and-mouse).
+- **A wider Settings dialog,** in two columns, so more fits without scrolling. See [BimCraft settings](topic:settings).
+- **Floating and bottom panels fit the window.** A floating panel stays above the status bar and shrinks with a small window; on a short window a panel docked at the bottom leaves the view room. See [Arrange the panels and use a second monitor](common:arrange-panels).
+- **Phones and fold phones.** On a screen up to 760 px wide, or a phone held sideways, the view keeps the screen: panels open as sheets from a bar at the bottom, and the toolbar and the {{ui:Draw}} bar are one row each that scrolls sideways. {{ui:Tools}} hides the toolbar and {{ui:Move}} puts it at the bottom. Turning the phone, or opening and closing a fold phone, keeps your work, the selection and an open dialog. The app bar's {{ui:More}} menu holds the version, Find and the links. Phones work, but BimCraft is made for larger screens.
+- **Touch tablets.** On a touch screen each toolbar is one row that scrolls sideways instead of wrapping onto several lines.
+- **Spanish** stays a machine-made draft that has not been reviewed yet. Help topics are in English.
 
 ## Not in this version yet
 
-- Settings has an **Assistants** switch, but assistants connect through CadCraft Studio, which is not available yet.
-- Cloud saving and desktop builds are not available yet.
+- A 3D preview of project files: export IFC from them. See [From a project file to BimCraft through IFC](topic:rvt-to-ifc).
+- Curved walls, copying drawn walls, doors and windows, and changing walls another program made.
+- Dormers, curved roofs and spiral stairs; dimensions and tags on elevations and sections.
+- Textures in the live 3D view (rendered pictures show them), E57 point clouds, and saving a point cloud's place with the model.
+- In a live session, one model per session.
 - [What is not built yet](topic:not-built-yet)

@@ -17,6 +17,14 @@
  *   up to 7 values → one categorical color each, in a FIXED order (most common value first); the rest fold into "Other"
  *   a number with more than 7 values → 6 equal ranges on a one-hue sequential ramp (light → dark; dark theme reversed)
  *   no value → a pale neutral, so the colored ones stand out
+ *
+ * Schemes (0.5 WL.5): a legend saved as JSON so a team colors every model the same way.
+ *   schemeOf(c, field) → { format 'bimcraft-color-scheme', version 1, field { id, label, group, kind }, kind 'category' | 'range',
+ *                          values [{ value, color }] | ranges [{ from, to, color }], other, none }   (from a colorBy / applyScheme result)
+ *   readScheme(json) → { ok, scheme, error }   untrusted: format, version, ids, colors #rrggbb, finite numbers, ≤ 500 rows
+ *   applyScheme(ix, scheme) → colorBy's shape + { missing: field not in this model, unmatched: values not in the scheme (n) }
+ *     category: each scheme value keeps its color (rows with no element here stay, count 0); values the scheme lacks go into
+ *     one "Not in the scheme" row (scheme.other); no value → scheme.none. range: by from ≤ v < to (the last range takes its to).
  */
 
 export const CATEGORICAL = {
@@ -164,7 +172,7 @@ export function colorBy(ix, fid, { theme = 'light' } = {}) {
   } else {
     // most common first (ties: by value), so the order is stable for the same model and field
     const sorted = [...groups].sort((a, b) => b[1].length - a[1].length || String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }));
-    sorted.slice(0, cat.length).forEach(([v, keys], i) => legend.push({ label: String(v), keys, color: cat[i], count: keys.length }));
+    sorted.slice(0, cat.length).forEach(([v, keys], i) => legend.push({ label: String(v), value: v, keys, color: cat[i], count: keys.length }));
     const more = sorted.slice(cat.length);
     if (more.length) { const keys = more.flatMap(([, k]) => k); legend.push({ label: '', other: more.length, keys, color: OTHER[theme] || OTHER.light, count: keys.length }); }
   }
@@ -175,3 +183,96 @@ export function colorBy(ix, fid, { theme = 'light' } = {}) {
 }
 const fmtN = (v) => { const a = Math.abs(v); return a >= 1000 ? v.toFixed(0) : a >= 10 ? v.toFixed(1).replace(/\.0$/, '') : v.toFixed(3).replace(/\.?0+$/, ''); };
 function fmtRange(a, b) { return fmtN(a) + ' – ' + fmtN(b); }
+
+// ---- Schemes (0.5 WL.5) ----
+export const SCHEME_FORMAT = 'bimcraft-color-scheme';
+export const SCHEME_MAX = 500;
+const HEX = /^#[0-9a-f]{6}$/i;
+
+/** The saved form of a legend (colorBy or applyScheme result) for `field` (an ix.fields entry). */
+export function schemeOf(c, field) {
+  const out = { format: SCHEME_FORMAT, version: 1, field: { id: field.id, label: field.label || '', group: field.group || '', kind: field.kind || 'text' }, kind: c.kind };
+  const rows = c.legend.filter((l) => !l.none && !l.other);
+  if (c.kind === 'range') out.ranges = rows.map((l) => ({ from: l.lo, to: l.hi, color: l.color }));
+  else out.values = rows.map((l) => ({ value: l.value !== undefined ? l.value : l.label, color: l.color }));
+  out.other = (c.legend.find((l) => l.other) || {}).color || OTHER.light;
+  out.none = (c.legend.find((l) => l.none) || {}).color || NONE.light;
+  return out;
+}
+
+/** A scheme from untrusted JSON (text or parsed). */
+export function readScheme(json) {
+  let o = json;
+  if (typeof o === 'string') { try { o = JSON.parse(o); } catch (e) { return { ok: false, error: 'json' }; } }
+  if (!o || typeof o !== 'object' || o.format !== SCHEME_FORMAT) return { ok: false, error: 'format' };
+  if (o.version !== 1) return { ok: false, error: 'version' };
+  const f = o.field;
+  if (!f || typeof f.id !== 'string' || !f.id || f.id.length > 300) return { ok: false, error: 'field' };
+  const str = (v, n = 300) => (typeof v === 'string' ? v.slice(0, n) : '');
+  const color = (v, d) => (typeof v === 'string' && HEX.test(v) ? v.toLowerCase() : d);
+  const field = { id: f.id, label: str(f.label), group: str(f.group), kind: f.kind === 'number' ? 'number' : 'text' };
+  const scheme = { format: SCHEME_FORMAT, version: 1, field, kind: o.kind === 'range' ? 'range' : 'category', other: color(o.other, OTHER.light), none: color(o.none, NONE.light) };
+  if (scheme.kind === 'range') {
+    const r = Array.isArray(o.ranges) ? o.ranges : [];
+    if (!r.length || r.length > SCHEME_MAX) return { ok: false, error: 'rows' };
+    scheme.ranges = [];
+    for (const x of r) {
+      const from = Number(x?.from), to = Number(x?.to), c = color(x?.color, null);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || to < from || !c) return { ok: false, error: 'rows' };
+      scheme.ranges.push({ from, to, color: c });
+    }
+    scheme.ranges.sort((a, b) => a.from - b.from);
+  } else {
+    const v = Array.isArray(o.values) ? o.values : [];
+    if (!v.length || v.length > SCHEME_MAX) return { ok: false, error: 'rows' };
+    scheme.values = [];
+    const seen = new Set();
+    for (const x of v) {
+      const val = typeof x?.value === 'number' && Number.isFinite(x.value) ? x.value : typeof x?.value === 'string' ? x.value.slice(0, 500) : null;
+      const c = color(x?.color, null);
+      if (val === null || !c) return { ok: false, error: 'rows' };
+      const k = typeof val + ':' + val;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      scheme.values.push({ value: val, color: c });
+    }
+  }
+  return { ok: true, scheme };
+}
+
+/** Color a model's index by a scheme (see the header). */
+export function applyScheme(ix, scheme) {
+  const fid = scheme.field.id;
+  const missing = !ix.fields.some((f) => f.id === fid);
+  const vals = missing ? new Map() : ix.values(fid);
+  const none = ix.ids.filter((id) => !vals.has(id)).map((id) => ix.keyBase + id);
+  const legend = [];
+  let unmatched = 0;
+  if (scheme.kind === 'range') {
+    const R = scheme.ranges, bins = R.map((r) => ({ label: fmtRange(r.from, r.to), lo: r.from, hi: r.to, color: r.color, keys: [] }));
+    const rest = [];
+    for (const [id, v] of vals) {
+      const n = typeof v === 'number' ? v : Number(v);
+      const i = Number.isFinite(n) ? R.findIndex((r, j) => n >= r.from && (n < r.to || (j === R.length - 1 && n <= r.to))) : -1;
+      if (i >= 0) bins[i].keys.push(ix.keyBase + id); else rest.push(ix.keyBase + id);
+    }
+    for (const b of bins) legend.push({ ...b, count: b.keys.length });
+    if (rest.length) { unmatched = rest.length; legend.push({ label: '', other: true, outside: true, keys: rest, color: scheme.other, count: rest.length }); }
+  } else {
+    const rows = scheme.values.map((x) => ({ label: String(x.value), value: x.value, color: x.color, keys: [] }));
+    const at = new Map(rows.map((r, i) => [typeof r.value === 'number' ? 'n:' + r.value : 's:' + r.value, i]));
+    const rest = new Map();
+    for (const [id, v] of vals) {
+      // numbers match numbers; text matches text exactly (a number in the file can match a scheme value typed as text)
+      const i = typeof v === 'number' ? (at.get('n:' + v) ?? at.get('s:' + String(v))) : at.get('s:' + String(v));
+      if (i !== undefined) rows[i].keys.push(ix.keyBase + id);
+      else { const k = String(v); if (!rest.has(k)) rest.set(k, []); rest.get(k).push(ix.keyBase + id); }
+    }
+    for (const r of rows) legend.push({ ...r, count: r.keys.length });
+    if (rest.size) { const keys = [...rest.values()].flat(); unmatched = rest.size; legend.push({ label: '', other: rest.size, outside: true, keys, color: scheme.other, count: keys.length }); }
+  }
+  if (none.length) legend.push({ label: '', none: true, keys: none, color: scheme.none, count: none.length });
+  const colorOf = new Map();
+  for (const l of legend) for (const k of l.keys) colorOf.set(k, l.color);
+  return { kind: scheme.kind, legend, colorOf, missing, unmatched, scheme: true };
+}

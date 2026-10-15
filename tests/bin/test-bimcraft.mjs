@@ -44,6 +44,9 @@
  *   node bin/test-bimcraft.mjs --compare            # 0.4 B21 ifc-compare.js: the fixture against its revision b (also moved 100 m)
  *   node bin/test-bimcraft.mjs --handoff            # 0.4 1.5 handoff.js: every app's copy byte-identical, ids, sendHandoff refusals
  *   node bin/test-bimcraft.mjs --4d                 # 0.4 B22 ifc-4d.js: task CSV parsing and refusals, matching, status on a date
+ *   node bin/test-bimcraft.mjs --section            # 0.5 WL.1/WL.2 section-volume.js: cells, tilts, extra planes, unions, clip GLSL
+ *   node bin/test-bimcraft.mjs --geo                # 0.5 WL.4 ifc-geo.js + the crs.js copy: map conversion and site lat/long vs PROJ
+ *   node bin/test-bimcraft.mjs --dynamic            # 0.5 DB.11 dwg-dynamic.js (+ ModelCraft's copy), states per reference, library state items
  *   node bin/test-bimcraft.mjs --partial            # cut-off RVT/RFA: sample files cut at many offsets must recover exactly
  *                                                   #   the streams whose bytes and index are all present (byte-equal to the
  *                                                   #   original), never more; no complete file is reported partial. Also runs
@@ -83,8 +86,12 @@ if (fs.existsSync(path.join(APP, 'lang/en.json'))) (await import(pathToFileURL(p
 const require = createRequire(path.join(ROOT, 'tools/bimcraft-test/package.json'));
 
 // cc-ifc's IfcAPI.Init() imports 'manifold-3d' by name (the page maps it in the manifest); Node gets the vendored build.
+// The crs.js copy (0.5 WL.4) imports 'proj4' the same way; tin.js (0.5 RC.10 terrain) imports delaunator and robust-predicates.
 register('data:text/javascript,' + encodeURIComponent(`export async function resolve(spec, ctx, next) {
   if (spec === 'manifold-3d') return { url: ${JSON.stringify(pathToFileURL(path.join(ROOT, 'public_html/assets/vendor/manifold-3d/current/manifold.js')).href)}, shortCircuit: true };
+  if (spec === 'proj4') return { url: ${JSON.stringify(pathToFileURL(path.join(ROOT, 'public_html/assets/vendor/proj4/current/proj4.esm.min.js')).href)}, shortCircuit: true };
+  if (spec === 'delaunator') return { url: ${JSON.stringify(pathToFileURL(path.join(ROOT, 'public_html/assets/vendor/delaunator/current/index.js')).href)}, shortCircuit: true };
+  if (spec === 'robust-predicates') return { url: ${JSON.stringify(pathToFileURL(path.join(ROOT, 'public_html/assets/vendor/robust-predicates/current/index.js')).href)}, shortCircuit: true };
   return next(spec, ctx);
 }`), import.meta.url);
 let WebIFC;
@@ -126,6 +133,18 @@ if (args.includes('--qto')) process.exit(await qtoMode());
 if (args.includes('--compare')) process.exit(await compareMode());
 if (args.includes('--handoff')) process.exit(await handoffMode());
 if (args.includes('--4d')) process.exit(await fourDMode());
+if (args.includes('--section')) process.exit(await sectionMode());
+if (args.includes('--geo')) process.exit(await geoMode());
+if (args.includes('--dynamic')) process.exit(await dynamicMode());
+if (args.includes('--new')) process.exit(await newMode());
+if (args.includes('--rotated')) process.exit(await rotatedMode());
+// 0.5 part 3 track BM (session bim-model): the building tools — tools/bimcraft-test/model-test.mjs
+if (args.includes('--model')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/model-test.mjs'))).modelMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
+// 0.5 part 4 track RC (session bim-residential): the residential tools — tools/bimcraft-test/res-test.mjs
+if (args.includes('--res')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/res-test.mjs'))).resMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
+if (args.includes('--render')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/render-test.mjs'))).renderMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));   // 0.5 RC.7 / RC.11 (session render)
+// 0.5 part 4 track IP.1: menu styles, keys and mouse — tools/bimcraft-test/input-test.mjs
+if (args.includes('--input')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/input-test.mjs'))).inputMode({ APP, ROOT }));
 if (args.includes('--edit')) process.exit(await editMode(args.filter((a) => !a.startsWith('--')).map((a) => path.resolve(a))));
 const explicitTarget = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--build');
 // Default: the repo's public fixtures, plus the machine's own test files when this checkout has them (a clean clone
@@ -538,6 +557,14 @@ async function clipboardMode() {
   const text = C.elementText({ cls: 'IfcWall', name: 'Wall 1', typeName: 'Generic 200', objectType: '', tag: '123', description: null, guid: 'G1', id: 9,
     sets: [{ name: 'Pset_WallCommon', rows: [{ name: 'IsExternal', value: true }, { name: 'FireRating', value: '' }, { name: 'ThermalTransmittance', value: 0.35 }] }, { name: 'Empty', rows: [{ name: 'X', value: null }] }] });
   ok(text === 'Wall: Wall 1\nType: Generic 200\nTag: 123\nGlobalId: G1\n\nPset_WallCommon\n  IsExternal: Yes\n  ThermalTransmittance: 0.35\n', 'elementText: name, type, tag, GlobalId, then each set with its filled values (Yes/No, no empty rows or sets)');
+  // 0.5 WL.3: Copy as CSV — every field, empty ones too; formula-looking values escaped; a Model column for federated models
+  const wp = { cls: 'IfcWall', name: 'Wall, "north"', typeName: 'Generic 200', objectType: '', tag: '=SUM(A1)', description: null, guid: '2O2Fr$t4X7Zf8NOew3FLOH', id: 9,
+    sets: [{ name: 'Pset_WallCommon', rows: [{ name: 'IsExternal', value: true }, { name: 'FireRating', value: '' }] }, { name: 'Identity Data', rows: [{ name: 'Serial number', value: 'SN-0042' }] }] };
+  const crows = C.elementCopyRows(wp);
+  ok(crows.length === 11 && crows[0].join('|') === 'Element|Class|Wall' && crows[6].join('|') === 'Element|GlobalId|2O2Fr$t4X7Zf8NOew3FLOH' && crows[9].join('|') === 'Pset_WallCommon|FireRating|' && crows[10].join('|') === 'Identity Data|Serial number|SN-0042', 'elementCopyRows: the element\'s 8 fields, then every set value, empty ones kept');
+  const pcsv = C.elementCsv(wp);
+  ok(pcsv.startsWith('Group,Property,Value\r\nElement,Class,Wall\r\nElement,Name,"Wall, ""north"""\r\n') && pcsv.includes("Element,Tag,'=SUM(A1)\r\n") && pcsv.includes('Pset_WallCommon,IsExternal,Yes\r\n') && pcsv.endsWith('Identity Data,Serial number,SN-0042\r\n'), 'elementCsv: header, quotes doubled, a formula cell escaped, Yes/No, CRLF');
+  ok(C.elementCsv(wp, { file: 'b.ifc' }).startsWith('Model,Group,Property,Value\r\nb.ifc,Element,Class,Wall\r\n'), 'elementCsv with a file: a Model column first (federated models)');
   const b0 = C.boxFromEquipment({ Width: 1828.8, Depth: 762, Height: 863.6 }, 1), bm = C.boxFromEquipment({ Width: 1.8288, Depth: 0.762 }, 1000);
   ok(near(b0.x1 - b0.x0, 1828.8) && b0.y1 === 0 && near(b0.y0, -762) && near(bm.x1, 914.4) && bm.z1 === 900 && C.boxFromEquipment({}, 1) === null, 'boxFromEquipment: back on y = 0, file units → mm, 900 mm stand-in height, null without sizes');
   const g = C.ghostItem({ ...clip, item: null });
@@ -691,6 +718,15 @@ async function libraryMode() {
   const h1 = await L.itemHash(full), h2 = await L.itemHash({ provenance: { sha256: 'x' }, ...Object.fromEntries(Object.entries(full).reverse()) });
   ok(/^[0-9a-f]{64}$/.test(h1) && h1 === h2, 'itemHash: hex sha256, independent of key order and provenance');
   ok(h1 !== await L.itemHash({ ...full, name: 'Other' }), 'itemHash changes with the content');
+  // 0.5: without crypto.subtle (a page on plain http, Studio Live's browser joiners) the plain-JS SHA-256 gives the same hash
+  const subtleDesc = Object.getOwnPropertyDescriptor(globalThis.crypto, 'subtle') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(globalThis.crypto), 'subtle');
+  Object.defineProperty(globalThis.crypto, 'subtle', { value: undefined, configurable: true });
+  const h3 = await L.itemHash(full);
+  delete globalThis.crypto.subtle;
+  if (!globalThis.crypto.subtle && subtleDesc) Object.defineProperty(globalThis.crypto, 'subtle', subtleDesc);
+  const { createHash } = await import('node:crypto');
+  const shaOk = [0, 1, 55, 56, 64, 119, 100000].every((n) => { const b = new Uint8Array(n).map((_, i) => (i * 31 + 7) & 255); return Buffer.from(L.sha256(b)).toString('hex') === createHash('sha256').update(b).digest('hex'); });
+  ok(h3 === h1 && shaOk && !!globalThis.crypto.subtle, 'itemHash without crypto.subtle: the same hash (plain-JS SHA-256 checked against Node\'s at the padding edges 0, 55, 56, 64, 119 bytes and 100 kB)');
 
   console.log('== Adapters');
   // The public kitchen fixture: KCL blocks, params from the item tags, inches → mm (fixtures/facts.json).
@@ -1863,6 +1899,39 @@ async function colorMode() {
   ok(rng.kind === 'range' && rng.legend.length === 6 && rng.legend.reduce((a, l) => a + l.count, 0) === 20 && rng.legend.every((l, i) => l.color === P.SEQUENTIAL.light[i]) && rng.legend[5].keys.includes(20) && rng.legend[0].keys.includes(1), '20 numbers: 6 equal ranges on the sequential ramp, low to high, every element in one');
   ok(rng.legend[0].label === '0 – 15.8' && rng.legend[5].label === '79.2 – 95', 'range labels: ' + rng.legend.map((l) => l.label).join(' | '));
 
+  console.log('== color schemes (0.5 WL.5)');
+  const sc = P.schemeOf(byCls, f('cls'));
+  ok(sc.format === 'bimcraft-color-scheme' && sc.version === 1 && sc.field.id === 'cls' && sc.values.map((v) => v.value).join() === 'IfcWall,IfcStairFlight,IfcDoor,IfcFurniture,IfcSlab' && sc.values[0].color === P.CATEGORICAL.light[0], 'schemeOf: field, kind, every value with its color');
+  const rs = P.readScheme(JSON.stringify(sc));
+  const same = P.applyScheme(ix, rs.scheme);
+  ok(rs.ok && !same.missing && same.unmatched === 0 && [...byCls.colorOf].every(([k, c]) => same.colorOf.get(k) === c.toLowerCase()), 'saved → read → applied to the same model: every element the same color (colors kept in lower case)');
+  // the scheme's colors win over the theme: a teammate's green doors stay green
+  const doors = { ...rs.scheme, values: rs.scheme.values.map((v) => (v.value === 'IfcDoor' ? { ...v, color: '#00aa44' } : v)) };
+  const painted = P.applyScheme(ix, doors);
+  ok(painted.colorOf.get(ids['D-101']) === '#00aa44', 'a changed color is kept: the door is #00aa44');
+  // another revision: W-203 is new, W-104 gone; a scheme that lacks a value folds it into "not in the scheme"
+  const mb = await load(await fixtureBytes({ rev: 'b' }));
+  const ixb = P.propertyIndex(WebIFC, ifcm.api, mb.modelID, mb);
+  const part = { ...rs.scheme, values: rs.scheme.values.filter((v) => v.value !== 'IfcSlab' && v.value !== 'IfcFurniture').concat([{ value: 'IfcColumn', color: '#123456' }]) };
+  const pb = P.applyScheme(ixb, part);
+  const out = pb.legend.find((l) => l.outside), col = pb.legend.find((l) => l.label === 'IfcColumn');
+  ok(pb.unmatched === 2 && out && out.count === 2 && out.color === P.OTHER.light.toLowerCase() && col && col.count === 0, 'revision b with a scheme lacking Slab and Furniture: those 2 values go gray as "not in the scheme"; IfcColumn stays listed with 0');
+  const cs = P.applyScheme(ix, P.readScheme(P.schemeOf(cost, f('p:Fixture_Data.Cost'))).scheme);
+  ok(cs.legend.filter((l) => !l.none).length === 4 && cs.colorOf.get(ids['W-101']) === cost.colorOf.get(ids['W-101']).toLowerCase(), 'a number field\'s values match as numbers (Cost 1250.5)');
+  const rsc = P.schemeOf(rng, { id: 'x', label: 'X', group: 'Set', kind: 'number' });
+  ok(rsc.kind === 'range' && rsc.ranges.length === 6 && rsc.ranges[0].from === 0 && rsc.ranges[5].to === 95, 'a range legend saves as ranges (from / to)');
+  const wider = { ...synth, ids: [...synth.ids, 21], values: () => new Map([...synth.values(), [21, 500]]), fields: [{ id: 'x' }] };
+  const ar = P.applyScheme(wider, P.readScheme(rsc).scheme);
+  ok(ar.legend.slice(0, 6).every((l, i) => l.count === rng.legend[i].count) && ar.legend[6]?.outside && ar.legend[6].count === 1, 'applied to a model with a value past the last range: same bins, the outlier "not in the scheme"');
+  const miss = P.applyScheme(ix, { ...rs.scheme, field: { ...rs.scheme.field, id: 'p:Nope.Nothing' } });
+  ok(miss.missing && miss.colorOf.size === 11 && miss.legend.every((l) => l.none || !l.count), 'a field this model does not have: said (missing), every element "no value"');
+  const bad1 = [P.readScheme('{'), P.readScheme({ format: 'x' }), P.readScheme({ ...sc, version: 2 }), P.readScheme({ ...sc, field: { id: '' } }),
+    P.readScheme({ ...sc, values: [{ value: 'a', color: 'red' }] }), P.readScheme({ ...sc, values: [] }), P.readScheme({ ...sc, values: Array.from({ length: 501 }, (_, i) => ({ value: 'v' + i, color: '#000000' })) }),
+    P.readScheme({ ...rsc, ranges: [{ from: 5, to: 1, color: '#000000' }] }), P.readScheme({ ...rsc, ranges: [{ from: 'x', to: 1, color: '#000000' }] })];
+  ok(bad1.every((r) => !r.ok) && bad1.map((r) => r.error).join() === 'json,format,version,field,rows,rows,rows,rows,rows', 'refused: broken JSON, another format, version 2, no field, a color not #rrggbb, no rows, 501 rows, a backwards or text range');
+  const dup = P.readScheme({ ...sc, values: [{ value: 'A', color: '#AABBCC' }, { value: 'A', color: '#000000' }, { value: 1, color: '#111111' }, { value: '1', color: '#222222' }], other: 'nope' });
+  ok(dup.ok && dup.scheme.values.length === 3 && dup.scheme.values[0].color === '#aabbcc' && dup.scheme.other === P.OTHER.light, 'a repeated value keeps the first, number 1 and text "1" are different values, a bad Other color falls back');
+
   for (const file of publicSamples()) {
     const mm = await load(new Uint8Array(fs.readFileSync(file)));
     const t0 = performance.now();
@@ -2337,6 +2406,223 @@ async function compareMode() {
   return bad ? 1 : 0;
 }
 
+async function dynamicMode() {
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const D = await import(path.join(APP, 'dwg-dynamic.js'));
+  const L = await import(path.join(APP, 'libitem.js'));
+  const { entityRows } = await import(path.join(APP, 'dwg-props.js'));
+  console.log('== the copy');
+  const mc = path.resolve(APP, '..', '..', 'modelcraft', 'dev', 'dwg-dynamic.js');
+  if (fs.existsSync(path.dirname(mc))) ok(fs.existsSync(mc) && Buffer.compare(fs.readFileSync(mc), fs.readFileSync(path.join(APP, 'dwg-dynamic.js'))) === 0, 'modelcraft/dev/dwg-dynamic.js is byte-identical to the canonical copy');
+  else console.log('  skip modelcraft (not in this clone)');
+
+  console.log('== a dynamic block made by hand (the shapes cc-dwg reads, DB.2)');
+  const line = (h, y, inv = false) => ({ type: 'LINE', handle: h, layer: '0', start: { x: 0, y }, end: { x: 10, y }, invisible: inv });
+  const def = { name: 'Sink', record: 'D1', base: { x: 0, y: 0, z: 0 }, entities: [line('E1', 0), line('E2', 1, true), line('E3', 2, true)],
+    dynamic: { params: [{ kind: 'visibility', label: 'Visibility', states: [{ name: 'Single bowl', entities: ['E1'] }, { name: 'Double bowl', entities: ['E2', 'E3'] }] }] } };
+  const copy = { name: '*B7', record: 'C1', dynamicOf: 'D1', base: { x: 0, y: 0, z: 0 }, entities: [line('F1', 0, true), line('F2', 1), line('F3', 2)] };
+  const plain = { name: 'Chair', record: 'P1', entities: [line('G1', 0)] };
+  const ms = { name: '*Model_Space', entities: [
+    { type: 'INSERT', block: 'Sink', insert: { x: 0, y: 0 } },                                   // the definition itself: as saved
+    { type: 'INSERT', block: '*B7', insert: { x: 50, y: 0 }, dyn: { def: 'D1', state: 'Double bowl' } },
+    { type: 'INSERT', block: '*B7', insert: { x: 90, y: 0 } },                                   // a copy without values: by its objects
+    { type: 'INSERT', block: 'Chair', insert: { x: 0, y: 50 } }] };
+  const model = { blocks: [ms, def, copy, plain] };
+  const defs = D.dynamicDefs(model);
+  ok(defs.size === 1 && defs.get('D1').name === 'Sink' && defs.get('D1').vis.states.length === 2, 'one dynamic definition with two visibility states');
+  const [a, b, c, d] = ms.entities.map((e) => D.dynamicOf(model, e, defs));
+  ok(a.state === 'Single bowl' && a.others.join() === 'Double bowl', 'a reference to the definition shows the state it was saved in (Single bowl), the other listed');
+  ok(b.state === 'Double bowl' && b.others.join() === 'Single bowl', 'a reference with values: its state (Double bowl)');
+  ok(c.state === 'Double bowl', 'a reference to a copy without values: the state its copy shows, found by position');
+  ok(d === null, 'an ordinary block is not dynamic');
+  const sum = D.dynamicSummary(model, defs);
+  ok(sum.length === 1 && sum[0].count === 3 && JSON.stringify(sum[0].shown.sort()) === JSON.stringify([['Double bowl', 2], ['Single bowl', 1]]), 'summary: Sink placed 3 times, Double bowl ×2, Single bowl ×1');
+  const rows = entityRows({ type: 'INSERT', handle: 'X', layer: '0', block: '*B7', insert: { x: 0, y: 0, z: 0 } }, { dyn: b });
+  ok(rows.some((r) => r.key === 'dwg.prop.dyn' && r.value === 'Sink') && rows.some((r) => r.key === 'dwg.prop.dyn.state' && r.value === 'Double bowl') && rows.some((r) => r.key === 'dwg.prop.dyn.others' && r.value === 'Single bowl'), 'a picked reference\'s rows: Dynamic block Sink, State shown Double bowl, Other states Single bowl');
+  console.log('== library candidates per state (libitem.js)');
+  const cand = L.itemsFromDwg(model, { list: true, units: 'mm' }).candidates;
+  ok(cand.filter((x) => x.block === 'Sink').map((x) => x.name).join('|') === 'Sink: Single bowl|Sink: Double bowl' && cand.some((x) => x.name === 'Chair') && !cand.some((x) => x.name === 'Sink'), 'the dynamic block is offered once per state ("Sink: Single bowl", "Sink: Double bowl"); Chair as before');
+  const its = L.itemsFromDwg(model, { blocks: ['Sink: Double bowl', 'Sink: Single bowl'], units: 'mm' }).items;
+  const dbl = its.find((i) => i.name === 'Sink: Double bowl'), sgl = its.find((i) => i.name === 'Sink: Single bowl');
+  ok(dbl && dbl.plan.entities.length === 2 && dbl.plan.entities.every((e) => e.y1 > 0) && sgl && sgl.plan.entities.length === 1 && sgl.plan.entities[0].y1 === 0, 'each state draws only its own objects (Double bowl: the two lines saved invisible; Single bowl: the one)');
+  ok(/Block Sink \(Double bowl\)/.test(dbl.description), 'the item says which state it is: ' + dbl.description);
+  const direct = L.itemFromBlock(model, 'Sink: Double bowl', { units: 'mm' });
+  ok(direct.item && direct.item.plan.entities.length === 2, 'itemFromBlock by the state\'s name alone (as BimCraft\'s "This file" calls it) finds the state');
+  const vr = L.validateItem(L.cleanItem(dbl), { partial: true });
+  ok(vr.ok, 'and it is a valid item (partial, as the converter hands it on)' + (vr.ok ? '' : ': ' + vr.errors.slice(0, 2).join(' | ')));
+
+  const sample = path.join(TESTFILES, 'dwg-samples', 'blocks_and_tables_-_imperial.dwg');
+  if (fs.existsSync(sample)) {
+    console.log('== AutoCAD\'s blocks sample (testfiles)');
+    const { readDwg } = await import(path.join(APP, 'dwg', 'read.js'));
+    const md = readDwg(new Uint8Array(fs.readFileSync(sample)));
+    const dd = D.dynamicDefs(md), s2 = D.dynamicSummary(md, dd);
+    ok(dd.size === 12 && s2.find((x) => x.name === 'Receptacle')?.count === 45, '12 dynamic definitions; Receptacle placed 45 times in model space');
+    const refs = md.blocks.flatMap((bk) => bk.entities).filter((e) => e.type === 'INSERT' && e.dyn?.state);
+    const inferred = refs.filter((e) => { const { dyn, ...bare } = e; return D.dynamicOf(md, bare, dd)?.state === dyn.state; }).length;
+    ok(refs.length > 50 && inferred === refs.length, 'every reference\'s state worked out from its copy\'s objects alone matches the state AutoCAD stored (' + inferred + ' / ' + refs.length + ')');
+    const sc = L.itemsFromDwg(md, { list: true }).candidates.filter((x) => x.state);
+    ok(sc.length === 14 && sc.some((x) => x.name === 'Sink: Kitchen - Plan'), 'library: 14 state candidates (Receptacle, Switch, Refrigerator, Range_Oven, Sink ×3, Toilet ×3)');
+  } else console.log('  skip AutoCAD sample (testfiles not on this machine)');
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' dynamic block checks passed');
+  return bad ? 1 : 0;
+}
+
+async function geoMode() {
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const G = await import(path.join(APP, 'ifc-geo.js'));
+  const CRS = await import(path.join(APP, 'crs.js'));
+  const { GEOREF } = await import(path.join(ROOT, 'tools/bimcraft-test/ifc-fixture.mjs'));
+  const { execFileSync } = await import('node:child_process');
+  console.log('== the crs.js copy');
+  let sync = '';
+  try { sync = execFileSync('node', [path.join(ROOT, 'tools/bimcraft-test/crs-sync.mjs'), '--check'], { encoding: 'utf8' }); } catch (e) { sync = e.stdout || String(e); }
+  ok(/in step/.test(sync), 'crs.js and crs-db.json are byte-identical to CivilCraft\'s, every word they show is in BimCraft\'s language file');
+  CRS.setCatalog(JSON.parse(fs.readFileSync(path.join(APP, 'crs-db.json'), 'utf8')));
+  console.log('== names and angles');
+  ok(G.epsgOf('EPSG:28356') === 28356 && G.epsgOf('urn:ogc:def:crs:EPSG::7856') === 7856 && G.epsgOf('http://www.opengis.net/def/crs/EPSG/0/2277') === 2277 && G.epsgOf('EPSG 25832') === 25832 && G.epsgOf('28356') === 28356, 'epsgOf reads EPSG codes written five ways');
+  ok(G.epsgOf('GDA94 / MGA zone 56') === null && G.epsgOf('') === null && G.epsgOf('Zone 12345') === null, 'and nothing from a name without a code');
+  ok(Math.abs(G.compound([-33, -51, -35, -900000]) - GEOREF.latDeg) < 1e-12 && G.compound(null) === null, 'compound angles (deg, min, sec, millionths) → degrees, negative south');
+  ok(G.dms(GEOREF.latDeg, 'lat') === '33° 51′ 35.90″ S' && G.dms(GEOREF.lonDeg, 'lon') === '151° 12′ 33.48″ E' && G.dms(-0.5, 'lon') === '0° 30′ 00.00″ W', 'dms: ' + G.dms(GEOREF.latDeg, 'lat') + ', ' + G.dms(GEOREF.lonDeg, 'lon'));
+  ok(G.datumOf('+proj=utm +zone=56 +south +ellps=GRS80 +units=m +no_defs') === '+proj=longlat +ellps=GRS80 +no_defs' && G.datumOf('+proj=lcc +datum=NAD27 +units=us-ft') === '+proj=longlat +datum=NAD27 +no_defs', 'datumOf keeps the ellipsoid / datum, drops the projection');
+  const py = (code) => JSON.parse(execFileSync(path.join(ROOT, 'tools/civilcraft-test/venv/bin/python'), ['-c', code], { encoding: 'utf8' }));
+  const hasPy = fs.existsSync(path.join(ROOT, 'tools/civilcraft-test/venv/bin/python'));
+
+  console.log('== a map conversion (IfcProjectedCRS EPSG:28356 + IfcMapConversion)');
+  const ifcm = await quiet(() => IfcModel.create(WebIFC, null))();
+  const m = await quiet((b) => ifcm.load(b, () => {}))(await fixtureBytes({ georef: 'map' }));
+  const g = G.readGeoref(ifcm.api, m.modelID);
+  ok(g && g.kind === 'map' && g.crs.code === 28356 && g.crs.geodeticDatum === 'GDA94' && g.crs.verticalDatum === 'AHD' && g.mapUnitM === 1 && g.fileUnitM === 0.001, 'read: EPSG:28356, datum GDA94, heights AHD, map unit metre, file unit mm (' + JSON.stringify(g && { code: g.crs.code, mapUnitM: g.mapUnitM, fileUnitM: g.fileUnitM }) + ')');
+  // W-101's far top outer corner: (10000, −100, 3000) mm in the file
+  const P = [10000, -100, 3000], r = GEOREF.rotationDeg * Math.PI / 180, s = GEOREF.scale;
+  const want = [GEOREF.e + s * (Math.cos(r) * P[0] - Math.sin(r) * P[1]), GEOREF.n + s * (Math.sin(r) * P[0] + Math.cos(r) * P[1]), GEOREF.h + P[2] * 0.001];
+  const got = G.fileToMap(g, P);
+  ok(got.every((v, k) => Math.abs(v - want[k]) < 1e-6), 'fileToMap: rotated 30°, scaled mm → m, moved to E/N/H: ' + got.map((v) => v.toFixed(4)).join(', '));
+  // the same corner as BimCraft's viewer holds it: Y up, metres, moved to the origin by the coordination matrix
+  const C = [...ifcm.api.GetCoordinationMatrix(m.modelID)];
+  const yup = [P[0] * 0.001, P[2] * 0.001, -P[1] * 0.001];
+  const v = [yup[0] + C[12], yup[1] + C[13], yup[2] + C[14]];
+  const back = G.viewerToFile(v, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], C, g.fileUnitM);
+  ok(back.every((x, k) => Math.abs(x - P[k]) < 1e-6), 'viewerToFile undoes the coordination matrix, Y up and metres: ' + back.map((x) => x.toFixed(3)).join(', '));
+  const moved = G.viewerToFile([v[0] + 100, v[1], v[2]], [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 100, 0, 0, 1], C, g.fileUnitM);
+  ok(moved.every((x, k) => Math.abs(x - P[k]) < 1e-6), '… and a federated model\'s scene placement (moved 100 m)');
+  const entry = CRS.byCode(28356);
+  const ll = CRS.transformer(entry, null)(got[0], got[1]);
+  const llOwn = CRS.transformer(entry, G.datumOf(entry.proj4))(got[0], got[1]);
+  if (hasPy) {
+    const o = py(`import json,pyproj; t=pyproj.Transformer.from_crs(28356,4283,always_xy=True); print(json.dumps(t.transform(${got[0]},${got[1]})))`);
+    ok(Math.abs(llOwn[0] - o[0]) < 1e-9 && Math.abs(llOwn[1] - o[1]) < 1e-9, 'on its own datum (GDA94): ' + llOwn.map((x) => x.toFixed(9)).join(', ') + ' = PROJ ' + o.map((x) => x.toFixed(9)).join(', '));
+    const w = py(`import json,pyproj; t=pyproj.Transformer.from_crs(28356,4326,always_xy=True); print(json.dumps(t.transform(${got[0]},${got[1]})))`);
+    const off = Math.hypot((ll[0] - w[0]) * 111320 * Math.cos(ll[1] * Math.PI / 180), (ll[1] - w[1]) * 110574);
+    ok(off <= entry.shiftAccuracy + 0.01, 'in WGS 84: within the catalog\'s stated datum accuracy (' + entry.shiftAccuracy + ' m) of PROJ\'s own choice: ' + off.toFixed(3) + ' m apart');
+  } else console.log('  skip PROJ checks (no tools/civilcraft-test/venv)');
+  ifcm.close?.();
+
+  console.log('== only IfcSite latitude / longitude');
+  const ifcs = await quiet(() => IfcModel.create(WebIFC, null))();
+  const ms = await quiet((b) => ifcs.load(b, () => {}))(await fixtureBytes({ georef: 'site' }));
+  const gs = G.readGeoref(ifcs.api, ms.modelID);
+  ok(gs && gs.kind === 'site' && Math.abs(gs.lat - GEOREF.latDeg) < 1e-12 && Math.abs(gs.lon - GEOREF.lonDeg) < 1e-12 && Math.abs(gs.elev - 42) < 1e-9, 'read: the site\'s latitude, longitude and 42 m elevation');
+  ok(Math.abs(gs.north[0] + Math.sin(GEOREF.northDeg * Math.PI / 180)) < 1e-9 && Math.abs(gs.north[1] - Math.cos(GEOREF.northDeg * Math.PI / 180)) < 1e-9, 'TrueNorth: 20° west of the model\'s +Y');
+  const at0 = G.siteLonLat(gs, gs.origin);
+  ok(Math.abs(at0[0] - GEOREF.lonDeg) < 1e-12 && Math.abs(at0[1] - GEOREF.latDeg) < 1e-12 && Math.abs(at0[2] - 42) < 1e-9, 'the site\'s own point is its latitude and longitude');
+  // 1000 m along the model's +Y = 1000 m on an azimuth of 20° (north is 20° to the left of +Y)
+  const far = G.siteLonLat(gs, [gs.origin[0], gs.origin[1] + 1e6, gs.origin[2] + 5000]);
+  if (hasPy) {
+    const o = py(`import json,pyproj; print(json.dumps(pyproj.Geod(ellps='WGS84').fwd(${GEOREF.lonDeg},${GEOREF.latDeg},20,1000)[:2]))`);
+    const off = Math.hypot((far[0] - o[0]) * 111320 * Math.cos(far[1] * Math.PI / 180), (far[1] - o[1]) * 110574);
+    ok(off < 0.05 && Math.abs(far[2] - 47) < 1e-9, '1 km along the model\'s +Y lands where PROJ\'s geodesic puts a 20° azimuth, within ' + (off * 100).toFixed(1) + ' cm; height 47 m');
+  }
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' georeference checks passed');
+  return bad ? 1 : 0;
+}
+
+async function sectionMode() {
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const S = await import(path.join(APP, 'section-volume.js'));
+  const near = (a, b, e = 1e-6) => Math.abs(a - b) <= e;
+  const box = (min, max) => ({ box: { min, max } });
+  console.log('== cleanCell (untrusted input)');
+  const c0 = S.cleanCell({ box: { min: [5, -2, 'x'], max: [1, 30, 4] }, tilt: { x1: [95, 'q'], zz: [10, 10], y0: [0, 0] }, planes: [{ az: -90, el: 120, off: 'n' }, null, 7] }, [10, 20, 3]);
+  ok(c0.box.min.join() === '1,0,0' && c0.box.max.join() === '5,20,3', 'min/max swapped, clamped to the model (0 … size): ' + JSON.stringify(c0.box));
+  ok(JSON.stringify(c0.tilt) === '{"x1":[80,0]}', 'tilts: capped at 80°, junk faces and level faces dropped: ' + JSON.stringify(c0.tilt));
+  ok(c0.planes.length === 1 && c0.planes[0].az === 270 && c0.planes[0].el === 90 && c0.planes[0].off === 0, 'extra planes: angles wrapped / capped, junk dropped: ' + JSON.stringify(c0.planes));
+  const many = S.cleanVolume(Array.from({ length: 12 }, () => box([0, 0, 0], [1, 1, 1])), [2, 2, 2]);
+  ok(many.length === S.MAX_CELLS, 'at most ' + S.MAX_CELLS + ' cells');
+  ok(S.cleanVolume(null, [4, 5, 6])[0].box.max.join() === '4,5,6', 'no cells → the whole model');
+  console.log('== a plain box');
+  const plain = S.cleanCell(box([0, 0, 0], [10, 6, 3]));
+  const pl = S.cellPlanes(plain);
+  ok(pl.length === 6 && pl.every((q) => near(Math.hypot(...q.n), 1)), 'six planes with unit normals');
+  ok(S.inside(pl, [5, 3, 1.5]) && S.inside(pl, [10, 6, 3]) && !S.inside(pl, [10.01, 3, 1]) && !S.inside(pl, [5, 3, -0.1]), 'inside / on the face / outside');
+  const ph = S.polyhedron(pl);
+  ok(ph.verts.length === 8 && ph.edges.length === 12 && ph.loops.every((L) => L.length === 4), 'outline: 8 corners, 12 edges, six faces of 4');
+  console.log('== a tilted face (the box roof sloping 30° towards +Y)');
+  const roof = S.cleanCell({ box: { min: [0, 0, 0], max: [10, 6, 3] }, tilt: { z1: [0, 30] } });
+  const rp = S.cellPlanes(roof), top = rp.find((q) => q.face === 'z1');
+  ok(near(top.n[1], Math.sin(Math.PI / 6)) && near(top.n[2], Math.cos(Math.PI / 6)), 'the top face faces 30° towards +Y: n = ' + top.n.map((v) => v.toFixed(3)));
+  // pivot at the face's centre (y = 3, z = 3): the roof is at z = 3 + (3 − y)·tan 30°
+  const zAt = (y) => 3 + (3 - y) * Math.tan(Math.PI / 6);
+  ok(S.inside(rp, [5, 0.5, zAt(0.5) - 0.01]) && !S.inside(rp, [5, 0.5, zAt(0.5) + 0.01]) && S.inside(rp, [5, 5.5, zAt(5.5) - 0.01]) && !S.inside(rp, [5, 5.5, 3]), 'kept under the sloping roof at both ends (higher at y = 0, lower at y = 6)');
+  const rph = S.polyhedron(rp);
+  ok(rph.verts.length === 8 && rph.edges.length === 12, 'still a six-faced cell: 8 corners, 12 edges');
+  const hiZ = Math.max(...rph.verts.map((v) => v[2])), loZ = Math.min(...rph.verts.filter((v) => v[2] > 1).map((v) => v[2]));
+  ok(near(hiZ, zAt(0)) && near(loZ, zAt(6)), 'the roof corners: ' + hiZ.toFixed(3) + ' m at y = 0, ' + loZ.toFixed(3) + ' m at y = 6');
+  console.log('== an extra plane cutting a corner');
+  const cutc = S.cleanCell({ box: { min: [0, 0, 0], max: [10, 6, 3] }, planes: [{ az: 45, el: 0, off: 2 }] });
+  const cp = S.cellPlanes(cutc), cph = S.polyhedron(cp);
+  ok(cp.length === 7 && cph.verts.length === 10 && cph.edges.length === 15, 'a vertical plane takes off the +X +Y corner: 10 corners, 15 edges (' + cph.verts.length + ', ' + cph.edges.length + ')');
+  ok(!S.inside(cp, [9.9, 5.9, 1]) && S.inside(cp, [0.1, 0.1, 1]) && S.inside(cp, [9.9, 0.1, 1]), 'the corner is cut away, the other corners kept');
+  const back = S.planeFromPoint(cp[6].n, cp[6].p, cutc.box);
+  ok(near(back.az, 45) && near(back.el, 0) && near(back.off, 2), 'planeFromPoint gives the same plane back (BCF import): ' + JSON.stringify(back));
+  const tilted = S.planeFromPoint([0, -1, 1], [5, 3, 2], cutc.box);
+  ok(near(tilted.az, 270) && near(tilted.el, 45) && near(tilted.off, Math.SQRT1_2 * 0.5), 'a sloping plane through a point: az 270°, el 45°, off ' + tilted.off.toFixed(4));
+  ok(!S.polyhedron(S.cellPlanes(S.cleanCell({ box: { min: [0, 0, 0], max: [1, 1, 1] }, planes: [{ az: 0, el: 90, off: -5 }] }))).verts.length, 'a plane that leaves nothing → an empty outline');
+  console.log('== an L-shaped volume (a union of two boxes)');
+  const L = [S.cellPlanes(S.cleanCell(box([0, 0, 0], [10, 3, 3]))), S.cellPlanes(S.cleanCell(box([0, 0, 0], [3, 8, 3])))];
+  ok(S.insideAny(L, [8, 1, 1]) && S.insideAny(L, [1, 7, 1]) && S.insideAny(L, [1, 1, 1]) && !S.insideAny(L, [8, 7, 1]), 'kept in either arm and their overlap; the missing corner is cut away');
+  const groups = [[0, 1, 2, 3, 4, 5], [6, 7, 8, 9, 10, 11]];
+  const ms = S.modelSpec(groups);
+  ok(ms.clauses.length === 1 && ms.clauses[0].length === 2 && !ms.clauses[0].some((l) => l.neg), 'model: one clause, in cell 0 OR in cell 1');
+  const cs = S.capSpec(groups, 0, 1);
+  ok(cs.order.join() === '0,2,3,4,5,6,7,8,9,10,11' && cs.spec.groups[0].length === 5 && cs.spec.groups[1].join() === '5,6,7,8,9,10' && cs.spec.clauses[1][0].neg === true, 'cut face of cell 0 plane 1: on cell 0\'s other five planes, and NOT in cell 1');
+  const glsl = S.clipGlsl(ms);
+  ok(/bool ccIn0 = .*clippingPlanes\[ 5 \]/.test(glsl) && /bool ccIn1 = .*clippingPlanes\[ 11 \]/.test(glsl) && /if \( !\( ccIn0 \|\| ccIn1 \) \) discard;/.test(glsl), 'GLSL: one test per cell, discard outside both');
+  ok(/if \( !\( !ccIn1 \) \) discard;/.test(S.clipGlsl(cs.spec)), 'GLSL for a cut face: discard inside the other cell');
+  ok(S.specKey(ms) !== S.specKey(cs.spec) && S.specKey(null) === '', 'program cache keys differ per spec');
+  ok(S.isPlainBox(plain) && !S.isPlainBox(roof) && !S.isPlainBox(cutc), 'isPlainBox');
+  console.log('== grips (WL.2)');
+  const B = { min: [1, 1, 0], max: [9, 5, 3] };
+  const G = S.boxGrips(B), kinds = (k) => G.filter((g) => g.kind === k).length;
+  ok(G.length === 26 && kinds('face') === 6 && kinds('edge') === 12 && kinds('corner') === 8 && new Set(G.map((g) => g.id)).size === 26, '26 grips: 6 faces, 12 edges, 8 corners, ids unique');
+  const ex = G.find((g) => g.id === 'x1y0'), cz = G.find((g) => g.id === 'x0y1z1'), fz = G.find((g) => g.id === 'z1');
+  ok(ex.p.join() === '9,1,1.5' && ex.axes.join() === '0,1' && cz.p.join() === '1,5,3' && fz.p.join() === '5,3,3', 'grip places: the X-to/Y-from edge at its middle, a top corner, the top face\'s centre');
+  // from straight above (looking down −Z), a drag of the X-to/Y-from edge to (11, −0.5): both faces move, Z untouched
+  const down = { o: [11, -0.5, 50], d: [0, 0, -1] };
+  const de = S.dragDelta(down, ex.p, ex.axes, [0, 0, -1]);
+  ok(near(de[0], 2) && near(de[1], -1.5) && de[2] === 0, 'edge grip from above: moves along X and Y only (' + de.map((v) => v.toFixed(3)) + ')');
+  const nb = S.dragBox(B, ex.faces, de, [10, 6, 3]);
+  ok(nb.max[0] === 10 && nb.min[1] === 0 && nb.min[0] === 1 && nb.max[1] === 5 && nb.max[2] === 3, 'dragBox: X to 11 is clamped to the model (10), Y from to 0; other faces kept: ' + JSON.stringify(nb));
+  // a face grip follows the nearest point of its line; a ray from the side
+  const side = { o: [5, -40, 2.2], d: [0, 1, 0] };
+  const df = S.dragDelta(side, fz.p, fz.axes, [0, 1, 0]);
+  ok(df[0] === 0 && df[1] === 0 && near(df[2], -0.8), 'face grip seen from the front: the top moves down 0.8 m (' + df.map((v) => v.toFixed(3)) + ')');
+  ok(S.dragDelta({ o: [5, 3, 50], d: [0, 0, -1] }, fz.p, fz.axes, [0, 0, -1]) === null, 'a face grip seen end-on (top face from above) does not move');
+  const inside = S.dragBox(B, [[2, 1]], [0, 0, -10], [10, 6, 3]);
+  ok(near(inside.max[2], 0.01) && inside.min[2] === 0, 'a face never passes the opposite one (the box keeps 1 cm): ' + JSON.stringify(inside));
+  // an edge grip whose plane is seen edge-on falls back to the view plane: X-to/Z-to edge from straight above
+  const exz = G.find((g) => g.id === 'x1z1');
+  const dv = S.dragDelta({ o: [10, 3, 50], d: [0, 0, -1] }, exz.p, exz.axes, [0, 0, -1]);
+  ok(dv && near(dv[0], 1) && dv[1] === 0 && near(dv[2], 0), 'an edge grip seen edge-on moves in the view plane, projected on its axes (' + (dv || []).map((v) => v.toFixed(3)) + ')');
+  const dc = S.dragDelta({ o: [0, 6, 50], d: [0, 0, -1] }, cz.p, cz.axes, [0, 0, -1]);
+  ok(dc && near(dc[0], -1) && near(dc[1], 1) && near(dc[2], 0), 'a corner from above moves in the view plane (' + (dc || []).map((v) => v.toFixed(3)) + ')');
+  console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' section checks passed');
+  return bad ? 1 : 0;
+}
+
 async function handoffMode() {
   let bad = 0, good = 0;
   const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
@@ -2353,6 +2639,12 @@ async function handoffMode() {
   const id = H.newHandoffId();
   ok(H.handoffParam('?handoff=' + id.toUpperCase()) === id, 'a fresh id reads back from a query string (lower case)');
   ok(H.handoffParam('?handoff=../../etc') === null && H.handoffParam('?x=1') === null && H.handoffParam('?handoff=' + id + 'x') === null, 'anything but a UUID is ignored');
+  // 0.5: a page that is not a secure context (a Studio Live browser joiner on plain http) has no crypto.randomUUID
+  const ru = Object.getOwnPropertyDescriptor(globalThis.crypto, 'randomUUID');
+  Object.defineProperty(globalThis.crypto, 'randomUUID', { value: undefined, configurable: true });
+  const ids2 = new Set(Array.from({ length: 200 }, () => H.newHandoffId()));
+  if (ru) Object.defineProperty(globalThis.crypto, 'randomUUID', ru); else delete globalThis.crypto.randomUUID;
+  ok(ids2.size === 200 && [...ids2].every((x) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(x) && H.handoffParam('?handoff=' + x) === x), 'without crypto.randomUUID (plain http): version-4 UUIDs from getRandomValues, 200 different, each read back');
   console.log('== sendHandoff');
   const saved = globalThis.window;
   const opened = [];
@@ -2419,5 +2711,161 @@ async function fourDMode() {
   ok(tpl.errors.length === 0 && tpl.tasks.map((t) => t.name + ' ' + D.dayText(t.start) + '–' + D.dayText(t.finish)).join(', ') === 'Level 1 2026-11-02–2026-11-06, Level 2 2026-11-09–2026-11-13' && D.matchTasks(ix, tpl.tasks)[0].keys.length === 8, 'the template: a week per storey, reads back and matches');
   ifcm.close();
   console.log(bad ? '\n' + bad + ' FAILED, ' + good + ' passed' : '\nall ' + good + ' 4D checks passed');
+  return bad ? 1 : 0;
+}
+
+/** --new (0.5 part 3): new-model.js → a blank IFC4 building that cc-ifc (and web-ifc, when installed) opens, with its
+ *  levels, that takes a library item and saves; GUIDs, STEP strings and refusals. */
+async function newMode() {
+  const N = await import(path.join(APP, 'new-model.js'));
+  const L = await import(path.join(APP, 'libitem.js'));
+  const { IfcEditor } = await import(path.join(APP, 'ifc-edit.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  console.log('== GUIDs and strings');
+  const g = new Set(Array.from({ length: 2000 }, () => N.ifcGuid()));
+  ok(g.size === 2000 && [...g].every((x) => /^[0-3][0-9A-Za-z_$]{21}$/.test(x)), '2000 GUIDs: unique, 22 characters of IFC base-64, first one 0–3');
+  ok(N.stepString("Smith's \\ house") === "'Smith''s \\\\ house'", 'quotes and backslashes doubled');
+  ok(N.stepString('Café 🏠') === "'Caf\\X2\\00E9\\X0\\ \\X2\\D83CDFE0\\X0\\'", 'non-ASCII as \\X2\\ (a surrogate pair for the emoji)');
+  console.log('== Refusals');
+  const lv = (n, h) => N.stackLevels(n, h, (i) => 'Level ' + (i + 1));
+  ok(N.levelsProblem([]) === 'new.err.levels' && N.levelsProblem(lv(201, 3000)) === 'new.err.levels', 'no levels, or more than 200');
+  ok(N.levelsProblem(lv(2, NaN)) === 'new.err.height' && N.levelsProblem(lv(2, 500)) === 'new.err.height' && N.levelsProblem(lv(2, 200000)) === 'new.err.height', 'height not a number, under 1 m, over 100 m');
+  ok(N.levelsProblem(lv(3, 3000)) === '', '3 levels of 3000 mm are fine');
+  let threw = ''; try { N.newBuilding({ name: 'x', levels: [] }); } catch (e) { threw = e.key; }
+  ok(threw === 'new.err.levels', 'newBuilding refuses bad levels with the key');
+  console.log('== Opens, takes an item, saves');
+  const text = N.newBuilding({ name: "Smith's house — ñ", levels: lv(3, 3200.4), author: 'Test', fileName: 'x.ifc', now: new Date('2026-10-14T12:00:00Z') });
+  ok(/FILE_SCHEMA\(\('IFC4'\)\);/.test(text) && /'2026-10-14T12:00:00'/.test(text), 'IFC4 header with the time stamp');
+  const engine = await quiet(IfcModel.create)(WebIFC, null);
+  const m = await quiet((b) => engine.load(b))(new TextEncoder().encode(text));
+  ok(m.schema === 'IFC4' && m.project.name === "Smith's house — ñ" && m.elements === 0, 'cc-ifc opens it: IFC4, the name with its accent, no elements yet');
+  const ed = new IfcEditor(WebIFC, engine);
+  const inf = ed.placer().info();
+  ok(inf.unitMm === 1 && inf.storeys.map((s) => s.name + '@' + Math.round(s.elevation * 10) / 10).join() === 'Level 1@0,Level 2@3200.4,Level 3@6400.8', 'millimetres; levels at 0, 3200.4, 6400.8');
+  const csv = L.itemsFromCsv(fs.readFileSync(path.join(ROOT, 'tools/library/seed.csv'), 'utf8'));
+  const item = { ...L.cleanItem(csv.items[0]), uuid: '11111111-1111-4111-8111-111111111111', version: 1, license: { id: 'CC0-1.0', holder: 'CadCraft', attribution: '', url: '' } };
+  const p = ed.placeItem(item, { storey: inf.storeys[1].id, x: 1000, y: 1000, rot: 0, itemNumber: '1' });
+  const bytes = ed.save();
+  const e2 = await quiet(IfcModel.create)(WebIFC, null);
+  const m2 = await quiet((b) => e2.load(b))(bytes);
+  const sp = await e2.spatial();
+  ok(m2.elements === 1 && sp.storeyOf.get(p.id) === inf.storeys[1].id, 'saved and reopened: the item, on Level 2');
+  ok(/IFCGEOMETRICREPRESENTATIONSUBCONTEXT\('Body'/.test(new TextDecoder().decode(bytes)) && (new TextDecoder().decode(bytes).match(/SUBCONTEXT\('Body'/g) || []).length === 1, 'the item used the Body sub-context the file came with (not a second one)');
+  try {
+    const W = require('web-ifc');
+    const a = new W.IfcAPI(); await quiet(() => a.Init())();
+    const id = a.OpenModel(new TextEncoder().encode(text));
+    ok(a.GetLineIDsWithType(id, W.IFCBUILDINGSTOREY).size() === 3, 'web-ifc (oracle) opens it with 3 storeys');
+  } catch (e) { console.log('  --   web-ifc not installed: oracle check skipped'); }
+  console.log(`\n${good} passed, ${bad} failed`);
+  return bad ? 1 : 0;
+}
+
+/**
+ * --rotated (Discord bug, 2026-10-14): a building turned 30° in its site at map-sized coordinates (as Revit exports with
+ * shared coordinates). Copying a door must keep the door's own frame: the clip's turn and box follow the door, wall snap
+ * gives the wall's direction, and the pasted copy runs along the wall — never squared to the model's axes.
+ * The model is generated here (no client file): one 6 m wall and a 900 × 2100 door in it, both placed in the wall's frame.
+ */
+async function rotatedMode() {
+  const C = await import(path.join(APP, 'clipboard.js'));
+  const { snapToWall, orientedBox } = await import(path.join(APP, 'ifc-place.js'));
+  const { IfcEditor } = await import(path.join(APP, 'ifc-edit.js'));
+  let bad = 0, good = 0;
+  const ok = (cond, label) => { if (cond) good++; else bad++; console.log((cond ? '  ok   ' : '  FAIL ') + label); };
+  const ang = (a, b, mod = 180) => { const d = (((a - b) % mod) + mod) % mod; return Math.min(d, mod - d); };
+  const TURN = 30, R = TURN * Math.PI / 180;
+  const ifcText = (() => {
+    const L = [];
+    const add = (s) => { L.push('#' + (L.length + 1) + '=' + s + ';'); return '#' + L.length; };
+    let g = 0; const gid = () => "'" + String(++g).padStart(22, '0').replace(/^0/, '1') + "'";
+    const o = add('IFCCARTESIANPOINT((0.,0.,0.))');
+    const w = add(`IFCAXIS2PLACEMENT3D(${o},$,$)`);
+    const ctx = add(`IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,${w},$)`);
+    const body = add(`IFCGEOMETRICREPRESENTATIONSUBCONTEXT('Body','Model',*,*,*,*,${ctx},$,.MODEL_VIEW.,$)`);
+    const mm = add('IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.)');
+    const ua = add(`IFCUNITASSIGNMENT((${mm}))`);
+    const proj = add(`IFCPROJECT(${gid()},$,'Turned',$,$,$,$,(${ctx}),${ua})`);
+    const sp = add(`IFCLOCALPLACEMENT($,${w})`);
+    const site = add(`IFCSITE(${gid()},$,'Site',$,$,${sp},$,$,.ELEMENT.,$,$,$,$,$)`);
+    // the building: 417 km east, 78 km north, turned 30°
+    const bo = add('IFCCARTESIANPOINT((417598225.,78717139.,0.))');
+    const bx = add(`IFCDIRECTION((${Math.cos(R)},${Math.sin(R)},0.))`);
+    const bz = add('IFCDIRECTION((0.,0.,1.))');
+    const bp = add(`IFCLOCALPLACEMENT(${sp},${add(`IFCAXIS2PLACEMENT3D(${bo},${bz},${bx})`)})`);
+    const bldg = add(`IFCBUILDING(${gid()},$,'B',$,$,${bp},$,$,.ELEMENT.,$,$,$)`);
+    const stp = add(`IFCLOCALPLACEMENT(${bp},${w})`);
+    const st = add(`IFCBUILDINGSTOREY(${gid()},$,'Parking',$,$,${stp},$,$,.ELEMENT.,0.)`);
+    const box = (len, th, h, ox, oy, oz) => {
+      const c2 = add(`IFCCARTESIANPOINT((${len / 2},${th / 2}))`);
+      const prof = add(`IFCRECTANGLEPROFILEDEF(.AREA.,$,${add(`IFCAXIS2PLACEMENT2D(${c2},$)`)},${len}.,${th}.)`);
+      const pos = add(`IFCAXIS2PLACEMENT3D(${add(`IFCCARTESIANPOINT((${ox}.,${oy}.,${oz}.))`)},$,$)`);
+      const sol = add(`IFCEXTRUDEDAREASOLID(${prof},${pos},${add('IFCDIRECTION((0.,0.,1.))')},${h}.)`);
+      return add(`IFCPRODUCTDEFINITIONSHAPE($,$,(${add(`IFCSHAPEREPRESENTATION(${body},'Body','SweptSolid',(${sol}))`)}))`);
+    };
+    // the wall runs along the storey's X (so 30° in the model), from (2000, 1000), 6000 × 200 × 3000
+    const wp = add(`IFCLOCALPLACEMENT(${stp},${add(`IFCAXIS2PLACEMENT3D(${add('IFCCARTESIANPOINT((2000.,1000.,0.))')},$,$)`)})`);
+    const wall = add(`IFCWALL(${gid()},$,'Wall',$,$,${wp},${box(6000, 200, 3000, 0, 0, 0)},$,.STANDARD.)`);
+    // the door: 900 wide along the wall, 50 thick, in the wall at 2000 along it
+    const dp = add(`IFCLOCALPLACEMENT(${wp},${add(`IFCAXIS2PLACEMENT3D(${add('IFCCARTESIANPOINT((2000.,75.,0.))')},$,$)`)})`);
+    const door = add(`IFCDOOR(${gid()},$,'Door-Passage-Single:36" x 84"',$,$,${dp},${box(900, 50, 2100, 0, 0, 0)},$,2100.,900.,.DOOR.,$,$)`);
+    add(`IFCRELAGGREGATES(${gid()},$,$,$,${proj},(${site}))`);
+    add(`IFCRELAGGREGATES(${gid()},$,$,$,${site},(${bldg}))`);
+    add(`IFCRELAGGREGATES(${gid()},$,$,$,${bldg},(${st}))`);
+    add(`IFCRELCONTAINEDINSPATIALSTRUCTURE(${gid()},$,$,$,(${wall},${door}),${st})`);
+    return { text: "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('turned.ifc','2026-10-14T00:00:00',(''),(''),'','','');\nFILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n" + L.join('\n') + '\nENDSEC;\nEND-ISO-10303-21;\n', wall: Number(wall.slice(1)), door: Number(door.slice(1)) };
+  })();
+
+  console.log('== A building turned 30° at map coordinates');
+  if (args.includes('--keep')) { const out = path.join(ROOT, 'tmp/bimcraft-rotated.ifc'); fs.mkdirSync(path.dirname(out), { recursive: true }); fs.writeFileSync(out, ifcText.text); console.log('  (kept ' + out + ')'); }
+  const engine = await quiet(IfcModel.create)(WebIFC, null);
+  const model = await quiet((b) => engine.load(b))(new TextEncoder().encode(ifcText.text));
+  ok(model.elements === 2, 'the generated model opens: a wall and a door');
+  const ed = new IfcEditor(WebIFC, engine);
+  const pl = ed.placer();
+  const storey = pl.info().storeys[0];
+  const faces = pl.wallFaces(storey.id);
+  ok(faces.length === 2 && faces.every((f) => ang(Math.atan2(f.b[1] - f.a[1], f.b[0] - f.a[0]) * 180 / Math.PI, TURN) < 0.01), 'wallFaces: two faces, both running at 30°');
+  ok(Math.abs(pl.planRotation(storey.id) - TURN) < 0.1, 'planRotation finds the building\'s turn: ' + pl.planRotation(storey.id) + '°');
+
+  console.log('== Copy the door: the clip keeps the door\'s own frame');
+  const snap = ed.snapshot([ifcText.door]);
+  const fr = snap.frame;
+  ok(fr && ang(fr.rot, TURN, 360) < 0.01, 'frame turned like the door: ' + fr?.rot + '°');
+  const bw = fr ? fr.box.x1 - fr.box.x0 : 0, bd = fr ? fr.box.y1 - fr.box.y0 : 0, bh = fr ? fr.box.z1 - fr.box.z0 : 0;
+  ok(Math.abs(bw - 900) < 1 && Math.abs(bd - 50) < 1 && Math.abs(bh - 2100) < 1, `the box is the door: ${bw.toFixed(1)} × ${bd.toFixed(1)} × ${bh.toFixed(1)} (not the ${(900 * Math.cos(R) + 50 * Math.sin(R)).toFixed(0)}-wide square box along the model's axes)`);
+  const clip = C.elementsClip([{ id: ifcText.door, name: 'Door', cls: 'IfcDoor', guid: '' }], { model: 'm', file: 'turned.ifc', now: '2026-10-14T00:00:00.000Z', storey: snap.storey, storeyName: storey.name, storeyElevation: storey.elevation, x: fr.x, y: fr.y, rot: fr.rot, box: fr.box });
+  const back = C.validateClip(JSON.parse(JSON.stringify(clip)));
+  ok(back.ok && back.clip.rot === clip.rot && Math.abs(clip.rot - TURN) < 0.01, 'the clip carries the turn through storage: ' + back.clip.rot + '°');
+
+  console.log('== Paste with wall snap');
+  const ghost = C.ghostItem(back.clip);
+  // a point 1 m off the wall's outer face, 4 m along it
+  const f0 = faces.find((f) => f.n[0] * -Math.sin(R) + f.n[1] * Math.cos(R) > 0) || faces[0];
+  const along = [Math.cos(R), Math.sin(R)];
+  const p = [f0.a[0] + along[0] * 4000 + f0.n[0] * 1000, f0.a[1] + along[1] * 4000 + f0.n[1] * 1000];
+  const s = snapToWall(p, ghost, faces);
+  ok(s && ang(s.rot, TURN) < 0.01, 'snapToWall turns the ghost along the wall: ' + s?.rot + '°');
+  const mv = C.pasteMove(back.clip, { x: s.x, y: s.y, rot: s.rot });
+  ok(ang(mv.rot, 0) < 0.01, 'the copy is turned BY ' + mv.rot + '° (0 or 180: it stays along the wall; before the fix it was turned by the whole ' + s.rot + '°)');
+  const r = ed.pasteElements(snap, { storey: storey.id, ...mv });
+  const newDoor = r.ids[0];
+  const plId = engine.api.GetLine(engine.modelID, newDoor, false).ObjectPlacement.value;
+  const W = engine.api.GetWorldTransformMatrix(engine.modelID, plId);
+  const dirDeg = Math.atan2(W[1], W[0]) * 180 / Math.PI;
+  ok(ang(dirDeg, TURN) < 0.01, 'the pasted door runs along the wall: its X axis at ' + dirDeg.toFixed(3) + '°');
+  const fr2 = ed.snapshot([newDoor]).frame;
+  const gap = fr2 ? Math.abs((fr2.x - f0.a[0]) * f0.n[0] + (fr2.y - f0.a[1]) * f0.n[1]) : NaN;
+  ok(Math.abs(gap - 25) < 1, 'its back is on the wall face, the whole width (centre ' + gap.toFixed(1) + ' mm off the face = half its 50 mm)');
+
+  console.log('== Paste in place keeps the turn');
+  const bs = C.besideSpot(back.clip);
+  const mv2 = C.pasteMove(back.clip, bs);
+  ok(mv2.rot === 0 && Math.abs(Math.hypot(bs.x - back.clip.x, bs.y - back.clip.y) - 1000) < 1 && ang(Math.atan2(bs.y - back.clip.y, bs.x - back.clip.x) * 180 / Math.PI, TURN) < 0.01, 'beside the original: 900 + 100 mm along the door\'s own X (30°), not turned');
+
+  console.log('== A model along its axes is unchanged');
+  ok(C.pasteMove({ x: 0, y: 0, rot: 0 }, { x: 5, y: 6, rot: 90 }).rot === 90 && orientedBox([0, 0, 0, 10, 20, 30], 0).box.x1 === 5, 'rot 0 clips turn by the ghost\'s turn, as before');
+  console.log(`\n${good} passed, ${bad} failed`);
   return bad ? 1 : 0;
 }

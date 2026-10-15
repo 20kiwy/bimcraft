@@ -29,8 +29,13 @@
  *
  * Any element (0.4 B1; ifc-elements.js), one change each, undone the same way:
  *   ed.removeElements(ids, { label })          delete (with parts and openings) → { removed, refused }
- *   ed.snapshot(ids)                            what Copy / Cut keep in memory for Paste
- *   ed.pasteElements(snap, opts, { label })     new copies → { ids, all }
+ *   ed.snapshot(ids)                            what Copy / Cut keep in memory for Paste (+ `frame`: rot, x, y, box in the
+ *                                               element's own plan axes — clipboard.js elementsClip / pasteMove use it)
+ *   ed.pasteElements(snap, opts, { label })     new copies → { ids, all }; opts.rot turns them BY that much (a change)
+ *
+ * Building tools (0.5 track BM; model-ops.js), one change each, undone the same way:
+ *   ed.modelChange(op, { label, verb })      op = (editor) → { journal, id, ids, made }; redo runs op again (it names
+ *                                            elements by GlobalId; `made` maps the old ids to the new ones)
  *
  * Redo: undo() keeps what it undid; redo() applies the newest of those again (a placement is placed again — same item,
  * same place, a new element id). Any new change clears what could be redone, as in every editor.
@@ -148,11 +153,32 @@ export class IfcEditor {
     if (record) this.record({ kind: 'remove', id: r.removed[0], ids: r.removed, label: label || '#' + r.removed[0], journal: r.journal, old: null, value: null, again: { ids: list } });
     return r;
   }
-  snapshot(list) { return this.elements().snapshot(list.map((id) => this.now(id))); }
+  /** What Copy / Cut keep, plus `frame` (IfcPlacer.elementsFrame: turned like the first element, its box; or null). */
+  snapshot(list) {
+    const snap = this.elements().snapshot(list.map((id) => this.now(id)));
+    try {
+      const pl = this.placer();
+      const zBase = snap.storey ? pl.info().storeys.find((s) => s.id === snap.storey)?.elevation ?? 0 : 0;
+      snap.frame = pl.elementsFrame(snap, { zBase });
+    } catch (e) { snap.frame = null; }
+    return snap;
+  }
   pasteElements(snap, opts, { record = true, label = '' } = {}) {
     const r = this.elements().paste(snap, opts);
     this.reindex();
     if (record) this.record({ kind: 'paste', id: r.ids[0], ids: r.ids, label: label || 'Pasted', journal: r.journal, old: null, value: null, again: { snap, opts } });
+    return r;
+  }
+
+  /**
+   * A building-tool change (0.5 track BM, model-*.js): `run(editor)` writes through a ModelWriter and returns { journal,
+   * id?, ids?, made? (Map GlobalId → id of what it created) }. One undo step; redo runs it again (it names elements by
+   * GlobalId, so it finds them under their new ids). `verb` is the change list's word for it ("Drew", "Changed" …).
+   */
+  modelChange(run, { label = '', verb = '' } = {}) {
+    const r = run(this);
+    this.reindex();
+    this.record({ kind: 'model', id: r.id ?? null, ids: r.ids, made: r.made, label, verb, journal: r.journal, old: null, value: null, again: { run }, result: r });
     return r;
   }
 
@@ -191,6 +217,11 @@ export class IfcEditor {
         const r = this.elements().paste(c.again.snap, c.again.opts);
         c.ids.forEach((old, i) => { if (r.ids[i]) this.moved.set(old, r.ids[i]); });
         n = { ...c, id: r.ids[0], ids: r.ids, journal: r.journal };
+      } else if (c.kind === 'model') {
+        const r = c.again.run(this);
+        // the change makes its elements with the same GlobalIds again: later changes that named the old ids find the new ones
+        for (const [g, oldId] of c.made || []) { const nid = r.made?.get(g); if (nid && nid !== oldId) this.moved.set(oldId, nid); }
+        n = { ...c, id: r.id ?? c.id, ids: r.ids ?? c.ids, made: r.made, journal: r.journal, result: r };
       } else { const r = this.placer().swap(id, c.again.item, c.again.opts); n = { ...c, id, journal: r.journal }; }
     } catch (e) { this.undone.push(c); throw e; }
     this.reindex();

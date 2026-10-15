@@ -3,7 +3,7 @@ title: Properties panel fields
 summary: What every field in the Properties panel and the File, Drawing and Folder panels means, and which ones you can change.
 section: reference
 order: 30
-keywords: properties, fields, attributes, globalid, guid, tag, object type, line, express id, property set, pset, quantities, schema, file panel
+keywords: properties, fields, attributes, globalid, guid, copy, copy value, copy all, csv, clipboard, serial number, tag, object type, line, express id, property set, pset, quantities, schema, file panel
 ---
 
 ## An IFC element
@@ -29,6 +29,12 @@ Below come the **property sets**, sorted by name:
 - Yes/No values show as **Yes** or **No**.
 - Numbers are rounded to four decimals for display, in the file's own units, without a unit symbol.
 - An empty value shows as *empty*. An edited value is bold with a blue bar beside it.
+
+## Copy a value
+
+Every value in {{ui:Properties}} has a small copy button beside it: click it to put that value on the clipboard exactly as shown, for example a GlobalId, a serial number or any property set value. Copying never starts an edit.
+
+At the top, {{ui:Copy all}} copies every value of the element as text, set by set, and {{ui:Copy as CSV}} copies them as rows of group, property and value to paste into a spreadsheet; empty values are kept so every field has a row. This works the same for an element of another open model; when more than one model is open, the CSV starts with a Model column naming its file.
 
 ## The File panel (IFC)
 

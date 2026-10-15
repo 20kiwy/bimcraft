@@ -41,6 +41,6 @@ On very large models (over 1.5 million triangles) the button is greyed out with 
 ## Common mistakes
 
 - **Unticking a storey and still seeing parts of it.** An element belongs to the storey the exporting program assigned it to. A tall wall or a stair often belongs only to its base storey, so it stays when the storey above is hidden, or vanishes with the storey below.
-- **Expecting a section box.** It is not built yet. Cut the model with {{ui:Section}} (see [Cut an IFC model with a section plane](topic:section-plane)), hide storeys, or untick rows in the {{ui:Model tree}} (see [Find your way with the model tree](topic:model-tree)).
+- **Hiding storeys to see inside.** A section box is often quicker: see [Cut an IFC model with a section plane](topic:section-plane#a-section-box). You can also untick rows in the {{ui:Model tree}} (see [Find your way with the model tree](topic:model-tree)).
 - **Clicking a space through a wall.** Clicking picks the nearest visible surface. Hide the storey above, or switch to {{ui:Top}}, then click.
 - **Storey names look odd.** BimCraft shows the storey names saved in the file. If they say "Level 1" or a number, that is what the exporter wrote.

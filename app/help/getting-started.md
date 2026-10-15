@@ -25,7 +25,7 @@ Everything happens in your browser, on your computer. **Nothing is uploaded.** S
 2. Wait for the empty screen that says "Open a building model."
 
 :::note
-Today BimCraft runs in the browser only. Desktop builds are not available yet, and neither is cloud saving: you open files from your computer and save copies back to it.
+BimCraft runs in the browser, and on the desktop inside CadCraft Studio, with the other apps. Cloud saving is not available yet: you open files from your computer and save copies back to it.
 :::
 
 ## Open your first model

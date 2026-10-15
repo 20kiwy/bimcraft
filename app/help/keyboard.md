@@ -3,7 +3,7 @@ title: Keys and mouse
 summary: Every key, mouse, trackpad and touch action in BimCraft, grouped by what you are looking at.
 section: reference
 order: 10
-keywords: keyboard, shortcuts, hotkeys, keys, mouse, trackpad, touch, orbit, pan, zoom, hide, isolate, see-through, undo, redo, copy, paste, duplicate, save, fit, print view, escape, settings
+keywords: keyboard, shortcuts, hotkeys, keys, mouse, trackpad, touch, orbit, pan, zoom, hide, isolate, see-through, undo, redo, copy, paste, duplicate, save, fit, print view, escape, settings, draw, wall, door, window, plan
 ---
 
 BimCraft has few shortcuts. Most work is done with the mouse and the panels. Shortcuts written with {{key:Mod}} use Command on a Mac and Ctrl elsewhere. See [Keys, mice and trackpads](common:keys) for how keys are written in this help.
@@ -30,7 +30,7 @@ BimCraft has few shortcuts. Most work is done with the mouse and the panels. Sho
 | {{key:T}} | Show the picked elements, everything else see-through |
 | {{key:Shift+H}} | Show every element again |
 | {{ui:Walk}} | Then {{key:W}} {{key:A}} {{key:S}} {{key:D}} or arrows walk, {{key:Shift}} runs, drag looks round, {{key:Esc}} stops. See [Walk through a model](topic:walk) |
-| {{key:M}} | Measure distances and face areas. See [Measure distances and face areas in 3D](topic:measure) |
+| {{key:M}} | Measure distances and face areas. See [Measure distances, face areas and locations in 3D](topic:measure) |
 | Drag with the left button | Orbit |
 | Drag with the right button | Pan |
 | {{key:Shift}} or {{key:Mod}} and drag with the left button | Pan (handy on a trackpad) |
@@ -40,6 +40,7 @@ BimCraft has few shortcuts. Most work is done with the mouse and the panels. Sho
 | Two fingers (touch) | Pinch to zoom, move together to pan |
 
 | {{key:X}} | Section plane on and off. See [Cut an IFC model with a section plane](topic:section-plane) |
+| {{key:Shift+X}} | Section box round the picked elements, with the room set in Settings |
 
 There are no keys for {{ui:Top}}, {{ui:Front}} and {{ui:Side}}; use the buttons.
 
@@ -61,6 +62,27 @@ The same commands are in the toolbar: {{ui:Undo}}, {{ui:Redo}}, {{ui:Copy}}, {{u
 | {{key:Esc}} | Select none |
 
 When text is selected on the page, {{key:Mod+C}} copies that text as usual.
+
+## Plan view (Draw)
+
+These work while {{ui:Draw}} is on and you are not typing in a field. See [Draw walls](topic:draw-walls) and [Doors and windows](topic:doors-and-windows).
+
+| Key or action | What it does |
+|---|---|
+| {{key:V}} | {{ui:Select}} |
+| {{key:W}} | {{ui:Wall}} |
+| {{key:D}} | {{ui:Door}} |
+| {{key:N}} | {{ui:Window}} |
+| {{key:H}} | With {{ui:Door}} or {{ui:Window}}: hinges at the other end |
+| {{key:Shift}} while drawing a wall | Keep it at 0°, 90°, 180° or 270° |
+| Digits and the foot and inch marks (`'` and `"`) | Start typing a length into the {{ui:Length}} box; {{key:Enter}} uses it |
+| {{key:Enter}}, {{key:Esc}}, right-click or double-click | End the wall you are drawing; {{key:Esc}} again goes back to {{ui:Select}} |
+| {{key:Delete}} | Delete the picked walls, doors and windows; the walls left join up again |
+| {{key:F}} with the pointer over the plan | Fit the plan |
+| Scroll the wheel | Zoom about the pointer |
+| Drag with the middle or right button, or {{key:Space}} and drag | Pan; with {{ui:Select}} on, a plain drag pans too |
+| Drag a door or window with {{ui:Select}} | Move it along its wall, or onto another wall |
+| Two fingers (touch) | Pinch to zoom, move together to pan |
 
 ## Placing and pasting library items
 

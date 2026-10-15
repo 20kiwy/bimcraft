@@ -3,7 +3,7 @@ title: View a DWG or DXF drawing
 summary: Open a DWG or DXF, move around model space and sheets, read coordinates, and see what is not drawn yet.
 section: tasks
 order: 100
-keywords: dwg, dxf, cad, drawing, 2d, view, viewer, pan, zoom, model space, paper space, layout, coordinates, open dwg
+keywords: dynamic blocks, visibility states, dwg, dxf, cad, drawing, 2d, view, viewer, pan, zoom, model space, paper space, layout, coordinates, open dwg
 ---
 
 ## What you'll do
@@ -44,6 +44,10 @@ On a trackpad, scrolling with two fingers **zooms**, it does not pan. Pinch zoom
 :::touch
 Drag with one finger to pan. Pinch zoom is not built yet for drawings: tap {{ui:Fit}} to see the whole sheet, and use a mouse or trackpad to zoom in.
 :::
+
+## Dynamic blocks
+
+A dynamic block is drawn as the drawing shows it: each placed block in the visibility state the drawing was saved with ("Plan" or "Front", "Single bowl" or "Double bowl"). On the right, **Dynamic blocks** lists every one placed in model space: how many are placed, the states they show, and every state the block has. In {{ui:3D}}, click a placed block to see **Dynamic block**, **State shown** and **Other states** in Properties. BimCraft does not switch states.
 
 ## Not drawn yet
 

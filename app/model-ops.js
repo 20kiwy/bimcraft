@@ -18,6 +18,7 @@ import { readLevels, addLevel, setLevel } from './model-levels.js';
 import { addWall, updateWall, deleteWalls, regenWalls, readWalls } from './model-walls.js';
 import { addOpening, updateOpening, deleteOpenings, readOpenings, regenOpenings } from './model-openings.js';
 import { syncDerived, readDerived, storeyLoops, addFloor, addCeiling, addRoof, updateDerived, deleteDerived } from './model-slabs.js';
+import { wallPath } from './model-tools.js';
 import { val } from './ifc-util.js';
 import { syncResidential } from './res-follow.js';   // 0.5 part 4 track RC: wall framing follows its doors and windows
 
@@ -66,6 +67,27 @@ export function drawWalls({ storey, segs, typeKey, baseOffset = 0, topLevel = ''
     settle(w, [st]);
     const ids = [...made.values()];
     return { id: ids[ids.length - 1], ids, made };
+  });
+}
+
+/** Extend a face-referenced chain and settle its corners in the same undo step. */
+export function drawWallPath({ storey, points, guids, typeKey, thickness, reference, extSide, ...top }) {
+  const segs = wallPath(points, thickness, reference, extSide);
+  let existing = null;
+  return op((w) => {
+    existing ??= guids.slice();
+    const st = storeyId(w, storey), made = new Map();
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      if (existing[i]) updateWall(w, existing[i], { a: seg.a, b: seg.b, extSide }, { carryJoined: false });
+      else {
+        if (!seg.guid) seg.guid = val(w.guid());
+        const r = addWall(w, { storey: st, ...seg, typeKey, extSide, ...top });
+        made.set(r.guid, r.id);
+      }
+    }
+    settle(w, [st]);
+    return { id: [...made.values()].at(-1), made };
   });
 }
 

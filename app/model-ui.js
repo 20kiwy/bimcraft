@@ -24,9 +24,9 @@ import { planCut, chainLoops, viewerToPlan, wallPieces, wallDims } from './model
 import { schedules, scheduleCsv } from './model-schedule.js';
 import { planPdf } from './model-pdf.js';
 import { wallOutlines, WALL_TYPES, wallType, typeThickness, typeName, typeAt } from './model-walls.js';
-import { snapPoint, closesChain, loopSide } from './model-tools.js';
+import { snapPoint, closesChain, loopSide, wallPath } from './model-tools.js';
 import { fmtLen, parseLen, parseTyped, fmtAngle, defaultUnits, fmtArea, parsePitch, fmtPitch } from './model-units.js';
-import { drawWalls, changeWall, changeWalls, removeWalls, newLevel, changeLevel, snapshotModel, placeOpening, changeOpening, changeOpenings, removeElements, placeFloor, placeCeiling, placeRoof, changeDerived, loopsOf } from './model-ops.js';
+import { drawWallPath, drawWalls, changeWall, changeWalls, removeWalls, newLevel, changeLevel, snapshotModel, placeOpening, changeOpening, changeOpenings, removeElements, placeFloor, placeCeiling, placeRoof, changeDerived, loopsOf } from './model-ops.js';
 import { loopAt, labelPoint, planLoops } from './model-rooms.js';
 import { edgeKinds, roofGeometry, presetEdges, formatEdges, parseEdges, edgeWalls, ROOF_DEFAULTS } from './res-roof.js';   // 0.5 part 4 RC.1 (bim-residential)
 import { FLOOR_KINDS } from './model-slabs.js';
@@ -43,7 +43,7 @@ export function mountModel(host) {
   const ui = {
     toggle: $('[data-model-toggle]'), wrap: $('[data-plan-wrap]'), canvas: $('[data-plan-canvas]'), bar: $('[data-modelbar]'),
     level: $('[data-model-level]'), tools: [...root.querySelectorAll('[data-mtool]')], wallOpts: $('[data-mopts="wall"]'),
-    wallType: $('[data-model-walltype]'), wallTop: $('[data-model-walltop]'), wallH: $('[data-model-wallh]'), typed: $('[data-model-typed]'),
+    wallRef: $('[data-model-wallref]'), wallSide: $('[data-model-wallside]'), wallType: $('[data-model-walltype]'), wallTop: $('[data-model-walltop]'), wallH: $('[data-model-wallh]'), typed: $('[data-model-typed]'),
     layout: [...root.querySelectorAll('[data-model-layout]')], fit: $('[data-model-fit]'), units: $('[data-model-units]'),
     levelsSec: $('[data-levels-sec]'), levels: $('[data-levels]'), stageEl: root.querySelector('.bc-stage'), hint: $('[data-model-hint]'),
     typedRow: $('[data-mtyped-row]'), toolbar: $('[data-toolbar]'),
@@ -56,7 +56,7 @@ export function mountModel(host) {
   const S = {
     on: false, layout: 'split', level: null, tool: 'select', busy: false, queue: [], again: false,
     data: null, outlines: new Map(), cut: null, cutFor: null, chain: null, last: null, hoverKey: null,
-    wall: { typeKey: 'ext-2x6', top: 'level', height: 2438.4 }, units: readUnits(),
+    wall: { reference: 'center', side: 'left', typeKey: 'ext-2x6', top: 'level', height: 2438.4 }, units: readUnits(),
     open: {
       door: { typeKey: DOOR_TYPES[0].key, width: DOOR_TYPES[0].width, height: DOOR_TYPES[0].height, hand: 'a' },
       window: { typeKey: WINDOW_TYPES[1].key, width: WINDOW_TYPES[1].width, height: WINDOW_TYPES[1].height, sill: WINDOW_TYPES[1].sill, hand: 'a' },
@@ -338,7 +338,8 @@ export function mountModel(host) {
   function fillWallOpts() {
     if (!ui.wallType || ui.wallType.options.length) { if (ui.wallH && document.activeElement !== ui.wallH) ui.wallH.value = fmtLen(S.wall.height, S.units); return; }
     ui.wallType.replaceChildren(...WALL_TYPES.map((x) => el('option', { value: x.key, selected: x.key === S.wall.typeKey }, typeName(x) + ' (' + fmtLen(typeThickness(x), S.units) + ')')));
-    ui.wallType.addEventListener('change', () => { S.wall.typeKey = ui.wallType.value; drawOverlay(); });
+    ui.wallType.addEventListener('change', () => { endChain(); S.wall.typeKey = ui.wallType.value; drawOverlay(); });
+    for (const [input, key] of [[ui.wallRef, 'reference'], [ui.wallSide, 'side']]) input?.addEventListener('change', () => { endChain(); S.wall[key] = input.value; drawOverlay(); });
     ui.wallTop.addEventListener('change', () => { S.wall.top = ui.wallTop.value; ui.wallH.hidden = S.wall.top !== 'fixed'; });
     ui.wallH.addEventListener('change', () => { const mm = parseLen(ui.wallH.value, S.units); if (mm > 100) S.wall.height = mm; else host.status(t('model.err.length'), true); ui.wallH.value = fmtLen(S.wall.height, S.units); });
     ui.wallH.hidden = S.wall.top !== 'fixed';
@@ -544,7 +545,7 @@ export function mountModel(host) {
   S.queuedSegs = () => S.queue.flatMap(([, meta]) => meta.preview || []);
   function snapAt(p, e) {
     const from = S.chain?.points[S.chain.points.length - 1] || null;
-    return snapPoint(p, snapCtx(), { tol: pv.pxToMm(SNAP_PX), from, ortho: !!e?.shiftKey, step: 15, round: from ? round() : 0 });
+    return snapPoint(p, snapCtx(), { tol: pv.pxToMm(SNAP_PX), from, ortho: !!e?.shiftKey, step: 15, round: from ? round() : 0, align: S.tool === 'wall' });
   }
   function onMove(p, e) {
     if (S.drag?.kind === 'grip') { S.drag.at = gripMove(S.drag, p, e); drawOverlay(); return; }
@@ -601,12 +602,14 @@ export function mountModel(host) {
     const top = S.wall.top === 'level' && above ? { topLevel: above.guid } : { height: S.wall.top === 'fixed' ? S.wall.height : level()?.height || 2438.4 };
     const seg = { a, b, t: typeThickness(type) };
     // closing a room: every wall of the chain gets its outside to the outside of the loop
-    const side = closing ? loopSide(pts) : 'left';
+    const side = S.wall.reference === 'center' ? (closing ? loopSide(pts) : 'left') : S.wall.side;
     const flips = closing ? S.chain.guids.slice() : [];
     pts.push(b);
-    const run = drawWalls({ storey: level().guid, segs: [{ a, b }], typeKey: S.wall.typeKey, extSide: side, ...top });
-    const op = closing && flips.length ? chainClose(run, flips, side) : run;
-    commit(op, { label: typeName(type), verb: t('model.verb.drew'), preview: [seg], chain: S.chain });
+    const run = S.wall.reference === 'center'
+      ? drawWalls({ storey: level().guid, segs: [{ a, b }], typeKey: S.wall.typeKey, extSide: side, ...top })
+      : drawWallPath({ storey: level().guid, points: pts.slice(), guids: S.chain.guids, typeKey: S.wall.typeKey, thickness: seg.t, reference: S.wall.reference, extSide: side, ...top });
+    const op = closing && flips.length && S.wall.reference === 'center' ? chainClose(run, flips, side) : run;
+    commit(op, { label: typeName(type), verb: t('model.verb.drew'), preview: S.wall.reference === 'center' ? [seg] : wallPath([a, b], seg.t, S.wall.reference, side), chain: S.chain });
     if (closing) { endChain(); host.status(t('model.room.closed', { n: flips.length + 1 })); }
     drawOverlay();
   }
@@ -661,7 +664,7 @@ export function mountModel(host) {
     const o = { walls: [], lines: [], dashed: [], points: [], dims: [], symbols: [] };
     for (const q of S.queuedSegs()) o.walls.push(...[outlineOf(q)]);
     const lst = S.last;
-    if (S.tool === 'wall' && lst?.snap) o.snap = lst.snap;
+    if (S.tool === 'wall' && lst?.snap) { o.snap = lst.snap; o.dashed.push(...(lst.snap.guides || [])); }
     if (S.tool === 'wall' && S.chain) {
       const pts = S.chain.points, a = pts[pts.length - 1];
       for (const q of pts) o.points.push(q);
@@ -669,7 +672,8 @@ export function mountModel(host) {
         const b = lst.snap.p, L = Math.hypot(b[0] - a[0], b[1] - a[1]);
         if (L >= 1) {
           const type = wallType(S.wall.typeKey), seg = { a, b, t: typeThickness(type) };
-          o.walls.push(previewOutline(seg));
+          const path = wallPath([...pts, b], seg.t, S.wall.reference, S.wall.side);
+          o.walls.push(previewOutline(path.at(-1) || seg));
           const ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
           o.hud = { p: b, text: fmtLen(L, S.units) + '  ' + fmtAngle(ang) + (closesChain(pts, b, 1) ? '\n' + t('model.hud.close') : '') };
           o.dims.push({ a, b, off: seg.t / 2 + pv.pxToMm(18), text: fmtLen(L, S.units) });

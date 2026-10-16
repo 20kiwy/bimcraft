@@ -3433,5 +3433,13 @@
   "input.m.check": "Check",
   "input.lbl.viewer.draw": "Edit the model",
   "input.style.viewer": "Viewer",
-  "input.style.viewer.hint": "For opening and checking models: File, View, Show, Check and Edit menus and a row of viewing tools (fit, top, front, side, section, measure, hide, isolate, see-through, walk). The drawing tools wait in the Model menu at the end."
+  "input.style.viewer.hint": "For opening and checking models: File, View, Show, Check and Edit menus and a row of viewing tools (fit, top, front, side, section, measure, hide, isolate, see-through, walk). The drawing tools wait in the Model menu at the end.",
+  "model.wall.reference": "Drawing reference",
+  "model.wall.ref.center": "Centerline",
+  "model.wall.ref.inside": "Inside face",
+  "model.wall.ref.outside": "Outside face",
+  "model.wall.side": "Outside of wall",
+  "model.wall.side.left": "Outside on left",
+  "model.wall.side.right": "Outside on right",
+  "res.ot.win-basement-egress": "Basement egress with well"
 }

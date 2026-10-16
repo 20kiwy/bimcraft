@@ -4,11 +4,12 @@
  * bin/test-bimcraft.mjs --model runs it in Node. Plan mm throughout.
  *
  *   snapPoint(p, { walls, points }, { tol, from, ortho, step, round })
- *     → { p: [x, y], kind: 'end' | 'mid' | 'on' | 'angle' | 'ortho' | 'free', angle?, wall? }
+ *     → { p: [x, y], kind: 'end' | 'mid' | 'on' | 'angle' | 'ortho' | 'align' | 'free', angle?, wall?, guides? }
  *   walls [{ a, b, t }] (centre lines; their faces snap too), points [[x, y]] (the chain being drawn, other free points)
  *   tol: how near counts (mm — the page passes so many screen pixels in mm); from: the last point (angles, lengths);
  *   ortho: only 0 / 90 / 180 / 270° from `from` (Shift); step: angle step when nothing else snaps (15°, held when within
  *   3°); round: length step for a free direction (1/2" or 10 mm), so typed-looking numbers come out of clicks.
+ *   align: opt-in horizontal/vertical endpoint guides, including face corners; guides are [x0,y0,x1,y1].
  *   closesChain(points, p, tol) → true when p is back on the chain's first point (a room closes)
  *   loopSide(points) → 'right' | 'left': where the outside is for walls drawn along this closed loop (anticlockwise
  *   loop: outside on the right)
@@ -16,10 +17,11 @@
 const D2R = Math.PI / 180;
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
-export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, step = 15, round = 0 } = {}) {
+export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, step = 15, round = 0, align = false } = {}) {
   const walls = ctx.walls || [], extra = ctx.points || [];
   let best = null;
-  const offer = (q, kind, rank, wall) => { const d = dist(p, q); if (d <= tol && (!best || rank < best.rank || (rank === best.rank && d < best.d))) best = { p: q, kind, rank, d, wall }; };
+  const anchors = [];
+  const offer = (q, kind, rank, wall) => { if (align && kind === 'end') anchors.push(q); const d = dist(p, q); if (d <= tol && (!best || rank < best.rank || (rank === best.rank && d < best.d))) best = { p: q, kind, rank, d, wall }; };
   for (const w of walls) {
     offer(w.a, 'end', 0, w); offer(w.b, 'end', 0, w);
     offer([(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2], 'mid', 1, w);
@@ -32,6 +34,22 @@ export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, 
   }
   for (const q of extra) offer(q, 'end', 0, null);
   if (best) return { p: best.p, kind: best.kind, wall: best.wall };
+  // Alignment is opt-in: other tools keep their existing snap priorities.
+  const alignment = (q, dir = null) => {
+    let hit = null;
+    for (const anchor of anchors) for (const axis of [0, 1]) {
+      let at;
+      if (dir) {
+        if (Math.abs(dir[axis]) < 1e-9) continue;
+        const l = (anchor[axis] - from[axis]) / dir[axis];
+        if (l <= 1) continue;
+        at = [from[0] + dir[0] * l, from[1] + dir[1] * l];
+      } else { at = [...q]; at[axis] = anchor[axis]; }
+      const d = dist(p, at);
+      if (dist(anchor, at) > tol && d <= tol && (!hit || d < hit.d)) hit = { p: at, kind: 'align', guides: [[...anchor, ...at]], d };
+    }
+    return hit;
+  };
   // along a direction from the last point (ortho, or an angle step)
   if (from) {
     const dx = p[0] - from[0], dy = p[1] - from[1], len = Math.hypot(dx, dy);
@@ -56,6 +74,8 @@ export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, 
           }
         }
         if (hit) return { p: [from[0] + dir[0] * hit.s, from[1] + dir[1] * hit.s], kind: 'on', angle: ang, wall: hit.w };
+        const aligned = align && alignment(p, dir);
+        if (aligned) return { ...aligned, angle: ang };
         if (round > 0) l = Math.max(round, Math.round(l / round) * round);
         return { p: [from[0] + dir[0] * l, from[1] + dir[1] * l], kind, angle: ang };
       }
@@ -74,6 +94,8 @@ export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, 
     }
   }
   if (on) return { p: on.p, kind: 'on', wall: on.w };
+  const aligned = align && alignment(p);
+  if (aligned) return aligned;
   if (from && round > 0) {
     const dx = p[0] - from[0], dy = p[1] - from[1], len = Math.hypot(dx, dy);
     if (len > 0) { const l = Math.max(round, Math.round(len / round) * round); return { p: [from[0] + dx / len * l, from[1] + dy / len * l], kind: 'free' }; }
@@ -86,3 +108,28 @@ export const closesChain = (points, p, tol = 1) => points.length >= 3 && dist(po
 /** Signed area of a closed loop of points (anticlockwise > 0). */
 export function loopArea(points) { let s = 0; for (let i = 0; i < points.length; i++) { const a = points[i], b = points[(i + 1) % points.length]; s += a[0] * b[1] - a[1] * b[0]; } return s / 2; }
 export const loopSide = (points) => (loopArea(points) > 0 ? 'right' : 'left');
+
+/** Centre lines for a path drawn on a wall face. Outside is explicitly left/right of travel. */
+export function wallPath(points, thickness, reference = 'center', side = 'left') {
+  const off = reference === 'center' ? 0 : thickness / 2 * (reference === 'outside' ? -1 : 1) * (side === 'left' ? 1 : -1);
+  const segs = [];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i], L = dist(a, b);
+    if (L < 1) continue;
+    const n = [-(b[1] - a[1]) / L * off, (b[0] - a[0]) / L * off];
+    segs.push({ a: [a[0] + n[0], a[1] + n[1]], b: [b[0] + n[0], b[1] + n[1]], t: thickness });
+  }
+  const join = (a, b) => {
+    const u = [a.b[0] - a.a[0], a.b[1] - a.a[1]], v = [b.b[0] - b.a[0], b.b[1] - b.a[1]];
+    const cross = u[0] * v[1] - u[1] * v[0];
+    if (Math.abs(cross) < 1e-9) return;
+    const d = [b.a[0] - a.a[0], b.a[1] - a.a[1]], k = (d[0] * v[1] - d[1] * v[0]) / cross;
+    const q = [a.a[0] + k * u[0], a.a[1] + k * u[1]];
+    // Avoid unbounded mitres at nearly reversing corners.
+    if (dist(q, a.b) > 4 * thickness || dist(q, b.a) > 4 * thickness) return;
+    a.b = q; b.a = q;
+  };
+  for (let i = 1; i < segs.length; i++) join(segs[i - 1], segs[i]);
+  if (segs.length >= 3 && dist(points[0], points[points.length - 1]) < 1) join(segs[segs.length - 1], segs[0]);
+  return segs;
+}

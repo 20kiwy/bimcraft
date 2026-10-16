@@ -62,6 +62,7 @@ export const WINDOW_TYPES = [
   { key: 'win-slider', kind: 'window', width: 60 * IN, height: 48 * IN, sill: 32 * IN, part: 'DOUBLE_PANEL_VERTICAL', stile: true },
   { key: 'win-awning', kind: 'window', width: 36 * IN, height: 24 * IN, sill: 56 * IN, part: 'SINGLE_PANEL', awning: true, res: true },
   { key: 'win-picture', kind: 'window', width: 72 * IN, height: 60 * IN, sill: 20 * IN, part: 'SINGLE_PANEL', res: true },
+  { key: 'win-basement-egress', kind: 'window', width: 36 * IN, height: 48 * IN, sill: 36 * IN, part: 'SINGLE_PANEL', casement: true, well: true, res: true },
   { key: 'win-transom', kind: 'window', width: 36 * IN, height: 12 * IN, sill: 82 * IN, part: 'SINGLE_PANEL', res: true },
 ];
 export const openingType = (key) => DOOR_TYPES.find((x) => x.key === key) || WINDOW_TYPES.find((x) => x.key === key) || null;
@@ -247,7 +248,21 @@ export function windowParts(type, op, t) {
   if (type.rail) { const m = H / 2; box(f, y0 + d * 0.15, m - f / 2, W - f, y1 - d * 0.15, m + f / 2, 'frame'); }
   if (type.stile) { const m = W / 2; box(m - f / 2, y0 + d * 0.15, f, m + f / 2, y1 - d * 0.15, H - f, 'frame'); }
   box(f, gy - GLASS / 2, f, W - f, gy + GLASS / 2, H - f, 'glass');
+  if (type.well) {
+    const { x0, x1, near, far, bottom, top, gauge } = windowWell(op, t);
+    const Y = (v) => s * v;
+    const wall = (a, b, c, d) => box(a, Math.min(Y(b), Y(d)), bottom, c, Math.max(Y(b), Y(d)), top, 'frame');
+    wall(x0 - gauge, near, x0, far + gauge);
+    wall(x1, near, x1 + gauge, far + gauge);
+    wall(x0, far, x1, far + gauge);
+  }
   return out;
+}
+
+/** A starter well, not a code-compliance check: clear width >= 48 inches and 36 inches projection. */
+export function windowWell(op, thickness) {
+  const width = Math.max(48 * IN, op.width + 12 * IN);
+  return { x0: (op.width - width) / 2, x1: (op.width + width) / 2, near: thickness / 2, far: thickness / 2 + 36 * IN, bottom: -6 * IN, top: op.height, gauge: IN };
 }
 
 export function updateOpening(w, guid, ch = {}) {
@@ -419,6 +434,10 @@ export function openingSymbol(op, wall) {
       const H = P(hx, face), open = P(hx + dir * r * Math.cos(Math.PI / 6), face + s * r * Math.sin(Math.PI / 6));
       out.thin.push(seg(H, open));
     }
+  }
+  if (type.well) {
+    const well = windowWell(op, t), a = P(x0 + well.x0, s * well.near), b = P(x0 + well.x0, s * well.far), c = P(x0 + well.x1, s * well.far), d = P(x0 + well.x1, s * well.near);
+    out.dashed.push(seg(a, b), seg(b, c), seg(c, d));
   }
   return out;
 }

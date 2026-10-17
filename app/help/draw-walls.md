@@ -26,10 +26,18 @@ The plan cuts the level 4'-0" (1200 mm) above its floor, as a floor plan does. S
 3. Choose its height: **Up to the level above** (the wall follows if that level moves) or **Fixed height** and type it.
 4. Click where the first wall starts.
 5. Click each corner. Every click makes a wall; the next one starts where it ended. The length and angle show beside the pointer.
-6. Click the first point again to close the room. The status line says how many walls the room has, and every wall gets its outside layer on the outside of the room.
+6. Click the first point again to close the room. The status line says how many walls the room has, and in centerline mode every wall gets its outside layer on the outside of the room.
 7. Press {{key:Esc}} (or right-click, or double-click) to stop without closing.
 
 The corners join by themselves: two walls meet at a mitre, a wall that ends on another one stops at its face (a T), and three or more walls at one point share the corner. Walls that cross are left as they are.
+
+## Choose the drawing reference
+
+Choose **Centerline**, **Inside face** or **Outside face** before the first click. With a face selected, your clicks and typed lengths describe that face; BimCraft offsets the wall centerline by half the total thickness and joins consecutive corners. Choose **Outside on left** or **Outside on right** relative to the direction you draw. For a closed outline drawn counterclockwise, the outside is on the right; clockwise, on the left. Face drawing keeps your chosen outside side when you close the loop. Centerline drawing still sets the outside automatically on closing.
+
+Changing the wall type, reference or outside side ends the current chain. Near a reversing corner, long mitres are capped by leaving square ends.
+
+While drawing, an endpoint across empty space can align horizontally or vertically with a wall endpoint or an earlier corner. A dashed guide joins that point to the snapped pointer. Shift keeps the drawing direction square; alignment then stops along that direction. Nearby endpoints, midpoints and wall intersections keep priority over distant alignment.
 
 ## Type a length instead of clicking
 

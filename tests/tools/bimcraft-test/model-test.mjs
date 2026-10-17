@@ -206,6 +206,43 @@ export async function modelMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, a
     a.StreamAllMeshes(id, (mesh) => { for (let i = 0; i < mesh.geometries.size(); i++) { const g = a.GetGeometry(id, mesh.geometries.get(i).geometryExpressID); tris += g.GetIndexDataSize() / 3; g.delete(); } });
     ok(a.GetLineIDsWithType(id, W.IFCWALL).size() === 4 && tris > 0, 'web-ifc (oracle) opens the room: 4 walls, ' + tris + ' triangles');
   } catch (e) { console.log('  --   web-ifc not installed: oracle check skipped'); }
+  console.log('== Face-referenced wall chain and basement egress');
+  {
+    const O = await import(path.join(APP, 'model-openings.js'));
+    const eng = await quiet(IfcModel.create)(WebIFC, null);
+    await quiet((b) => eng.load(b))(new TextEncoder().encode(text));
+    const edit = new IfcEditor(WebIFC, eng), guids = [];
+    const storey = OPS.snapshotModel(edit).levels[0].guid;
+    const pts = [[0, 0], [6000, 0], [6000, 4000], [0, 4000], [0, 0]];
+    const thickness = MW.typeThickness(MW.wallType('concrete-200'));
+    for (let i = 2; i <= pts.length; i++) {
+      const result = edit.modelChange(OPS.drawWallPath({ storey, points: pts.slice(0, i), guids, typeKey: 'concrete-200', thickness, reference: 'outside', extSide: 'right', height: 3000 }));
+      guids.push(...result.made.keys());
+    }
+    let model = OPS.snapshotModel(edit);
+    ok(model.walls.length === 4 && near(model.walls[0].a[0], 100) && near(model.walls[0].a[1], 100), 'outside face stays on the clicked rectangle, including the closing mitre');
+    ok(model.walls.every((w, i) => near(w.b[0], model.walls[(i + 1) % 4].a[0]) && near(w.b[1], model.walls[(i + 1) % 4].a[1])), 'all four centerlines meet at joined corners');
+    edit.undo(); model = OPS.snapshotModel(edit);
+    ok(model.walls.length === 3 && near(model.walls[0].a[0], 0), 'undo closing wall restores the first open end too');
+    edit.redo();
+    ok(OPS.snapshotModel(edit).walls.length === 4, 'redo restores the closing wall with stable guids');
+    edit.modelChange(OPS.placeOpening({ wall: guids[0], typeKey: 'win-basement-egress', offset: 2000, face: 'right' }));
+    let win = OPS.snapshotModel(edit).openings[0];
+    ok(win.typeKey === 'win-basement-egress' && near(win.sill, 914.4), 'egress preset writes the window type and sill');
+    const bytes = edit.save();
+    const reopened = await quiet(IfcModel.create)(WebIFC, null);
+    const mesh = await quiet((b) => reopened.load(b))(bytes);
+    const restored = OPS.snapshotModel(new IfcEditor(WebIFC, reopened));
+    ok(restored.openings[0].typeKey === win.typeKey && mesh.types.some((x) => x.name === 'IfcWindow' && x.count === 1), 'save/reopen retains the egress window and its IFC geometry');
+    edit.modelChange(OPS.changeOpening(win.guid, { width: 1500, offset: 2500, face: 'left' }));
+    win = OPS.snapshotModel(edit).openings[0];
+    ok(near(win.width, 1500) && win.face === 'left' && O.windowParts(O.openingType(win.typeKey), win, 200).length === 8, 'resize and flip regenerate all three well sides');
+    edit.undo(); edit.redo();
+    ok(near(OPS.snapshotModel(edit).openings[0].width, 1500), 'well edit survives undo/redo');
+    edit.modelChange(OPS.removeWalls([guids[0]]));
+    ok(OPS.snapshotModel(edit).openings.length === 0, 'deleting the host removes the window and well together');
+    saved.egress = bytes;
+  }
   console.log('== Doors and windows (BM.4)');
   {
     const O = await import(path.join(APP, 'model-openings.js'));

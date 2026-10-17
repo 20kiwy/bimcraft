@@ -47,3 +47,9 @@ Each door or window is an IFC door or window with its size, operation (for examp
 - The plan shows doors open at 90° with their swing, sliding doors as two panels, pocket doors sliding into the wall, garage doors as a dashed line overhead, and windows with their frame and glass lines.
 - The width is the overall width of the frame; the door leaf is the width less the two jambs.
 - Copying drawn doors and windows is not built yet: place another one.
+
+## Basement egress window and well
+
+Choose **Basement egress with well** in the window type list. It starts as a 36 × 48 inch casement with a sill 36 inches above the level. The well is on the wall's outside, with at least 48 inches clear width, 36 inches projection, and a bottom 6 inches below the sill. It appears as dashed lines in plan and as three open-topped sides in 3D. The well is part of the window's IFC body, so saving, moving, resizing or deleting the window carries it along. Resizing keeps at least 6 inches beside each jamb.
+
+These are modeling defaults, not a certification of egress compliance. Check the manufacturer's actual clear opening, local requirements, grade, drainage and any required ladder separately. Well depth and height are preset dimensions; they do not follow terrain.

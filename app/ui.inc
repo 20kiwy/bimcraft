@@ -344,6 +344,15 @@ $__rvtPreview = $__rvtVer !== '' ? "/assets/vendor/$__rvtLib/$__rvtVer/rvt.js" :
         </div>
         <div class="bc-modelbar-row" data-mopts="wall" hidden>
           <label><span class="visually-hidden"><?= Lang::e('model.wall.type') ?></span><select class="bc-mb-select" data-model-walltype aria-label="<?= Lang::e('model.wall.type') ?>"></select></label>
+          <label><span class="visually-hidden"><?= Lang::e('model.wall.reference') ?></span><select class="bc-mb-select" data-model-wallref aria-label="<?= Lang::e('model.wall.reference') ?>">
+            <option value="center"><?= Lang::e('model.wall.ref.center') ?></option>
+            <option value="inside"><?= Lang::e('model.wall.ref.inside') ?></option>
+            <option value="outside"><?= Lang::e('model.wall.ref.outside') ?></option>
+          </select></label>
+          <label><span class="visually-hidden"><?= Lang::e('model.wall.side') ?></span><select class="bc-mb-select" data-model-wallside aria-label="<?= Lang::e('model.wall.side') ?>">
+            <option value="left"><?= Lang::e('model.wall.side.left') ?></option>
+            <option value="right"><?= Lang::e('model.wall.side.right') ?></option>
+          </select></label>
           <label><span class="visually-hidden"><?= Lang::e('model.wall.top') ?></span><select class="bc-mb-select" data-model-walltop aria-label="<?= Lang::e('model.wall.top') ?>">
             <option value="level"><?= Lang::e('model.wall.top.level') ?></option>
             <option value="fixed"><?= Lang::e('model.wall.top.fixed') ?></option>

@@ -93,6 +93,23 @@ import { IfcEditor } from './ifc-edit.js';
 import { newBuilding, stackLevels, levelsProblem } from './new-model.js';   // 0.5 part 3: File › New building
 import { mountModel } from './model-ui.js';   // 0.5 part 3, track BM: Draw (plan view, walls, levels)
 import { mountRes } from './res-ui.js';   // 0.5 part 4, track RC: the residential tools in the plan (roof planes, …)
+import { isCloudFile, cloudSignature, CLOUD_ACCEPT } from './cloud-types.js';   // 0.6 PF (session pointcloud): which files are point clouds
+import { mountCoords } from './coords-ui.js';   // 0.6 DF.15 (bim-draw): coordinate readouts, project origin and survey point
+import { mountTrim } from './model-trim-ui.js';   // 0.6 DF.17 (bim-draw): Modify › Trim / extend, Corner
+import { mountGrids } from './model-grids-ui.js';   // 0.6 DF.16 (bim-draw): Build › Grid, Column
+import { mountFloors } from './model-floors-ui.js';   // 0.6 DF.18 (bim-draw): Build › Floor by outline, Ramp
+import { mountSite } from './model-site-ui.js';   // 0.6 DF.20 (bim-draw): Build › Site, Add levels…
+import { mountMep } from './mep-ui.js';   // 0.6 DF.29 (bim-draw): Build › Pipe, Duct, Valve
+import { mountViewsBim } from './views-ui.js';   // 0.6 DF.19 (bim-draw): project browser, view ranges, templates, your own sheets
+import { mountFamilies } from './family-ui.js';   // 0.6 DC.114 (bim-families_PART_2): families on IFC types, their sizes, the editor
+import { mountComforts } from './comforts-ui.js';   // 0.6 round 2 (bim-comforts_PART_2): move / turn placed library items, dormers
+import { installAgents } from './agents.js';   // 0.6 DF.25 (bim-draw): the Draw edits as assistant tools, beside bim-agent.js's
+import { mountCloudSlice } from './cloud-slice-ui.js';   // 0.6 DF.22 (bim-draw): the cloud's slice on the plan, Scan menu
+import { mountTrace } from './model-trace-ui.js';   // 0.6 DF.23 (bim-draw): Build › From a drawing…
+import { mountLinks } from './links-ui.js';   // 0.6 DF.21 (bim-draw): linked models (the Links section)
+import { defaultUnits } from './model-units.js';
+import { readLevels } from './model-levels.js';
+import { ModelWriter } from './model-write.js';
 import { parseLength } from './libitem.js';
 import { readRevit, isOleFile } from './rvt-reader.js';
 import { previewSupport, convertRevit } from './rvt-convert.js';   // 0.5 SG.8 (b): RVT preview, lab only (ui.inc data-rvt-preview)
@@ -127,13 +144,20 @@ import { writeBcf, readBcf, newGuid, toIfcPoint, toIfcDir, fromIfcPoint, fromIfc
 import { buildTree, leaves } from './ifc-tree.js';
 import { propertyIndex, colorBy, CATEGORICAL, schemeOf, readScheme, applyScheme } from './ifc-props.js';
 import { compareModels, compareCsv } from './ifc-compare.js';
-import { parseTasks, matchTasks, statusAt, span, templateCsv, dayText } from './ifc-4d.js';
+import { parseTasks, matchTasks, statusAt, span, templateCsv, dayText, groupsOf, inGroup, groupKeys, groupState } from './ifc-4d.js';
 import { find, cleanSets, suggestions, OPS, SETS_KEY } from './ifc-find.js';
 import { elementsOf, clashes } from './clash.js';
 import { runChecks, cleanRules } from './ifc-checks.js';
 import { totals, totalsCsv, quantityFields, MAX_GROUP, elementRows, spaceSchedule, tableCsv } from './ifc-qto.js';
 import { TreeView } from './tree-view.js';
 import { bimTools } from './bim-agent.js';
+import { archicadVerdict } from './bundle-open.js';   // 0.6 DF.12 (session bim-interop)
+import { mountBundle } from './bundle-view.js';   // 0.6 DF.12 (b): project bundles (session bim-interop)
+import { mountAnalysisBim } from './analysis-bim-ui.js';   // 0.6 LC.4: frame analysis (session lc-structure)
+import { mountFieldPoints } from './layout-bim-ui.js';     // 0.6 LC.22: field points + as-built (session lc-structure)
+import { mountAssets } from './assets-bim-ui.js';     // 0.6 LC.12: assets + maintenance record (session bim-extra_PART_2)
+import { mountDaylight } from './daylight-bim-ui.js';     // 0.6 LC.20: average daylight factor per room (session bim-extra_PART_2)
+import { mountInterop } from './interop-view.js';   // 0.6 DF.12 (c): mapping files + round-trip report (session bim-interop)
 import { startAddons } from './addons/bimcraft-api.js';   // 0.5 AO.7 (session addons' module; manifest "addons": "own")
 
 /** The library needs getcadcraft.com's API: off in the self-hosted browser edition (devshell `#cc-edition` {library: false}). */
@@ -193,9 +217,16 @@ function init(root) {
   let swapTarget = null;   // { id, name } after "Swap item…"
   let modelTag = '';       // this open IFC's session tag: a clip copied from it can be pasted "like" its source
   let modelUi = null;      // Draw (0.5 track BM, model-ui.js): mounted at the end of init
+  let coordsUi = null;     // where am I working (0.6 DF.15, coords-ui.js): mounted with the 3D view
+  let scanUi = null;       // a point cloud's slice on the plan (0.6 DF.22, cloud-slice-ui.js)
+  let linksUi = null;      // linked models (0.6 DF.21, links-ui.js)
+  let bundleUi = null;     // project bundles (0.6 DF.12 (b), bundle-view.js): mounted at the end of init
+  let analysisUi = null;   // the Analysis tab (0.6 LC.4, analysis-bim-ui.js): mounted after the bundles
+  let pointsUi = null;     // the Points tab (0.6 LC.22, layout-bim-ui.js): mounted with it
+  let assetsUi = null;     // the Assets tab (0.6 LC.12, assets-bim-ui.js)
+  let daylightUi = null;   // the Daylight tab (0.6 LC.20, daylight-bim-ui.js)
   let pc = null;           // point clouds (0.5 SG.1): cloud-ui.js, made on the first cloud
   let bimMaps = null;      // map layers on the ground (0.5 SG.3): maps-bim.js, made on first use
-  const CLOUD_RE = /\.(las|laz|xyz|pts)$/i;
   let selInfo = null;      // { id, p (IfcModel.properties), placement (bool) } for the picked element
   const libItems = new Map();   // libKey → { item, meta } placed, swapped in or updated in this tab (Paste in another model)
 
@@ -224,20 +255,21 @@ function init(root) {
   //   corner  the corner indicator in the 3D views (IFC and a drawing in 3D): cube / axes / none   default cube
   //   boxMargin  room "Section box round the pick" leaves round the pick, mm 0–5000 (0.5 WL.2)   default 300
   //   geoCrs  latitude / longitude in Measure › Location: an EPSG code (geographic), or 'file' = the file's own datum (WL.4)
-  const SET_DEFAULTS = { spaces: false, edges: 'on', view: 'iso', snap: false, corner: 'cube', boxMargin: 300, geoCrs: '4326' };
+  const SET_DEFAULTS = { spaces: false, edges: 'on', view: 'iso', turned: 'square', snap: false, corner: 'cube', boxMargin: 300, geoCrs: '4326' };
   const okMargin = (v) => Number.isFinite(v) && v >= 0 && v <= 5000;
   const GEO_CRS = ['4326', 'file', '4258', '4269', '4283', '7844', '4167', '6668', '4490'];
   const settings = { ...SET_DEFAULTS, assistants: { enabled: false, groups: ['read'] } };
-  // 0.4 X.7: assistants (AGENTS-SPEC §7): off unless the person turned them on; groups read and edit (BimCraft has no others)
+  // 0.4 X.7: assistants (AGENTS-SPEC §7): off unless the person turned them on; groups read, edit and (0.6 DF.25) save
   function readAssist(v) {
     const a = v && v.assistants;
-    if (a && typeof a === 'object') settings.assistants = { enabled: a.enabled === true, groups: (Array.isArray(a.groups) ? a.groups : []).filter((g) => g === 'read' || g === 'edit') };
+    if (a && typeof a === 'object') settings.assistants = { enabled: a.enabled === true, groups: (Array.isArray(a.groups) ? a.groups : []).filter((g) => g === 'read' || g === 'edit' || g === 'save') };
   }
   try {
     const v = JSON.parse(localStorage.getItem('bimcraft.settings') || '{}') || {};
     if (typeof v.spaces === 'boolean') settings.spaces = v.spaces;
     if (['on', 'small', 'off'].includes(v.edges)) settings.edges = v.edges;
     if (['iso', 'top', 'front', 'side'].includes(v.view)) settings.view = v.view;
+    if (['square', 'placed'].includes(v.turned)) settings.turned = v.turned;
     if (typeof v.snap === 'boolean') settings.snap = v.snap;
     if (['cube', 'axes', 'none'].includes(v.corner)) settings.corner = v.corner;
     if (okMargin(v.boxMargin)) settings.boxMargin = v.boxMargin;
@@ -252,6 +284,7 @@ function init(root) {
     f('bcSpaces').forEach((i) => { i.checked = settings.spaces; });
     f('bcEdges').forEach((i) => { i.checked = i.value === settings.edges; });
     f('bcView').forEach((i) => { i.checked = i.value === settings.view; });
+    f('bcTurned').forEach((i) => { i.checked = i.value === settings.turned; });
     f('bcSnap').forEach((i) => { i.checked = settings.snap; });
     f('bcCorner').forEach((i) => { i.checked = i.value === settings.corner; });
     f('bcBoxMargin').forEach((i) => { i.value = String(settings.boxMargin); });
@@ -260,6 +293,7 @@ function init(root) {
     f('bcAssist').forEach((i) => { i.checked = as.enabled; });
     f('bcAssistRead').forEach((i) => { i.checked = as.groups.includes('read'); i.disabled = !as.enabled; });
     f('bcAssistEdit').forEach((i) => { i.checked = as.groups.includes('edit'); i.disabled = !as.enabled; });
+    f('bcAssistSave').forEach((i) => { i.checked = as.groups.includes('save'); i.disabled = !as.enabled; });   // 0.6 DF.25
   }
   if (settingsDlg) {
     syncSettingsForm();
@@ -272,6 +306,7 @@ function init(root) {
         if (typeof v.spaces === 'boolean') settings.spaces = v.spaces;
         if (['on', 'small', 'off'].includes(v.edges)) settings.edges = v.edges;
         if (['iso', 'top', 'front', 'side'].includes(v.view)) settings.view = v.view;
+        if (['square', 'placed'].includes(v.turned)) settings.turned = v.turned;
         if (typeof v.snap === 'boolean') settings.snap = v.snap;
         if (['cube', 'axes', 'none'].includes(v.corner)) settings.corner = v.corner;
         if (okMargin(v.boxMargin)) settings.boxMargin = v.boxMargin;
@@ -286,6 +321,7 @@ function init(root) {
       if (t.name === 'bcSpaces') settings.spaces = t.checked;
       else if (t.name === 'bcEdges') settings.edges = t.value;
       else if (t.name === 'bcView') settings.view = t.value;
+      else if (t.name === 'bcTurned') { if (!['square', 'placed'].includes(t.value)) return; settings.turned = t.value; applyViewTurn(true); }
       else if (t.name === 'bcSnap') settings.snap = t.checked;
       else if (t.name === 'bcCorner') { settings.corner = t.value; applyCorner(); }
       else if (t.name === 'bcBoxMargin') {
@@ -294,10 +330,10 @@ function init(root) {
         settings.boxMargin = v;
       }
       else if (t.name === 'bcGeoCrs') { if (!GEO_CRS.includes(t.value)) return; settings.geoCrs = t.value; }
-      else if (t.name === 'bcAssist' || t.name === 'bcAssistRead' || t.name === 'bcAssistEdit') {
+      else if (t.name === 'bcAssist' || t.name === 'bcAssistRead' || t.name === 'bcAssistEdit' || t.name === 'bcAssistSave') {
         const as = settings.assistants, on = (n) => settingsDlg.querySelector('[name="' + n + '"]')?.checked;
         if (t.name === 'bcAssist') { as.enabled = t.checked; if (t.checked && !as.groups.length) as.groups = ['read']; }
-        else as.groups = [on('bcAssistRead') && 'read', on('bcAssistEdit') && 'edit'].filter(Boolean);
+        else as.groups = [on('bcAssistRead') && 'read', on('bcAssistEdit') && 'edit', on('bcAssistSave') && 'save'].filter(Boolean);
         syncSettingsForm();
         applyAssist();
       }
@@ -309,6 +345,7 @@ function init(root) {
   // ---- Corner indicator (Settings › BimCraft): the view cube or an X/Y/Z axis icon in each 3D view (m3d/viewcube.js,
   // byte-identical copies of ModelCraft's). Never on the 2D drawing: the hosts are the 3D views' own wrappers. ----
   const corners = [];   // { cube, axes } per 3D view
+  let cube3d = null;     // the IFC view's cube (its compass follows the view turn: applyViewTurn)
   function addCorner(host, opts) {
     const cube = mountViewCube(host, { ...opts, corner: 'bottom-right', i18n: { t, has } });
     const axes = mountAxisIcon(host, { getView: opts.getView, corner: 'bottom-right', i18n: { t, has } });
@@ -391,7 +428,7 @@ function init(root) {
   // path), a double-clicked file opens at launch or while running; in the browser the same input as before.
   const fileHost = getHost({ app: 'bimcraft' });
   const IFC_TYPES = [{ description: 'IFC', extensions: ['.ifc'] }];   // i18n-ignore: a file type label the OS shows
-  const OPEN_TYPES = [{ description: 'IFC, RVT, RFA, DWG, DXF, LAS, LAZ', extensions: ['.ifc', '.rvt', '.rfa', '.rte', '.rft', '.dwg', '.dxf', '.pln', '.pla', '.tpl', '.bpn', '.las', '.laz', '.xyz', '.pts'] }];   // i18n-ignore: OS file types
+  const OPEN_TYPES = [{ description: 'IFC, RVT, RFA, DWG, DXF, LAS, LAZ', extensions: ['.ifc', '.rvt', '.rfa', '.rte', '.rft', '.dwg', '.dxf', '.pln', '.pla', '.tpl', '.bpn', '.ccbundle', '.zip', ...CLOUD_ACCEPT.split(',')] }];   // i18n-ignore: OS file types
   const openHost = async (hf) => {
     if (!hf) return;
     const blob = await hf.file();
@@ -532,26 +569,30 @@ function init(root) {
   });
 
   /** Open one file. `path` is its place in the open folder (null for a file opened on its own). */
-  async function open(file, path) {
+  async function open(file, path, { keepBundle = false } = {}) {
+    if (!keepBundle) bundleUi?.clear();   // 0.6 DF.12 (b): another file ends the bundle (its own layout DWGs keep it)
     if (addons?.importerFor(file.name)) { await addons.openFromAddon(file); return; }   // 0.5 AO.7: an add-on reads it into IFC
-    if (CLOUD_RE.test(file.name)) { await openCloud(file); return; }   // 0.5 SG.1 (a LAS under another name: see the last branch)
+    if (isCloudFile(file.name)) { await openCloud(file); return; }   // 0.5 SG.1 / 0.6 PF (cloud-types.js; a cloud under another name: see the last branch)
     if (await keepEdits()) return;
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     status(t('open.reading', { file: file.name, size: bytes(file.size) }));
     await frame();
     const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
-    if (ext === 'dwg' || ext === 'dxf' || startsWith(head, 'AC10')) {
+    if (ext === 'ccbundle' || ext === 'zip') {
+      await bundleUi.open(file);   // 0.6 DF.12 (b): a project bundle (manifest.json + the model + layouts); bundle-view.js
+    } else if (ext === 'dwg' || ext === 'dxf' || startsWith(head, 'AC10')) {
       await openDwg(file, path, ext === 'dxf' ? 'dxf' : 'dwg');
     } else if (isOleFile(head)) {
       await openRevit(file, path);
     } else if (ext === 'ifc' || startsWith(head, 'ISO-10303-21')) {
       await openIfc(new Uint8Array(await file.arrayBuffer()), file, path);
-    } else if (['pln', 'pla', 'tpl', 'bpn'].includes(ext)) {
-      throw Object.assign(new Error(t('open.pln', { name: file.name })), { userFacing: true });   // 0.4 track N: not read yet; help pln-project-files
+    } else if (archicadVerdict(file.name, head)) {
+      // 0.6 DF.12 (a): "ROF FDB " at offset 0 = an Archicad project for certain; the extension without it = renamed?
+      throw Object.assign(new Error(t(archicadVerdict(file.name, head) === 'project' ? 'open.pln.project' : 'open.pln.renamed', { name: file.name })), { userFacing: true });
     } else if (ext === 'ifczip' || ext === 'ifcxml') {
       throw new Error(t('open.unsupported', { ext: '.' + ext }));
-    } else if (startsWith(head, 'LASF')) {
-      await openCloud(file);   // a LAS / LAZ point cloud with another extension
+    } else if (cloudSignature(head)) {
+      await openCloud(file);   // a LAS / LAZ, E57 or RCS point cloud with another extension
     } else {
       throw new Error(t('open.unknown', { name: file.name }));
     }
@@ -594,9 +635,27 @@ function init(root) {
     ui.canvasWrap.hidden = false;
     viewer = new Viewer3D(ui.canvas, { onPick: (key) => { afterPick(); if (viewer.selection.size > 1) showMany(); else showProps(key); } });
     ui.canvas.viewer = viewer;   // for tests and the console
-    // web-ifc hands the viewer Y-up coordinates: the adapter turns them so the cube's Top is the model's top
-    const ci = addCorner(ui.canvasWrap, threeCubeOptions({ camera: () => viewer.camera, controls: () => viewer.controls, render: () => viewer.render(), home: () => viewer.view('iso'), yUp: true }));
-    viewer.onRender = () => { ci.update(); placeMeasureLabels(); };
+    // web-ifc hands the viewer Y-up coordinates: the adapter turns them so the cube's Top is the model's top. The cube
+    // works in the view frame (0.6 DC.57: a building turned in its site, viewer.viewTurn): its faces are the building's
+    // Front, Right … and its compass is turned back so N stays the model's north (applyViewTurn).
+    const cubeBase = threeCubeOptions({ camera: () => viewer.camera, controls: () => viewer.controls, render: () => viewer.render(), home: () => viewer.view('iso'), yUp: true });
+    const rz = (v, a) => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a), v[2]];   // cube axes: Z up
+    const ci = addCorner(ui.canvasWrap, {
+      ...cubeBase,
+      getView: () => { const v = cubeBase.getView(), a = -viewer.viewTurn; return { ...v, dir: rz(v.dir, a), up: rz(v.up, a) }; },
+      setView: (v, o) => { const a = viewer.viewTurn; cubeBase.setView({ ...v, dir: rz(v.dir, a), up: rz(v.up, a) }, o); },
+    });
+    cube3d = ci.c.cube;
+    viewer.onRender = () => { ci.update(); placeMeasureLabels(); coordsUi?.render(); };
+    // 0.6 DF.15 (coords-ui.js): where am I working — readouts over the 3D view and the plan, the origin and survey point
+    coordsUi = mountCoords({
+      wrap3d: ui.canvasWrap, canvas: ui.canvas, planWrap: root.querySelector('[data-plan-wrap]'), t,
+      viewer: () => viewer,
+      entry: () => { const ent = mode === 'ifc' ? cur() : null; return ent ? { api: ent.ifc.api, mid: ent.model.modelID, C: [...ent.ifc.api.GetCoordinationMatrix(ent.model.modelID)], place: viewer.modelMatrix(ent.mi) } : null; },
+      levels: () => { const ent = cur(); return ent ? readLevels(new ModelWriter(WebIFC, ent.ifc.api, ent.model.modelID)) : []; },
+      units: () => { try { return localStorage.getItem('bimcraft.model.units') || defaultUnits(); } catch (e) { return defaultUnits(); } },
+    });
+    coordsUi.onToggle = () => modelUi?.coordsChanged();
     viewer.onUserMove = ci.stop;
     viewer.onGrip = (phase, i, e) => onBoxGrip(phase, i, e);   // section box grips (0.5 WL.2)
     ui.canvas.cube = ci.c;   // for tests
@@ -632,7 +691,6 @@ function init(root) {
     if (meas) measureOff();
     if (walking) walkOff();
     viewer.setModel(model);
-    if (settings.view !== 'iso') viewer.view(settings.view);
     sectionOff();   // a new model starts uncut
     modelTag = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
     editor = new IfcEditor(WebIFC, ifc);
@@ -640,6 +698,8 @@ function init(root) {
     models.push({ mi: 0, ifc, model, editor, name: file.name, size: file.size, file, tag: modelTag, offset: [0, 0, 0], visible: true });
     active = models[0];
     viewer.setModelMatrix(0, placementOf(models[0]));
+    applyViewTurn();   // 0.6 DC.57: square to a building turned in its site (needs the editor: buildingTurn)
+    viewer.view(settings.view);
     pc?.modelChanged();   // an open point cloud is placed again against the new model
     if (bimMaps || hasSavedMaps()) ensureMaps().then((m) => m.modelChanged(), () => {});   // map layers on the ground (SG.3)
     renderModels();
@@ -679,6 +739,8 @@ function init(root) {
     syncEdit();
     status(t('ifc.opened', { file: file.name, n: model.elements, count: num(model.elements), s: ((performance.now() - t0) / 1000).toFixed(1) }), false, true);
     modelUi?.opened();
+    coordsUi?.modelChanged();   // 0.6 DF.15
+    linksUi?.modelChanged();   // 0.6 DF.21: the model's links (not loaded until their files are chosen)
   }
 
   function fillIfcInfo(model, file) {
@@ -767,7 +829,7 @@ function init(root) {
     treeView.reveal([...viewer.selection]);
   }
   /** After any change of the pick: the Show menu's states and the tree's marks follow. */
-  function afterPick() { syncVis(); if (tree) treeView.reveal([...viewer.selection]); if (qtoScope === 'pick') renderQto(); modelUi?.picked(); }
+  function afterPick() { syncVis(); if (tree) treeView.reveal([...viewer.selection]); if (qtoScope === 'pick') renderQto(); modelUi?.picked(); analysisUi?.picked(); pointsUi?.picked(); assetsUi?.picked(); }
   window.bimcraftTree = () => ({ tree, view: treeView });   // for tests
 
   // ---- Find (0.4 B14) ----
@@ -845,6 +907,16 @@ function init(root) {
 
   // ---- 4D schedule (0.4 B22) ----
   let fdTasks = null, fdErrors = [], fdDay = null, fdOn = false, fdPlay = 0, fdFile = '', fdRaf = 0;
+  let fdGroup = '';   // 0.6 WL.6: '' = every task, else a stage ('s:…') or work package ('p:…') key (ifc-4d.js groupsOf)
+  const fdView = () => (fdTasks ? inGroup(fdTasks, fdGroup) : []);
+  const fdGroupName = () => groupsOf(fdTasks || []).find((g) => g.key === fdGroup)?.name || '';
+  /** Choose a stage or work package (or '' for every task): the slider, Play, the painting and the list follow it. */
+  function fdSetGroup(key) {
+    fdGroup = key || '';
+    const sp = span(fdView());
+    if (sp && (fdDay === null || fdDay < sp.first - 1 || fdDay > sp.last + 1)) fdDay = sp.first;
+    fdApply();
+  }
   function renderFd() {
     if (!ui.fd) return;
     ui.fdSec.hidden = mode !== 'ifc' || !model;
@@ -856,13 +928,25 @@ function init(root) {
     if (fdErrors.length) kids.push(el('p', { className: 'bc-muted' }, t('fd.problems', { n: fdErrors.length })),
       el('ul', { className: 'bc-4d-errors', 'data-4d-errors': '' }, fdErrors.slice(0, 20).map((e) => el('li', {}, t('fd.err.' + e.message, { line: e.line, task: e.task ?? '', field: e.field ?? '', value: e.value ?? '' })))));
     if (fdTasks && fdTasks.length) {
-      const sp = span(fdTasks), st = statusAt(fdTasks, fdDay);
+      const view = fdView(), groups = groupsOf(fdTasks);
+      const sp = span(view) || span(fdTasks), st = statusAt(view, fdDay);
       const n = { built: 0, progress: 0, waiting: 0 };
       for (const v of st.values()) n[v]++;
       const slider = el('input', { type: 'range', min: String(sp.first - 1), max: String(sp.last + 1), step: '1', value: String(fdDay), 'aria-label': t('fd.date'), 'data-4d-day': '' });
       slider.addEventListener('input', () => { fdDay = Number(slider.value); fdApply(); });
       const pal = CATEGORICAL[theme()];
       const untasked = index().ids.length - st.size;
+      if (groups.length) {   // 0.6 WL.6: stages and work packages
+        const sel = el('select', { className: 'select-cc bc-4d-group', 'data-4d-group': '', 'aria-label': t('fd.group') },
+          el('option', { value: '' }, t('fd.group.all', { n: fdTasks.length })),
+          groups.map((g) => el('option', { value: g.key, selected: g.key === fdGroup }, t(g.kind === 'stage' ? 'fd.group.stage' : (g.stage ? 'fd.group.package.in' : 'fd.group.package'), { name: g.name, stage: g.stage, n: g.tasks }))));
+        sel.addEventListener('change', () => fdSetGroup(sel.value));
+        const gs = groupState(view, fdDay);
+        kids.push(el('div', { className: 'bc-find-row' }, el('label', { className: 'bc-4d-grouplabel' }, el('span', {}, t('fd.group')), sel)),
+          fdGroup ? el('div', { className: 'bc-find-row' },
+            el('span', { className: 'bc-muted', 'data-4d-group-state': '' }, t('fd.group.state', { ...gs })),
+            el('button', { type: 'button', className: 'bc-linkbtn', 'data-4d-group-pick': '', onClick: () => { const k = groupKeys(view); if (k.length) pickKeys(k); } }, t('fd.group.pick'))) : null);
+      }
       kids.push(
         el('div', { className: 'bc-4d-day' }, el('span', { className: 'bc-4d-date', 'data-4d-date': '' }, dayText(fdDay)), slider),
         el('div', { className: 'bc-find-row' },
@@ -873,7 +957,7 @@ function init(root) {
           el('li', { 'data-4d-n': 'progress' }, el('span', { className: 'bc-sw', style: 'background:' + pal[2], 'aria-hidden': 'true' }), el('span', {}, t('fd.progress')), el('span', { className: 'n' }, String(n.progress))),
           el('li', { 'data-4d-n': 'waiting' }, el('span', { className: 'bc-sw is-ghost', 'aria-hidden': 'true' }), el('span', {}, t('fd.waiting')), el('span', { className: 'n' }, String(n.waiting)))),
         el('p', { className: 'bc-muted' }, t('fd.untasked', { n: untasked })),
-        el('ul', { className: 'bc-4d-tasks', 'data-4d-tasks': '' }, fdTasks.map((tk) => el('li', { className: fdDay >= tk.start && fdDay <= tk.finish ? 'is-now' : '' },
+        el('ul', { className: 'bc-4d-tasks', 'data-4d-tasks': '' }, view.map((tk) => el('li', { className: fdDay >= tk.start && fdDay <= tk.finish ? 'is-now' : '' },
           el('button', { type: 'button', className: 'bc-linkbtn', 'data-4d-task': '', title: tk.name, onClick: () => { if (tk.keys.length) pickKeys(tk.keys); } }, tk.name),
           el('span', { className: 'n' }, t('fd.task.count', { n: tk.keys.length })),
           el('span', { className: 'when' }, t('fd.task.when', { start: dayText(tk.start), finish: dayText(tk.finish) }))))));
@@ -887,6 +971,7 @@ function init(root) {
     const m = matchTasks(index(), p.tasks);
     fdErrors = [...p.errors, ...m.flatMap((tk) => tk.unmatched.map((r) => ({ line: r.line, message: r.unknownField ? 'nofield' : 'nomatch', field: r.field, value: r.value, task: tk.name })))].sort((a, b) => a.line - b.line);
     fdTasks = m;
+    fdGroup = '';
     fdFile = file.name;
     if (!m.length) { fdOn = false; renderFd(); status(t('fd.none'), true); return; }
     fdDay = span(m).first;
@@ -899,9 +984,10 @@ function init(root) {
   /** Paint the chosen day: in progress ochre, not started see-through, the rest as it is. */
   function fdApply() {
     if (!fdOn || !fdTasks || !viewer) return;
-    const st = statusAt(fdTasks, fdDay), pal = CATEGORICAL[theme()];
+    const view = fdView(), st = statusAt(view, fdDay), pal = CATEGORICAL[theme()];
+    const inG = fdGroup ? new Set(groupKeys(view)) : null;   // a group plays as one: what is outside it goes see-through
     const colors = new Map(), solid = [];
-    for (const k of index().keys) { const s2 = st.get(k); if (s2 === 'progress') colors.set(k, pal[2]); if (s2 !== 'waiting') solid.push(k); }
+    for (const k of index().keys) { const s2 = st.get(k); if (s2 === 'progress') colors.set(k, pal[2]); if (s2 !== 'waiting' && (!inG || inG.has(k))) solid.push(k); }
     viewer.setColors(colors.size ? colors : null);
     if (solid.length === index().keys.length) viewer.vis.showAll(); else viewer.vis.isolate(solid, { ghost: true });
     viewer.applyVisibility();
@@ -910,11 +996,11 @@ function init(root) {
     renderFd();
     const n = { built: 0, progress: 0, waiting: 0 };
     for (const v of st.values()) n[v]++;
-    if (!fdPlay) status(t('fd.status', { date: dayText(fdDay), ...n }));
+    if (!fdPlay) status(fdGroup ? t('fd.status.group', { group: fdGroupName(), date: dayText(fdDay), ...n }) : t('fd.status', { date: dayText(fdDay), ...n }));
   }
   function fdToggle() {
     if (fdPlay) { clearInterval(fdPlay); fdPlay = 0; renderFd(); return; }
-    const sp = span(fdTasks);
+    const sp = span(fdView()) || span(fdTasks);
     if (fdDay > sp.last) fdDay = sp.first - 1;
     fdPlay = setInterval(() => {
       if (!fdOn || fdDay > sp.last) { clearInterval(fdPlay); fdPlay = 0; fdApply(); return; }
@@ -927,7 +1013,7 @@ function init(root) {
   function fdClear(quiet = false) {
     if (fdPlay) { clearInterval(fdPlay); fdPlay = 0; }
     const was = fdOn;
-    fdOn = false; fdTasks = null; fdErrors = []; fdDay = null;
+    fdOn = false; fdTasks = null; fdErrors = []; fdDay = null; fdGroup = '';
     if (was && viewer) { viewer.setColors(null); viewer.vis.showAll(); viewer.applyVisibility(); treeView.sync(); syncVis(); }
     renderFd();
     if (!quiet) status(t('fd.cleared'));
@@ -941,7 +1027,7 @@ function init(root) {
   ui.fdInput?.addEventListener('change', () => { const f = ui.fdInput.files[0]; ui.fdInput.value = ''; if (f) fdOpen(f); });
   ui.fdDetails?.addEventListener('toggle', () => { if (ui.fdDetails.open) renderFd(); });
   new MutationObserver(() => { if (fdOn) fdApply(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-space'] });
-  window.bimcraftFourD = { open: (name, text) => fdOpen(new File([text], name, { type: 'text/csv' })), day: (d) => { fdDay = d; fdApply(); }, state: () => fdOn && { day: fdDay, tasks: fdTasks.length, status: Object.fromEntries(statusAt(fdTasks, fdDay)) } };   // for tests
+  window.bimcraftFourD = { open: (name, text) => fdOpen(new File([text], name, { type: 'text/csv' })), day: (d) => { fdDay = d; fdApply(); }, group: (k) => fdSetGroup(k), groups: () => groupsOf(fdTasks || []), state: () => fdOn && { day: fdDay, tasks: fdTasks.length, group: fdGroup, shown: fdView().length, status: Object.fromEntries(statusAt(fdView(), fdDay)), solid: viewer.vis.isolated ? viewer.vis.isolated.size : null } };   // for tests
 
   // ---- Quantity totals (0.4 B20) ----
   let qtoScope = 'all', qtoGroups = ['cls'], qtoSums = null, qtoView = 'totals';   // qtoSums null = the quantity sets' fields, first time
@@ -1566,6 +1652,7 @@ function init(root) {
   // ---- Properties ----
   function clearProps() {
     selInfo = null;
+    bundleUi?.picked(null);
     ui.props.replaceChildren(el('p', { className: 'bc-muted' }, t('props.hint')));
     syncEdit();
   }
@@ -1588,6 +1675,7 @@ function init(root) {
     try { p = await ifc.properties(id); } catch (e) { console.error(e); return; }
     if (token !== pickToken) return;   // a newer pick won
     selInfo = { id, p, placement: p.sets.some((x) => x.name === PSETS.placement) };
+    bundleUi?.picked(p);   // 0.6 DF.12 (b): the bundle's property groups
     const label = p.cls.replace(/^Ifc/, '') + ' ' + (p.name || '#' + p.id);
     const edited = new Set((editor?.changes || []).filter((c) => c.id === id).map((c) => c.kind === 'attr' ? 'a|' + c.attr : 'p|' + c.setName + '|' + c.propName));
 
@@ -1669,16 +1757,16 @@ function init(root) {
   const isSpaceKey = (k) => { const e = entryOf(k); return !!e && e.model.classOf.get(k - e.model.keyBase) === 'IfcSpace'; };
   const entryOf = (key) => models.find((m) => m.mi === Math.floor(key / KEY_SPAN)) || null;
   /** A model's placement: its own coordination undone, the first model's applied, then the offset (IFC X, Y, Z → viewer). */
-  const placementOf = (m) => placementMatrix(refC, [...m.ifc.api.GetCoordinationMatrix(m.model.modelID)], m.offset);   // ifc-util.js
+  const placementOf = (m) => m.matrix || placementMatrix(refC, [...m.ifc.api.GetCoordinationMatrix(m.model.modelID)], m.offset);   // ifc-util.js; a link (0.6 DF.21) carries its whole `matrix`
   /** Active model's viewer coordinates ↔ the scene (the placement matrix). */
   const toWorld = (v) => { const M = viewer.modelMatrix(cur().mi); return [M[0] * v[0] + M[4] * v[1] + M[8] * v[2] + M[12], M[1] * v[0] + M[5] * v[1] + M[9] * v[2] + M[13], M[2] * v[0] + M[6] * v[1] + M[10] * v[2] + M[14]]; };
   const toLocal = (v) => { const M = inv4(viewer.modelMatrix(cur().mi)); return [M[0] * v[0] + M[4] * v[1] + M[8] * v[2] + M[12], M[1] * v[0] + M[5] * v[1] + M[9] * v[2] + M[13], M[2] * v[0] + M[6] * v[1] + M[10] * v[2] + M[14]]; };
 
   /** Open another IFC into the scene, beside what is open. */
-  async function addModel(file) {
-    if (!models.length) { await open(file, null); return; }
+  async function addModel(file, { link = null } = {}) {   // link (0.6 DF.21): { id, … } — shown by reference, never edited
+    if (!models.length) { await open(file, null); return null; }
     const free = [...Array(63).keys()].map((i) => i + 1).find((i) => !models.some((m) => m.mi === i));
-    if (!free) { status(t('fed.full'), true); return; }
+    if (!free) { status(t('fed.full'), true); return null; }
     status(t('fed.reading', { file: file.name }));
     await frame();
     const t0 = performance.now();
@@ -1686,17 +1774,18 @@ function init(root) {
     let m;
     try { m = await im.load(new Uint8Array(await file.arrayBuffer()), (done, total) => status(t('fed.building', { file: file.name, done, total })), { keyBase: keyOf(free, 0) }); }
     catch (e) { im.close(); throw new Error(t('fed.unreadable', { file: file.name })); }
-    const ent = { mi: free, ifc: im, model: m, editor: new IfcEditor(WebIFC, im), name: file.name, size: file.size, file, tag: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10), offset: [0, 0, 0], visible: true };
+    const ent = { mi: free, ifc: im, model: m, editor: new IfcEditor(WebIFC, im), name: file.name, size: file.size, file, tag: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10), offset: [0, 0, 0], visible: true, link, matrix: null };
     models.push(ent);
     viewer.setModelMatrix(free, placementOf(ent));
     viewer.setModel(m, { add: true });
     if (cut) applySection();
     renderModels();
-    status(t('fed.added', { file: file.name, n: m.elements, s: ((performance.now() - t0) / 1000).toFixed(1) }));
+    status(t(link ? 'link.loaded' : 'fed.added', { file: file.name, n: m.elements, s: ((performance.now() - t0) / 1000).toFixed(1) }));
+    return ent;
   }
   /** Make another model the one edits, the tree, storeys and Color by work on. */
   function setActive(ent) {
-    if (!ent || ent === cur()) return;
+    if (!ent || ent === cur() || ent.link) return;   // a link (0.6 DF.21) is never the model you edit
     stopPlacing();
     if (colorField) colorOff();
     active = ent;
@@ -1734,7 +1823,7 @@ function init(root) {
     ui.modelsSec.hidden = mode !== 'ifc' || !models.length;
     queueMicrotask(() => { if (cmpRes && !(cmpPair || []).every((m) => models.includes(m))) clearCompare(true); else renderCompare(); });
     ui.modelList.replaceChildren(...models.map((m) => {
-      const radio = el('input', { type: 'radio', name: 'bc-active-model', checked: m === cur(), 'aria-label': t('fed.edit.this', { file: m.name }), 'data-model-active': String(m.mi) });
+      const radio = el('input', { type: 'radio', name: 'bc-active-model', checked: m === cur(), disabled: !!m.link, title: m.link ? t('link.noedit') : null, 'aria-label': t('fed.edit.this', { file: m.name }), 'data-model-active': String(m.mi) });
       radio.addEventListener('change', () => { if (radio.checked) setActive(m); });
       const vis = el('input', { type: 'checkbox', checked: m.visible, 'aria-label': t('fed.show', { file: m.name }), 'data-model-visible': String(m.mi) });
       vis.addEventListener('change', () => { m.visible = vis.checked; viewer.setModelVisible(m.mi, m.visible); afterPick(); });
@@ -1756,6 +1845,7 @@ function init(root) {
       return el('li', { 'data-model': String(m.mi), className: m === cur() ? 'is-active' : '' },
         el('div', { className: 'bc-model-row' }, radio, vis,
           el('span', { className: 'bc-model-name', title: m.name }, m.name),
+          m.link ? el('span', { className: 'bc-sub', 'data-model-link': m.link.id }, t('link.tag')) : null,
           el('span', { className: 'n' }, num(m.model.elements)),
           models.length > 1 ? el('button', { type: 'button', className: 'bc-forget', title: t('fed.remove', { file: m.name }), 'aria-label': t('fed.remove', { file: m.name }), 'data-model-remove': String(m.mi), onClick: () => guard(() => removeModel(m)) }, el('i', { className: 'bi bi-x', 'aria-hidden': 'true' })) : null),
         off);
@@ -1958,8 +2048,9 @@ function init(root) {
     ui.changes.hidden = !editor;
     const VERB = { place: t('changes.verb.place'), swap: t('changes.verb.swap'), update: t('changes.verb.update'), remove: t('edit.verb.removed'), paste: t('edit.verb.pasted') };
     const ATTR = { Name: t('prop.name'), ObjectType: t('prop.objtype'), Tag: t('prop.tag'), Description: t('prop.desc') };
-    ui.changeList.replaceChildren(...list.slice().reverse().slice(0, 50).map((c) => (VERB[c.kind] || c.verb)
-      ? el('li', {}, el('span', { className: 'bc-change-what' }, t('changes.line', { verb: VERB[c.kind] || c.verb, what: c.label || '#' + c.id })), c.old ? el('span', { className: 'bc-sub' }, t('changes.was', { old: c.old })) : null)
+    ui.changeList.replaceChildren(...list.slice().reverse().slice(0, 50).map((c) => (VERB[c.kind] || c.verb || c.kind === 'model')
+      // a model change with no verb (0.6 DF.25: an assistant's "Assistant: add 4 walls") reads as its label
+      ? el('li', {}, el('span', { className: 'bc-change-what' }, (VERB[c.kind] || c.verb) ? t('changes.line', { verb: VERB[c.kind] || c.verb, what: c.label || '#' + c.id }) : c.label || '#' + c.id), c.old ? el('span', { className: 'bc-sub' }, t('changes.was', { old: c.old })) : null)
       : el('li', {},
         el('span', { className: 'bc-change-what' }, t(c.fromType ? 'changes.prop.type' : 'changes.prop', { what: c.label || '#' + c.id, prop: c.kind === 'attr' ? ATTR[c.attr] || c.attr : c.propName })),
         el('span', { className: 'bc-sub' }, t('changes.fromto', { from: fmtVal(c.old), to: fmtVal(c.value) })))));
@@ -1970,6 +2061,10 @@ function init(root) {
     ui.save.lastChild.textContent = ' ' + (list.length ? t('save.ifc.count', { n: list.length }) : t('save.ifc'));
     syncEdit();
     addons?.changed('model');   // 0.5 AO.7: after an edit, an undo, a rebuild or a new model
+    analysisUi?.changed();      // 0.6 LC.4: analysis results go stale, the frame is read again
+    pointsUi?.changed();        // 0.6 LC.22: field points made before the change say so
+    assetsUi?.changed();        // 0.6 LC.12: assets read again
+    daylightUi?.changed();      // 0.6 LC.20: results made before the change say so
     renderAddonExports();
   }
   const fmtVal = (v) => v === null || v === undefined || v === '' ? t('prop.empty') : v === true ? t('prop.yes') : v === false ? t('prop.no') : typeof v === 'string' ? '"' + v + '"' : String(v);   // i18n-ignore: quotes round a text value
@@ -2585,6 +2680,24 @@ function init(root) {
     if (turnOf?.model !== model) { let deg = 0; try { deg = editor.placer().planRotation(null); } catch (e) { deg = 0; } turnOf = { model, deg: deg > 45 ? deg - 90 : deg }; }
     return turnOf.deg;
   }
+  // 0.6 DC.57 (Discord: "the model imports at an angle", "section cuts don't line up"): with Settings › BimCraft › A building
+  // turned in its site = Square to the building (the default), such a building is seen square — the view presets, the view
+  // cube's faces and every new section follow its walls; the cube's compass keeps the model's north. 'placed' = the
+  // model's axes, as in 0.5 (the section bar's "Square to the building" still turns a cut either way).
+  const viewTurnRad = () => {
+    if (settings.turned !== 'square' || mode !== 'ifc') return 0;
+    const d = buildingTurn();
+    return Math.abs(d) < 0.5 ? 0 : d * Math.PI / 180;
+  };
+  function applyViewTurn(look = false) {
+    if (!viewer) return;
+    const a = viewTurnRad(), was = viewer.viewTurn;
+    viewer.setViewTurn(a);
+    cube3d?.setNorth(-a);
+    if (look && a !== was) viewer.view(settings.view);
+  }
+  /** A new cut starts in the view frame (square to a turned building when the setting says so). */
+  const startCutTurn = () => { if (!secOnDwg()) viewer?.setSectionTurn(viewTurnRad()); };
   function syncTurn() {
     if (!turnBtn) return;
     const deg = secOnDwg() ? 0 : buildingTurn();
@@ -2628,14 +2741,37 @@ function init(root) {
     if (secOnDwg()) ui3.bar.querySelector('[data-v3="section"]')?.setAttribute('aria-pressed', 'true');
     else { setPressed('section', true); if (selected !== null && selected !== undefined) viewer.select([...viewer.selection]); }
   }
-  /** The bar sits just under the toolbar of the view it cuts, however many rows it wraps to. */
+  /** The bar sits at the top of the 3D view it cuts (the right half in Split, the lower half when Split is stacked), under
+   *  the view's toolbar and under the plan's Draw bar wherever they cover that view, however many rows each wraps to
+   *  (0.6 DC.101: in Split and Plan only it lay under the Draw bar). In px, placed again whenever any of them changes. No
+   *  taller than the room left in the view (it scrolls), so a short pane — Split stacked at a big interface size — never
+   *  pushes the box's controls off the window. */
   function placeSectionBar() {
-    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const bar = secOnDwg() ? ui3.bar : ui.toolbar;
-    const st = usec.bar.parentElement.getBoundingClientRect(), tb = bar.getBoundingClientRect();
-    if (tb.height) usec.bar.style.setProperty('--bc-sec-top', ((tb.bottom - st.top) / rem + 0.4).toFixed(3) + 'rem');
+    const pane = (secOnDwg() ? ui3.wrap : ui.canvasWrap)?.getBoundingClientRect();
+    if (!pane?.width) return;
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16, gap = 0.4 * rem, side = 0.75 * rem;
+    const st = usec.bar.parentElement.getBoundingClientRect();
+    let top = pane.top + gap;
+    for (const o of [secOnDwg() ? ui3.bar : ui.toolbar, root.querySelector('[data-plan-wrap]:not([hidden]) [data-modelbar]')]) {
+      if (!o || o.hidden || !o.offsetParent) continue;
+      const r = o.getBoundingClientRect();
+      if (r.height && r.right > pane.left + 1 && r.left < pane.right - 1 && r.bottom > pane.top) top = Math.max(top, r.bottom + gap);
+    }
+    usec.bar.style.setProperty('--bc-sec-top', (top - st.top).toFixed(1) + 'px');
+    usec.bar.style.setProperty('--bc-sec-left', (pane.left - st.left + side).toFixed(1) + 'px');
+    usec.bar.style.setProperty('--bc-sec-maxw', Math.max(10 * rem, pane.width - 2 * side).toFixed(1) + 'px');
+    usec.bar.style.setProperty('--bc-sec-maxh', Math.max(6 * rem, Math.min(pane.bottom, st.bottom) - top - gap).toFixed(1) + 'px');
   }
-  new ResizeObserver(() => { if (!usec.bar.hidden) placeSectionBar(); }).observe(ui.toolbar);
+  {
+    const again = () => { if (!usec.bar.hidden) placeSectionBar(); };
+    const ro = new ResizeObserver(again);
+    for (const o of [ui.toolbar, usec.bar.parentElement, root.querySelector('[data-modelbar]')]) if (o) ro.observe(o);
+    // the layout (Split / Plan only / stacked) and the plan showing or not
+    const mo = new MutationObserver(again);
+    mo.observe(usec.bar.parentElement, { attributes: true, attributeFilter: ['class'] });
+    const pw = root.querySelector('[data-plan-wrap]');
+    if (pw) mo.observe(pw, { attributes: true, attributeFilter: ['hidden'] });
+  }
   function sectionOff() {
     cut = null;
     viewer?.setSectionTurn?.(0);   // the next section starts on the model's axes again
@@ -2646,7 +2782,7 @@ function init(root) {
     setPressed('section', false);
     ui3.bar?.querySelector('[data-v3="section"]')?.setAttribute('aria-pressed', 'false');
   }
-  function toggleSection() { if (cut) sectionOff(); else { cut = { axis: 'top', offset: null, flip: false }; applySection(); } }
+  function toggleSection() { if (cut) sectionOff(); else { cut = { axis: 'top', offset: null, flip: false }; startCutTurn(); applySection(); } }
   // ---- Section box (0.4 B4; viewer3d.js setSectionBox): from / to per IFC axis, metres from the model's minimum corner ----
   // Free-form volumes (0.5 WL.1; section-volume.js): `cut.cells` = boxes kept as a union, each with tilted faces and extra
   // planes; `cut.cell` = the one the sliders edit; `cut.box` is that cell's box (setting it to another object or null —
@@ -2837,7 +2973,7 @@ function init(root) {
     applySection();
   });
   usec.offset.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); usec.offset.dispatchEvent(new Event('change')); } });
-  window.bimcraftSection = { get: () => cut, set: (s) => { cut = s ? { axis: 'top', offset: null, flip: false, ...s } : null; if (cut) applySection(); else sectionOff(); } };   // for tests
+  window.bimcraftSection = { get: () => cut, set: (s) => { const was = cut; cut = s ? { axis: 'top', offset: null, flip: false, ...s } : null; if (cut) { if (!was) startCutTurn(); applySection(); } else sectionOff(); } };   // for tests
 
   // ---- Walk (0.4 B18; viewer3d.js startWalk) ----
   const uw = { bar: $('[data-walkbar]'), out: $('[data-walk-out]'), height: $('[data-walk-height]'), gravity: $('[data-walk-gravity]'), collide: $('[data-walk-collide]') };
@@ -3031,6 +3167,7 @@ function init(root) {
   // render-bim.js, both imported on first use. The settings and looks are this browser's (localStorage "bimcraft.render").
   async function openRender() {
     if (!viewer || mode !== 'ifc' || viewer.box.isEmpty()) { status(t('ui.render.none'), true); return; }
+    modelUi?.need3d();   // 0.6 BIM-F5: the picture is of the 3D view
     const [{ openRenderDialog }, R, PB] = await Promise.all([import('./render/render-ui.js'), import('./render-bim.js'), import('./paint-bim.js')]);
     // painted elements (RC.7): each model's CadCraft_Render sets, read when a render starts
     const lampModels = () => models.filter((m) => m.visible !== false).map((m) => ({ mi: m.mi, api: m.ifc.api, mid: m.model.modelID, keyBase: m.model.keyBase || 0 }));
@@ -3059,6 +3196,85 @@ function init(root) {
       onClose: () => viewer.render(),
     });
   }
+  // ---- Model for rendering programs (0.6 DC.22, session bim-extra_PART_2): what the 3D view shows as glTF (.glb) — the render
+  // scene (render-bim.js: painted materials, the colours' chosen looks, the lamps that are on) written by glb-bim.js ----
+  async function exportGlb() {
+    if (!viewer || mode !== 'ifc' || viewer.box.isEmpty()) { status(t('glb.none'), true); return; }
+    modelUi?.need3d();
+    status(t('glb.making'));
+    const [R, PB, G, L] = await Promise.all([import('./render-bim.js'), import('./paint-bim.js'), import('./glb-bim.js'), import('./render/looks.js')]);
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('bimcraft.render') || 'null'); } catch { saved = null; }
+    const settings = L.cleanSettings(saved);
+    const paints = new Map(models.map((m) => [m.mi, { paint: PB.readPaint(m.ifc.api, m.model.modelID), api: m.ifc.api, mid: m.model.modelID, keyBase: m.model.keyBase || 0, C: [...m.ifc.api.GetCoordinationMatrix(m.model.modelID)] }]));
+    const lampModels = models.filter((m) => m.visible !== false).map((m) => ({ mi: m.mi, api: m.ifc.api, mid: m.model.modelID, keyBase: m.model.keyBase || 0 }));
+    const ent = cur(), site = ent ? R.bimSite(ent.ifc.api, ent.model.modelID) : null;
+    const scene = R.bimScene(viewer, settings, null, paints);
+    const storeyName = (mi, s) => { const e = models.find((m) => m.mi === mi); const st = e?.model?.storeys?.find?.((x) => x.id === s); return st ? String(st.name) : ''; };
+    try {
+      const { bytes, stats } = await G.sceneGlb(scene, {
+        settings, lamps: R.bimLamps(viewer, lampModels), site,
+        names: { storey: storeyName, material: (id) => t('render.mat.' + id), colour: (hex, look) => t('glb.colour', { color: hex, look: t('render.look.' + look) }) },
+      });
+      fileHost.download(new Blob([bytes], { type: 'model/gltf-binary' }), (ifcName || 'model').replace(/\.ifc$/i, '') + '.glb', 'model/gltf-binary');
+      status(t('glb.done', { tris: stats.triangles.toLocaleString(), mats: stats.materials, lamps: stats.lights }));
+    } catch (err) { status(t('glb.failed', { why: String(err.message || err) }), true); }
+    finally { scene.dispose(); }
+  }
+  // ---- Review in VR (0.6 LC.19, session lc-model): the shared xr/ (a copy of ModelCraft's, tools/xr/sync.mjs) on the same scene
+  // as Render (render-bim.js). Issues placed in the headset join the Issues tab as BCF topics (the model's own coordinates). ----
+  const xrBtn = root.querySelector('[data-xr-enter]');
+  let xrOn = null, xrWhy = 'none';
+  (navigator.xr ? navigator.xr.isSessionSupported('immersive-vr').catch(() => false) : Promise.resolve(false)).then((yes) => {
+    xrWhy = yes ? null : navigator.xr ? 'unsupported' : window.isSecureContext === false ? 'insecure' : 'none';
+    xrBtn?.setAttribute('aria-disabled', String(!yes));
+    if (xrBtn) xrBtn.title = yes ? t('ui.vr.title') : t('xr.why.' + xrWhy);
+  });
+  const xrLayers = new WeakMap();
+  let xrNext = 1;
+  /** Changes when a model is loaded again (an edit, someone's in a live session): the headset then rebuilds its copy. */
+  const xrVersion = () => { if (!viewer) return -1; let v = 0; for (const L of viewer.layers.values()) { if (!xrLayers.has(L)) xrLayers.set(L, xrNext++); v = v * 31 + xrLayers.get(L); } return v; };
+  async function openVr() {
+    if (xrOn) return;
+    if (xrWhy) { status(t('xr.why.' + xrWhy), true); return; }
+    if (!viewer || mode !== 'ifc' || viewer.box.isEmpty()) { status(t('ui.render.none'), true); return; }
+    modelUi?.need3d();
+    const [X, R, PB, L] = await Promise.all([import('./xr/xr-session.js'), import('./render-bim.js'), import('./paint-bim.js'), import('./render/looks.js')]);
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('bimcraft.render') || 'null'); } catch { saved = null; }
+    const settings = L.cleanSettings(saved);
+    const ent = cur(), site = ent ? R.bimSite(ent.ifc.api, ent.model.modelID) : null;
+    const paints = () => new Map(models.map((m) => [m.mi, { paint: PB.readPaint(m.ifc.api, m.model.modelID), api: m.ifc.api, mid: m.model.modelID, keyBase: m.model.keyBase || 0, C: [...m.ifc.api.GetCoordinationMatrix(m.model.modelID)] }]));
+    const live = globalThis.bimcraftLive?.live;
+    const cam = viewer.camera, tgt = viewer.controls.target;
+    try {
+      xrOn = await X.startXR({
+        scene: () => R.bimScene(viewer, settings, R.bimSun(site, settings, ent ? viewer.modelMatrix(ent.mi) : null), paints()),
+        version: xrVersion,
+        appCamera: () => ({ eye: cam.position.toArray(), target: tgt.toArray() }),
+        format: (m) => fmtLength(m),
+        settings,
+        addIssue: (x) => {   // the camera and point arrive in the viewer's space: to the model's own (BCF) coordinates
+          const C = frameC(), now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+          const vp = { guid: newGuid(), camera: { kind: 'perspective', viewPoint: toIfcPoint(C, x.camera.viewPoint), direction: toIfcDir(C, x.camera.direction), up: toIfcDir(C, x.camera.up), fov: x.camera.fov },
+            selection: [], visibility: { defaultVisible: true, exceptions: [] }, clipping: [], snapshot: x.snapshot };
+          issues.push({ guid: newGuid(), title: x.title, status: 'Open', type: 'Issue', author: authorOf() || 'BimCraft', created: now, description: x.description, comments: [], viewpoints: [vp] });   // i18n-ignore: BCF values
+          renderIssues();
+        },
+        presence: live ? { send: (p) => live.setPresence(p), peers: () => live.peers(), nameOf: (c) => live.nameOf(c) } : null,
+        onExit: (pose) => {
+          xrOn = null;
+          if (pose) { cam.position.set(...pose.eye); tgt.set(...pose.target); viewer.controls.update(); viewer.render(); }
+          status(t('xr.ended'), false, true);
+        },
+      });
+      window.bimcraftXr = xrOn;   // the running session (tests read its state())
+      status(t('xr.started'));
+    } catch (e) {
+      xrOn = null;
+      status(t('xr.failed', { error: String(e?.message || e) }), true);
+    }
+  }
   // ---- Paint materials (0.5 RC.7, session render): paint-ui-bim.js + paint-bim.js + the library in render/, imported on
   // first use. Painting writes the active model (one undo step each), then it reloads so the colour shows. ----
   let paintUi = null;
@@ -3080,6 +3296,7 @@ function init(root) {
       });
     }
     if (paintUi.isOpen()) { paintUi.close(); return; }
+    modelUi?.need3d();   // 0.6 BIM-F5: the palette sits over the 3D view, so the plan-only layout shows it beside the plan
     paintUi.open();
     setPressed('paint', true, 'paint-open');
   }
@@ -3101,6 +3318,7 @@ function init(root) {
       });
     }
     if (viewsUi.isOpen()) { viewsUi.close(); return; }
+    modelUi?.need3d();   // 0.6 BIM-F5: views are cameras of the 3D view
     viewsUi.open();
     setPressed('views', true, 'saved-views');
   }
@@ -3108,16 +3326,19 @@ function init(root) {
   // A cloud joins the 3D view beside the model (or on its own): it is not a document, so it never asks about unsaved
   // edits and a new model keeps it. Measure snaps to its points; Location reads a cloud point through the cloud's own system.
   ui.cloudInput = $('[data-cloud-input]');
+  ui.cloudInput.accept = CLOUD_ACCEPT;   // 0.6 PF: every cloud format pointcloud.js reads
   ui.cloudInput.addEventListener('change', () => { const f = ui.cloudInput.files[0]; ui.cloudInput.value = ''; if (f) guard(() => openCloud(f)); });
   async function openCloud(file) {
     if (!pc) {
       const { installClouds } = await import('./cloud-ui.js');
       pc = installClouds({ root, viewer: () => viewer, ensureViewer: () => { const away = ui.toolbar.hidden || ui.canvasWrap.hidden; const v = ensureViewer(); if (away) showStage('ifc'); return v; },
-        models: () => models.filter((m) => m.visible !== false), status, frame, guard, sendHandoff, cloudShown: cloudPressed });
+        models: () => models.filter((m) => m.visible !== false), status, frame, guard, sendHandoff, cloudShown: cloudPressed,
+        cloudChanged: () => scanUi?.changed() });   // 0.6 DF.22: the plan's slice is cut again (cloud-ui.js calls it when the cloud is placed, adjusted or closed)
       window.bimcraftCloud = pc;   // for tests and the console
     }
     await pc.open(file);
     viewer.cloudSnap = (x, y) => pc.snap(x, y);
+    scanUi?.changed();   // 0.6 DF.22
   }
   // ---- Map layers on the ground (0.5 SG.3; maps-bim.js + the shared maplayers.js, imported on first use) ----
   let bimMapsLoading = null;
@@ -3308,6 +3529,8 @@ function init(root) {
     if (b.hasAttribute('data-cloud-open')) { visMenu.open = false; if (pc?.has()) cloudPressed(pc.toggleBar()); else ui.cloudInput.click(); }
     if (b.dataset.toggle === 'walk') { if (walking) walkOff(); else walkOn(); }
     if (b.hasAttribute('data-render-open')) guard(openRender);
+    if (b.hasAttribute('data-xr-enter')) guard(openVr);   // 0.6 LC.19
+    if (b.hasAttribute('data-glb-export')) guard(exportGlb);   // 0.6 DC.22
     if (b.hasAttribute('data-paint-open')) guard(openPaint);
     if (b.hasAttribute('data-saved-views')) guard(openViews);
     if (b.dataset.vis) { visMenu.open = false; visAct(b.dataset.vis); }
@@ -3362,6 +3585,10 @@ function init(root) {
     rPanel.querySelectorAll('[data-rpane]').forEach((p) => { p.hidden = p.dataset.rpane !== name; if (!p.hidden && p.dataset.addon) p.dispatchEvent(new Event('cc-tab-shown')); });
     if (name === 'color') renderColor();   // after the pane shows: renderColor builds a hidden pane only when coloring
     if (name === 'issues') renderIssues();
+    if (name === 'analysis') analysisUi?.render();
+    if (name === 'points') pointsUi?.render();
+    if (name === 'assets') assetsUi?.render();
+    if (name === 'daylight') daylightUi?.render();
   }
   tabs.forEach((t) => {
     t.addEventListener('click', () => showTab(t.dataset.rtab));
@@ -3416,10 +3643,20 @@ function init(root) {
   const pb = {
     name: ui.placebar.querySelector('[data-place-name]'), storey: ui.placebar.querySelector('[data-place-storey]'),
     xy: ui.placebar.querySelector('[data-place-xy]'), at: ui.placebar.querySelector('[data-place-at]'), snap: ui.placebar.querySelector('[data-place-snap]'),
+    mount: ui.placebar.querySelector('[data-place-mount]'),
   };
   const coordMatrix = () => ifc.api.GetCoordinationMatrix(ifc.modelID);
   let storeyElevs = new Map();   // storey id → elevation in model mm (ifc-place.js info())
   const storeyElev = () => storeyElevs.get(Number(pb.storey.value)) ?? 0;
+  /** 0.6 DC.117: how far above its storey an item sits: 0 on the floor; at the ceiling, its top at the underside of the ceiling
+   *  over the point (model-ui.js ceilingZ), else at the level's height (up to the next storey). */
+  function mountZ(item, at) {
+    if (pb.mount?.value !== 'ceiling' || !at) return 0;
+    const st = Number(pb.storey.value), b = localBox(item);
+    let top = modelUi?.ceilingZ?.(st, at.x, at.y) ?? null;
+    if (top === null) { const e = storeyElev(), next = [...storeyElevs.values()].filter((v) => v > e + 1).sort((a, c) => a - c)[0]; top = next !== undefined ? next - e : 2438.4; }
+    return Math.max(0, top - b.z1);
+  }
 
   /** Place an item (from the Library tab), or — with `paste` (a placement clip) — paste a copy where the user clicks. */
   function startPlacing(entry, paste = null) {
@@ -3436,6 +3673,7 @@ function init(root) {
       if (st && st.how !== 'first') pb.storey.value = String(st.id);
     }
     placing = { entry, rot: paste ? paste.rot : 0, snap: false, faces: null, last: null, at: null, sha: entry.meta.sha256, paste };
+    if (pb.mount) pb.mount.value = !paste && modelUi?.kind === 'rcp' ? 'ceiling' : 'floor';   // 0.6 DC.117: a ceiling plan on screen = at the ceiling
     if (settings.snap) {
       placing.faces = editor.placer().wallFaces(Number(pb.storey.value));
       placing.snap = placing.faces.length > 0;
@@ -3519,7 +3757,7 @@ function init(root) {
     syncPlacebar();
   }
   function drawGhost(at) {
-    const b = localBox(placing.entry.item), r = at.rot * Math.PI / 180, c = Math.cos(r), sn = Math.sin(r), z = storeyElev(), C = coordMatrix();
+    const b = localBox(placing.entry.item), r = at.rot * Math.PI / 180, c = Math.cos(r), sn = Math.sin(r), z = storeyElev() + (placing.paste ? 0 : mountZ(placing.entry.item, at)), C = coordMatrix();
     const corner = (lx, ly, lz) => toWorld(toViewer(C, [at.x + lx * c - ly * sn, at.y + lx * sn + ly * c, z + lz]));
     viewer.setGhost([[b.x0, b.y0, b.z0], [b.x1, b.y0, b.z0], [b.x1, b.y1, b.z0], [b.x0, b.y1, b.z0], [b.x0, b.y0, b.z1], [b.x1, b.y0, b.z1], [b.x1, b.y1, b.z1], [b.x0, b.y1, b.z1]].map((q) => corner(...q)));
   }
@@ -3531,7 +3769,7 @@ function init(root) {
     const ask = await askPlacement(entry.item, pl.nextItemNumber());
     if (!ask) return;
     const opts = { storey: Number(pb.storey.value), x: at.x, y: at.y, rot: at.rot, itemNumber: ask.itemNumber, quantity: ask.quantity, notes: ask.notes,
-      library: entry.meta.library, sha256: entry.meta.sha256, sourceFile: entry.meta.sourceFile || '', standInHeight: ask.height };
+      library: entry.meta.library, sha256: entry.meta.sha256, sourceFile: entry.meta.sourceFile || '', standInHeight: ask.height, z: mountZ(entry.item, at) };
     const r = editor.placeItem(entry.item, opts);
     rememberItem(entry);
     await rebuild(r.id);
@@ -3554,7 +3792,11 @@ function init(root) {
 
   /** Rebuild the model from the editor's bytes (the simplest correct way to show new geometry), camera kept. */
   async function rebuild(selectId) {
-    status(t('model.updating'));
+    const updating = t('model.updating');
+    status(updating);
+    try { await rebuildNow(selectId); } finally { if (ui.status.textContent === updating) status(''); }   // 0.6 BIM-F4: not left up after the reload
+  }
+  async function rebuildNow(selectId) {
     modelUi?.rebuilding();
     await frame();
     window.bimcraftLive?.live?.reloading();   // Studio Live: others' edits wait while the model reloads (live.js)
@@ -3584,6 +3826,8 @@ function init(root) {
     if (selectId !== null && selectId !== undefined) { viewer.select(selectId); await showProps(selectId); }
     else { selected = null; clearProps(); }
     modelUi?.rebuilt();
+    coordsUi?.modelChanged();   // 0.6 DF.15: levels and the site may have moved
+    linksUi?.modelChanged();   // 0.6 DF.21: a link added, moved or removed
   }
 
   /** The one prompt per placement: item number (default next free), quantity, notes, and a stand-in height for a 2D-only item. */
@@ -4096,6 +4340,83 @@ function init(root) {
   });
   syncEdit();
 
+  // ---- Project bundles (0.6 DF.12 (b), session bim-interop; bundle-view.js): views, layouts, property groups ----
+  bundleUi = mountBundle({
+    panel: ui.info,
+    status: (text, isError, fade) => status(text, isError, fade),
+    mode: () => mode,
+    openModel: (data, file) => openIfc(data, file, null),
+    openFile: (file) => open(file, null, { keepBundle: true }),
+    download: (name, data, type) => download(name, data, type),
+    viewer: () => viewer,
+    model: () => cur(),
+    afterVis: () => syncVis(),
+  });
+  window.bimcraftBundle = bundleUi;   // tests
+  // 0.6 LC.4 (analysis-bim-ui.js): frame analysis of the open model's beams, columns and braces — settings kept in the IFC
+  analysisUi = mountAnalysisBim({
+    pane: rPanel.querySelector('[data-analysis]'), W: WebIFC,
+    editor: () => (mode === 'ifc' ? editor : null),
+    viewer: () => viewer,
+    selection: () => (viewer ? [...viewer.selection] : []),
+    select: (keys) => { if (!viewer) return; viewer.select(keys.length ? keys : null); afterPick(); if (viewer.selection.size > 1) showMany(); else if (viewer.selection.size) showProps(viewer.selected); else clearProps(); },
+    status: (text, isError) => status(text, isError),
+    download: (name, data, type) => download(name, data, type),
+    fileName: () => ifcName,
+    afterEdit: () => afterEdit(),
+    place: (p) => toWorld(toViewer(coordMatrix(), p)),
+    shown: () => !rPanel.querySelector('[data-rpane="analysis"]')?.hidden,
+  });
+  window.bimcraftAnalysis = analysisUi;   // tests
+  // 0.6 LC.22 (layout-bim-ui.js): field points from the model, written for a total station; as-built points compared
+  pointsUi = mountFieldPoints({
+    pane: rPanel.querySelector('[data-points]'), W: WebIFC,
+    editor: () => (mode === 'ifc' ? editor : null),
+    viewer: () => viewer,
+    selection: () => (viewer ? [...viewer.selection] : []),
+    status: (text, isError) => status(text, isError),
+    download: (name, data, type) => download(name, data, type),
+    fileName: () => ifcName,
+    place: (p) => toWorld(toViewer(coordMatrix(), p)),
+    shown: () => !rPanel.querySelector('[data-rpane="points"]')?.hidden,
+  });
+  window.bimcraftPoints = pointsUi;   // tests
+  // 0.6 LC.12 (assets-bim-ui.js): the model's assets, their data and a maintenance record, kept in the IFC
+  assetsUi = mountAssets({
+    pane: rPanel.querySelector('[data-assets]'), W: WebIFC,
+    editor: () => (mode === 'ifc' ? editor : null),
+    viewer: () => viewer,
+    selection: () => (viewer ? [...viewer.selection] : []),
+    select: (keys) => { if (!viewer) return; viewer.select(keys.length ? keys : null); afterPick(); if (viewer.selection.size) showProps(viewer.selected); },
+    status: (text, isError) => status(text, isError),
+    download: (name, data, type) => download(name, data, type),
+    fileName: () => ifcName,
+    afterEdit: () => afterEdit(),
+    shown: () => !rPanel.querySelector('[data-rpane="assets"]')?.hidden,
+    storeyName: (id) => String((cur()?.model?.storeys || []).find((s) => s.id === id)?.name || ''),
+    today: () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); },
+  });
+  window.bimcraftAssets = assetsUi;   // tests
+  // 0.6 LC.20 (daylight-bim-ui.js): each room's average daylight factor, the sky angle measured in the model
+  daylightUi = mountDaylight({
+    pane: rPanel.querySelector('[data-daylight]'), W: WebIFC,
+    editor: () => (mode === 'ifc' ? editor : null),
+    select: (keys) => { if (!viewer) return; viewer.select(keys.length ? keys : null); afterPick(); },
+    status: (text, isError) => status(text, isError),
+    download: (name, data, type) => download(name, data, type),
+    fileName: () => ifcName,
+    shown: () => !rPanel.querySelector('[data-rpane="daylight"]')?.hidden,
+    storeyName: (id) => String((cur()?.model?.storeys || []).find((s) => s.id === id)?.name || ''),
+  });
+  window.bimcraftDaylight = daylightUi;   // tests
+  // 0.6 DF.12 (c): between two BIM programs (interop-view.js) — the section follows the Models section's own `hidden`
+  if (ui.modelsSec) window.bimcraftInterop = mountInterop({
+    after: ui.modelsSec, W: WebIFC, models: () => models, active: () => cur(),
+    manifest: () => bundleUi?.state()?.manifest || null,
+    download: (name, data, type) => download(name, data, type),
+    status: (text, isError, fade) => status(text, isError, fade),
+  });
+
   // ---- Draw (0.5 part 3, track BM; model-ui.js): the plan view of a level and the building tools ----
   modelUi = mountModel({
     root,
@@ -4114,8 +4435,39 @@ function init(root) {
     afterEdit: () => renderChanges(),
     download: (name, data, type) => download(name, data, type),   // schedules' CSV, the plan's PDF
     fileName: () => ifcName,
+    coords: () => coordsUi,   // 0.6 DF.15: the plan's readout and markers
   });
   if (modelUi) mountRes(modelUi);   // 0.5 part 4, track RC (res-ui.js): the residential tools join the plan's tools
+  if (modelUi) mountTrim(modelUi);   // 0.6 DF.17 (model-trim-ui.js): trim, extend and corner walls
+  if (modelUi) mountGrids(modelUi);   // 0.6 DF.16 (model-grids-ui.js): grids and columns
+  if (modelUi) mountFloors(modelUi);   // 0.6 DF.18 (model-floors-ui.js): floors of any shape, ramps
+  if (modelUi) mountSite(modelUi);   // 0.6 DF.20 (model-site-ui.js): the site, the building on it, levels
+  if (modelUi) mountMep(modelUi);   // 0.6 DF.29 (mep-ui.js): pipe and duct runs with their fittings, valves
+  if (modelUi) mountFamilies(modelUi);   // 0.6 DC.114 (family-ui.js): Families (before the project browser, which lists them)
+  if (modelUi) mountViewsBim(modelUi);   // 0.6 DF.19 (views-ui.js): the project browser, view ranges, templates, sheets
+  if (modelUi) mountComforts(modelUi);   // 0.6 round 2 (comforts-ui.js): drawing comforts — moving library items, dormers
+  // 0.6 DF.25 (agents.js): an assistant draws walls, doors, windows, floors, levels and grids, each one undo step "Assistant: …"
+  if (modelUi) installAgents(modelUi, {
+    control: fileHost.control,
+    model: () => (mode === 'ifc' ? model : null),
+    selection: () => (viewer ? [...viewer.selection] : []),
+    select: (keys) => { if (!viewer) return; viewer.select(keys.length ? keys : null); afterPick(); if (viewer.selection.size > 1) showMany(); else if (viewer.selection.size) showProps(viewer.selected); else clearProps(); },
+    save: () => saveIfc(),
+    undo: async () => { ui.undo.click(); },
+    busy: () => (busy ? 'opening or saving a file' : placing ? 'placing a library item' : null),   // i18n-ignore: read by the assistant
+  });
+  // 0.6 DF.22 (cloud-slice-ui.js): a point cloud's slice on the plan; the cloud is cloud-ui.js's (pc, made on its first open)
+  if (modelUi) mountTrace(modelUi, { readDrawing: (bytes, kind) => readDrawingModel(bytes, kind) });   // 0.6 DF.23 (model-trace-ui.js)
+  // 0.6 DF.21 (links-ui.js): linked models are federation entries flagged `link`, placed by an `adjust` matrix
+  if (modelUi) linksUi = mountLinks(modelUi, {
+    root, fileHost, status: (text, isError, fade) => status(text, isError, fade),
+    fed: {
+      add: (file, opts) => addModel(file, opts), remove: (ent) => removeModel(ent), models: () => models, host: () => (mode === 'ifc' ? cur() : null),
+      setMatrix: (ent, M) => { ent.matrix = M; viewer.setModelMatrix(ent.mi, placementOf(ent)); if (cut) applySection(); viewer.render(); },
+      viewer: () => viewer, refresh: () => renderModels(),
+    },
+  });
+  if (modelUi) scanUi = mountCloudSlice(modelUi, { cloud: () => pc, viewer: () => viewer, entry: () => { const ent = mode === 'ifc' ? cur() : null; return ent ? { C: [...ent.ifc.api.GetCoordinationMatrix(ent.model.modelID)], P: viewer.modelMatrix(ent.mi) } : null; } });
 
   // ---- Menus, keys and mouse (0.5 track IP): the shell's input engine (assets/js/app-input-ui.js, manifest "input":
   // input-bimcraft.js) runs the styles; it asks BimCraft for the status line, downloads and whether a tool is running ----

@@ -7,6 +7,8 @@
  *   typeThickness(type)              total thickness, mm
  *   wallOutlines(walls, { tol })     plan outlines with L / T / X joins cleaned: walls [{ key, a, b, t }] (centre lines, mm)
  *                                    → Map(key → [[x, y]…] CCW); see "Joins" below
+ *   enclosingWalls(walls, { tol })   the walls left once every wall with a free end is taken out (repeatedly)
+ *   buildingOutlines(walls)          the building's outlines from readWalls rows (enclosing walls, exterior types first)
  *   readWalls(w, storey?)            the walls the tools made (pset CadCraft_Wall), in each storey's own plan axes:
  *                                    [{ id, guid, storey, a, b, len, t, height, baseOffset, topLevel, topOffset, typeKey,
  *                                       typeName, extSide, lp }]
@@ -34,7 +36,9 @@
 import { ids, val, deleteLine } from './ifc-util.js';
 import { round } from './model-write.js';
 import { readLevels } from './model-levels.js';
+import { planLoops } from './model-rooms.js';
 import { t as tr } from './i18n.js';
+import { wallGeom, arcOf, arcLength, chordFor, flatPoly, arcAxisCurve, profileCurve, profileKeyPoints, BULGE_MAX } from './model-arcs.js';   // 0.6 round 2 (bim-comforts_PART_2): curved walls
 
 export const WALL_PSET = 'CadCraft_Wall';
 export const WALLTYPE_PSET = 'CadCraft_WallType';
@@ -106,18 +110,51 @@ export function wallNodes(W, tol = 1) {
     const here = new Set(n.ends.map((e) => e.w));
     for (let j = 0; j < W.length; j++) {
       if (here.has(j)) continue;
-      const w = W[j], s = dot(sub(n.p, w.a), w.u), off = Math.abs(dot(sub(n.p, w.a), w.n));
+      const w = W[j], q = w.g.param(n.p), s = q.s, off = Math.abs(q.off);
       if (s > tol && s < w.L - tol && off <= w.h + tol) n.tees.push({ w: j, s });
     }
   }
   return nodes;
 }
 
+/**
+ * The walls that enclose something (0.6 BIM-F1): walls with a free end — not at another wall's end and not against another
+ * wall's side — are taken out, again and again, so posts drawn as short walls, a garden wall run off a corner and an inside
+ * wall poking out leave the building's outline alone. Walls [{ a, b, t, … }] (the input objects, those kept).
+ */
+export function enclosingWalls(walls, { tol = 1 } = {}) {
+  let W = prepare(walls.map((w, i) => ({ ...w, ewIndex: i })));
+  for (;;) {
+    const nodes = wallNodes(W, tol), free = new Set();
+    for (const n of nodes) if (n.ends.length === 1 && !n.tees.length) free.add(n.ends[0].w);
+    if (!free.size) return W.map((x) => walls[x.ewIndex]);
+    W = W.filter((_, i) => !free.has(i));
+  }
+}
+
+/**
+ * The building's outlines (roofs, foundations, pads, building floors) — 0.6 BIM-F1: only from walls that enclose something
+ * (model-walls.js enclosingWalls: posts drawn as short walls and walls run off a corner leave it alone), and from the
+ * exterior wall types when they close an outline by themselves (inside walls never widen it); else every enclosing wall;
+ * else every wall, as before.
+ */
+export function buildingOutlines(walls) {
+  const loopsOf = (list) => planLoops([...wallOutlines(list.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t, bulge: x.bulge }))).values()]).outlines.filter((o) => o.area > 1);
+  const ext = walls.filter((x) => wallType(x.typeKey)?.exterior);
+  for (const list of [enclosingWalls(ext), enclosingWalls(walls)]) {
+    if (!list.length) continue;
+    const out = loopsOf(list);
+    if (out.length) return out;
+  }
+  return loopsOf(walls);
+}
+
 function prepare(walls) {
   return walls.map((w) => {
-    const L = dist(w.a, w.b);
-    const u = L > 0 ? mul(sub(w.b, w.a), 1 / L) : [1, 0];
-    return { ...w, L, u, n: left(u), h: (w.t || 0) / 2 };
+    if (dist(w.a, w.b) <= 0) return { ...w, L: 0, h: 0 };
+    // 0.6 round 2 (bim-comforts_PART_2): a curved wall answers the same questions (g: along, off, tangent, where a point lies)
+    const g = wallGeom(w), L = g.L, u = g.tan(0);
+    return { ...w, L, u, n: left(u), h: (w.t || 0) / 2, g, arc: g.arc };
   }).filter((w) => w.L > 0 && w.h > 0);
 }
 
@@ -127,22 +164,28 @@ export function wallOutlines(walls, { tol = 1 } = {}) {
   const ends = W.map(() => ({ a: null, b: null }));
   for (const n of nodes) {
     // each ray: a direction out of the node and a point its centre line passes through (a T's through wall: its own axis)
-    const rays = n.ends.map((e) => ({ w: e.w, end: e.end, d: e.end === 'a' ? W[e.w].u : mul(W[e.w].u, -1), o: n.p, h: W[e.w].h, real: true }));
+    // a curved wall's ray leaves along its tangent; its faces are circles (yl: the wall's own offset of the ray's left face)
+    const rays = n.ends.map((e) => { const x = W[e.w]; return { w: e.w, end: e.end, d: e.end === 'a' ? x.g.tan(0) : mul(x.g.tan(x.L), -1), o: n.p, h: x.h, real: true, yl: e.end === 'a' ? x.h : -x.h }; });
     for (const t of n.tees) {
-      const T = W[t.w], q = add(T.a, mul(T.u, t.s));
-      rays.push({ w: t.w, d: T.u, o: q, h: T.h, real: false }, { w: t.w, d: mul(T.u, -1), o: q, h: T.h, real: false });
+      const T = W[t.w], q = T.g.at(t.s), d = T.g.tan(t.s);
+      rays.push({ w: t.w, d, o: q, h: T.h, real: false, yl: T.h }, { w: t.w, d: mul(d, -1), o: q, h: T.h, real: false, yl: -T.h });
     }
     const p = n.p;
-    for (const r of rays) { r.ang = Math.atan2(r.d[1], r.d[0]); r.left = add(r.o, mul(left(r.d), r.h)); r.right = add(r.o, mul(left(r.d), -r.h)); }
+    for (const r of rays) {
+      r.ang = Math.atan2(r.d[1], r.d[0]); r.left = add(r.o, mul(left(r.d), r.h)); r.right = add(r.o, mul(left(r.d), -r.h));
+      const k = W[r.w].arc;
+      r.fl = k ? { c: k.C, r: k.R - r.yl * k.sg } : { p: r.left, d: r.d };
+      r.fr = k ? { c: k.C, r: k.R + r.yl * k.sg } : { p: r.right, d: r.d };
+    }
     if (rays.length > 1) {
       rays.sort((x, y) => x.ang - y.ang);
       for (let i = 0; i < rays.length; i++) {
         const A = rays[i], B = rays[(i + 1) % rays.length];
         if (!A.real && !B.real) continue;   // the two halves of a T's through wall
         // the space between A (its left face) and B, the next one anticlockwise (its right face)
-        const c = meet(add(A.o, mul(left(A.d), A.h)), A.d, add(B.o, mul(left(B.d), -B.h)), B.d);
+        const c = W[A.w].arc || W[B.w].arc ? meetFaces(A.fl, B.fr, p) : meet(add(A.o, mul(left(A.d), A.h)), A.d, add(B.o, mul(left(B.d), -B.h)), B.d);
         const turn = cross(A.d, B.d), ahead = dot(A.d, B.d);
-        if (!c || (turn <= 1e-9 && ahead > 0)) continue;   // parallel or overlapping: square ends
+        if (!c || (turn <= 1e-9 && ahead > 1e-9)) continue;   // parallel or overlapping: square ends (1e-9: a curved wall's tangent is not exact)
         if (dist(c, p) > 4 * Math.max(A.h, B.h) + tol) continue;   // too sharp a mitre: square
         A.left = c; B.right = c;
       }
@@ -153,12 +196,49 @@ export function wallOutlines(walls, { tol = 1 } = {}) {
   const out = new Map();
   W.forEach((w, i) => {
     const A = ends[i].a, B = ends[i].b;
+    if (w.arc) { out.set(w.key, arcOutline(w, A, B)); return; }
     let poly = [A.right, B.left, B.centre, B.right, A.left, A.centre].filter(Boolean);
     poly = clean(poly);
     if (!simpleCCW(poly)) poly = rect(w);
     out.set(w.key, poly);
   });
   return out;
+}
+/** Where two faces meet nearest `near`: lines { p, d } and circles { c, r } (a curved wall's faces); null when they don't. */
+function meetFaces(F, G, near) {
+  if (F.d && G.d) return meet(F.p, F.d, G.p, G.d);
+  const pick = (list) => list.filter(Boolean).sort((x, y) => dist(x, near) - dist(y, near))[0] || null;
+  if (F.d || G.d) {
+    const L = F.d ? F : G, K = F.d ? G : F, m = sub(L.p, K.c), bq = dot(L.d, m), cq = dot(m, m) - K.r * K.r, disc = bq * bq - cq;
+    if (disc < 0) return null;
+    const sq = Math.sqrt(disc);
+    return pick([add(L.p, mul(L.d, -bq - sq)), add(L.p, mul(L.d, -bq + sq))]);
+  }
+  const dd = dist(F.c, G.c);
+  if (dd < 1e-6 || dd > F.r + G.r || dd < Math.abs(F.r - G.r)) return null;   // one circle (a curve going on), or apart
+  const x = (dd * dd + F.r * F.r - G.r * G.r) / (2 * dd), y = Math.sqrt(Math.max(0, F.r * F.r - x * x));
+  const u = mul(sub(G.c, F.c), 1 / dd), m = add(F.c, mul(u, x));
+  return pick([add(m, mul(left(u), y)), add(m, mul(left(u), -y))]);
+}
+/**
+ * A curved wall's outline: its corners from the joins (A at its start, B at its end, as for a straight wall), the right face
+ * from A to B and the left face back as arcs — the outline returned is in chords (rooms, the plan), its `bulged` copy keeps
+ * each arc edge as a bulge on the point it starts from ([x, y, bulge], for the IFC profile).
+ */
+function arcOutline(w, A, B) {
+  const k = w.arc, ang = (q) => Math.atan2(q[1] - k.C[1], q[0] - k.C[0]);
+  const wrap = (x) => { let y = (x + Math.PI) % (2 * Math.PI); if (y <= 0) y += 2 * Math.PI; return y - Math.PI; };
+  const bulge = (P, Q, want) => Math.tan((wrap(ang(Q) - ang(P) - want) + want) / 4);
+  let poly = [[...A.right, bulge(A.right, B.left, k.theta)], B.left, B.centre, [...B.right, bulge(B.right, A.left, -k.theta)], A.left, A.centre].filter(Boolean);
+  // repeated points: the later one keeps its bulge (the edge to it is nothing)
+  poly = poly.filter((q, i) => dist(q, poly[(i + 1) % poly.length]) > 1e-6 || poly.length < 4);
+  let flat = flatPoly(poly);
+  if (poly.length < 4 || !simpleCCW(flat)) {
+    poly = [[...w.g.at(0, -w.h), Math.tan(k.theta / 4)], w.g.at(w.L, -w.h), [...w.g.at(w.L, w.h), Math.tan(-k.theta / 4)], w.g.at(0, w.h)];
+    flat = flatPoly(poly);
+  }
+  flat.bulged = poly;
+  return flat;
 }
 const rect = (w) => [add(w.a, mul(w.n, -w.h)), add(w.b, mul(w.n, -w.h)), add(w.b, mul(w.n, w.h)), add(w.a, mul(w.n, w.h))];
 /** Drop repeated and collinear points. */
@@ -191,6 +271,26 @@ function segCross(a, b, c, d) {
   return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
 }
 
+// --------------------------------------------------------------------------------------------------------- justification
+/**
+ * 0.6 round 2 (bim-comforts_PART_2): the wall's location line — the line it was drawn on and keeps when it gets thicker or
+ * its outside is flipped. CadCraft_Wall Justification: center (the centre line, as before) | exterior | interior (its
+ * outside / inside face) | left | right (a face, seen from its start). The centre line stays what is stored and placed.
+ */
+export const JUSTIFICATIONS = ['center', 'exterior', 'interior', 'left', 'right'];
+/** How far the location line is from the centre line, to the wall's left (mm). */
+export function locationOffset(just, t, extSide) {
+  const ext = extSide === 'right' ? -t / 2 : t / 2;
+  return just === 'left' ? t / 2 : just === 'right' ? -t / 2 : just === 'exterior' ? ext : just === 'interior' ? -ext : 0;
+}
+/** The location line of a wall (for the plan): its two ends and bulge (a curved wall's stays concentric). */
+export function locationLine(wall) {
+  const off = locationOffset(wall.justification, wall.t, wall.extSide);
+  if (!off) return { a: wall.a, b: wall.b, bulge: wall.bulge || 0, off: 0 };
+  const g = wallGeom(wall);
+  return { a: g.at(0, off), b: g.at(g.L, off), bulge: wall.bulge || 0, off };
+}
+
 // --------------------------------------------------------------------------------------------------------------- reading
 /** Every wall the tools made, in its storey's plan axes (mm). `storey` limits it to one storey. */
 export function readWalls(w, storey = null) {
@@ -210,15 +310,18 @@ export function readWalls(w, storey = null) {
     if (!lp || !stLine?.ObjectPlacement) continue;
     const M = w.relMatrix(stLine.ObjectPlacement.value, lp);
     const len = Number(ps.Length) * w.unitMm, th = Number(ps.Thickness) * w.unitMm;
+    // 0.6 round 2: a curved wall's Length is along its arc; its end is the chord away (Bulge = tan(θ / 4), + anticlockwise)
+    const bulge = Number(ps.Bulge) || 0, chord = chordFor(len, bulge);
     const a = [M[12], M[13]], dir = [M[0], M[1]];
     const dl = Math.hypot(dir[0], dir[1]) || 1;
-    const b = [a[0] + dir[0] / dl * len, a[1] + dir[1] / dl * len];
+    const b = [a[0] + dir[0] / dl * chord, a[1] + dir[1] / dl * chord];
     const base = levels.find((l) => l.id === st);
     const wall = {
       id, guid: val(line.GlobalId), storey: st, a, b, len, t: th, z: M[14],
       baseOffset: Number(ps.BaseOffset || 0) * w.unitMm, topLevel: ps.TopLevel || '', topOffset: Number(ps.TopOffset || 0) * w.unitMm,
       fixedHeight: Number(ps.Height || 0) * w.unitMm, typeKey: ps.TypeKey || '', typeName: val(line.ObjectType) || val(line.Name) || '', extSide: ps.ExteriorSide === 'right' ? 'right' : 'left', lp,
       name: val(line.Name) || '',
+      bulge, justification: JUSTIFICATIONS.includes(ps.Justification) ? ps.Justification : 'center',
     };
     wall.height = wallHeight(wall, levels, base);
     out.push(wall);
@@ -257,9 +360,10 @@ function layerSetOf(w, typeId) {
   return m?.def ?? null;
 }
 
-export function addWall(w, { storey, a, b, typeKey = 'ext-2x6', baseOffset = 0, topLevel = '', topOffset = 0, height = 0, extSide = 'left', guid } = {}) {
-  const L = dist(a, b);
-  if (!(L >= 1)) throw Object.assign(new Error('model.err.short'), { key: 'model.err.short' });
+export function addWall(w, { storey, a, b, typeKey = 'ext-2x6', baseOffset = 0, topLevel = '', topOffset = 0, height = 0, extSide = 'left', guid, bulge = 0, justification = 'center' } = {}) {
+  if (!(dist(a, b) >= 1)) throw Object.assign(new Error('model.err.short'), { key: 'model.err.short' });
+  checkBulge(bulge);
+  const L = arcLength(a, b, bulge);   // 0.6 round 2: along the arc for a curved wall
   const st = w.api.GetLine(w.mid, storey, false);
   if (!st || !/BuildingStorey/i.test(st.constructor?.name || '')) throw new Error(tr('place.err.pick_storey'));
   const T = wallTypeLine(w, typeKey);
@@ -275,9 +379,14 @@ export function addWall(w, { storey, a, b, typeKey = 'ext-2x6', baseOffset = 0, 
   w.associateMaterial(id, usage(w, T.set, th, extSide));
   w.upsertPset(id, WALL_PSET, [['TypeKey', 'IFCIDENTIFIER', typeKey], ['Length', 'IFCPOSITIVELENGTHMEASURE', round(w.u(L))], ['Thickness', 'IFCPOSITIVELENGTHMEASURE', round(w.u(th))],
     ['Height', 'IFCPOSITIVELENGTHMEASURE', round(w.u(height > 0 ? height : 2438.4))], ['BaseOffset', 'IFCLENGTHMEASURE', round(w.u(baseOffset))], ['TopLevel', 'IFCIDENTIFIER', topLevel || ''],
-    ['TopOffset', 'IFCLENGTHMEASURE', round(w.u(topOffset))], ['ExteriorSide', 'IFCLABEL', extSide]]);
+    ['TopOffset', 'IFCLENGTHMEASURE', round(w.u(topOffset))], ['ExteriorSide', 'IFCLABEL', extSide],
+    // 0.6 round 2: written only when they say something (a straight wall on its centre line keeps the 0.5 set)
+    ...(bulge ? [['Bulge', 'IFCREAL', round(bulge, 9)]] : []), ...(justification && justification !== 'center' ? [['Justification', 'IFCLABEL', JUSTIFICATIONS.includes(justification) ? justification : 'center']] : [])]);
   w.upsertPset(id, 'Pset_WallCommon', [['Reference', 'IFCIDENTIFIER', name], ['IsExternal', 'IFCBOOLEAN', !!T.type.exterior], ['LoadBearing', 'IFCBOOLEAN', false]]);
   return { id, guid: g };
+}
+function checkBulge(bulge) {
+  if (!Number.isFinite(bulge) || Math.abs(bulge) > BULGE_MAX + 1e-9) throw Object.assign(new Error('comforts.err.arc'), { key: 'comforts.err.arc' });
 }
 function usage(w, set, th, extSide) {
   const right = extSide === 'right';
@@ -300,8 +409,31 @@ export function updateWall(w, guid, changes = {}, { carryJoined = true } = {}) {
     setGeom(w, x, na, nb);
     x.a = na; x.b = nb;
   };
-  const a = changes.a || wall.a, b = changes.b || wall.b;
-  if (dist(a, wall.a) > 1e-6 || dist(b, wall.b) > 1e-6) {
+  let a = changes.a || wall.a, b = changes.b || wall.b;
+  // 0.6 round 2 (bim-comforts_PART_2): a new curve (bulge), and the location line kept when the wall gets thicker or its
+  // outside flips — the centre line moves over by the difference, and a straight neighbour at a corner meets it again
+  const bulgeChanged = Number.isFinite(changes.bulge) && Math.abs(changes.bulge - (wall.bulge || 0)) > 1e-12;
+  if (bulgeChanged) checkBulge(changes.bulge);
+  const just = JUSTIFICATIONS.includes(changes.justification) ? changes.justification : wall.justification;
+  if (!changes.a && !changes.b && just !== 'center') {
+    const ty = changes.typeKey ? wallType(changes.typeKey) : null, tNew = ty ? typeThickness(ty) : wall.t;
+    const shift = locationOffset(just, wall.t, wall.extSide) - locationOffset(just, tNew, changes.extSide || wall.extSide);
+    if (Math.abs(shift) > 1e-6) {
+      const g = wallGeom(wall);
+      a = g.at(0, shift); b = g.at(g.L, shift);
+      if (!wall.bulge && !bulgeChanged) {
+        const u = mul(sub(b, a), 1 / dist(a, b)), na = a, nb = b;
+        for (const [end, old] of [['a', wall.a], ['b', wall.b]]) {
+          const nbs = all.filter((o) => o.guid !== guid && o.storey === wall.storey && (dist(o.a, old) <= 1 || dist(o.b, old) <= 1));
+          if (nbs.length !== 1 || nbs[0].bulge) continue;
+          const o = nbs[0], X = meet(na, u, o.a, mul(sub(o.b, o.a), 1 / (dist(o.a, o.b) || 1)));
+          if (X && dist(X, end === 'a' ? na : nb) < 4 * Math.max(wall.t, tNew, o.t)) { if (end === 'a') a = X; else b = X; }
+        }
+      }
+    }
+  }
+  if (bulgeChanged) wall.bulge = changes.bulge;
+  if (dist(a, wall.a) > 1e-6 || dist(b, wall.b) > 1e-6 || bulgeChanged) {
     if (carryJoined) {
       for (const [end, old, to] of [['a', wall.a, a], ['b', wall.b, b]]) {
         if (dist(old, to) <= 1e-6) continue;
@@ -344,6 +476,7 @@ export function updateWall(w, guid, changes = {}, { carryJoined = true } = {}) {
     const ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
     if (Math.abs(M[14] - changes.baseOffset) > 1e-6) w.movePlacement(wall.lp, a[0], a[1], changes.baseOffset, ang);
   }
+  if (just !== wall.justification) rows.push(['Justification', 'IFCLABEL', just]);
   if (changes.topLevel !== undefined) rows.push(['TopLevel', 'IFCIDENTIFIER', changes.topLevel || '']);
   if (Number.isFinite(changes.topOffset)) rows.push(['TopOffset', 'IFCLENGTHMEASURE', round(w.u(changes.topOffset))]);
   if (Number.isFinite(changes.height) && changes.height > 0) rows.push(['Height', 'IFCPOSITIVELENGTHMEASURE', round(w.u(changes.height))], ['TopLevel', 'IFCIDENTIFIER', '']);
@@ -355,7 +488,8 @@ function setGeom(w, wall, a, b) {
   const ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
   const M = w.relMatrix(w.api.GetLine(w.mid, wall.storey, false).ObjectPlacement.value, wall.lp);
   w.movePlacement(wall.lp, a[0], a[1], M[14], ang);
-  w.upsertPset(wall.id, WALL_PSET, [['Length', 'IFCPOSITIVELENGTHMEASURE', round(w.u(dist(a, b)))]]);
+  const bg = wall.bulge || 0;   // 0.6 round 2: a curved wall keeps its turn; its Length runs along the arc
+  w.upsertPset(wall.id, WALL_PSET, [['Length', 'IFCPOSITIVELENGTHMEASURE', round(w.u(arcLength(a, b, bg)))], ...(bg || w.readPset(wall.id, WALL_PSET)?.Bulge !== undefined ? [['Bulge', 'IFCREAL', round(bg, 9)]] : [])]);
 }
 function setUsage(w, wallId, set, th, extSide) {
   const m = w.materialRel(wallId);
@@ -392,14 +526,14 @@ export function deleteWalls(w, guids) {
 export function regenWalls(w, storey, force = null) {
   const walls = readWalls(w, storey);
   if (!walls.length) return { walls: 0 };
-  const outlines = wallOutlines(walls.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t })));
+  const outlines = wallOutlines(walls.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t, bulge: x.bulge })));
   const forced = new Set(force || []);
   const host = w.hostIndex();
   let n = 0;
   for (const wall of walls) {
     const poly = outlines.get(wall.guid);
     if (!poly) continue;
-    const local = toLocal(wall, poly);
+    const local = profileKeyPoints(toLocal(wall, poly.bulged || poly), w.v4);
     if (!forced.has(wall.guid)) {
       const cur = storedShape(w, wall.id);
       if (cur && Math.abs(cur.depth - wall.height) < 0.01 && Math.abs(cur.len - wall.len) < 0.01 && samePoly(cur.points, local)) continue;
@@ -411,7 +545,7 @@ export function regenWalls(w, storey, force = null) {
 }
 const toLocal = (wall, poly) => {
   const ang = Math.atan2(wall.b[1] - wall.a[1], wall.b[0] - wall.a[0]), c = Math.cos(ang), s = Math.sin(ang);
-  return poly.map(([x, y]) => [(x - wall.a[0]) * c + (y - wall.a[1]) * s, -(x - wall.a[0]) * s + (y - wall.a[1]) * c]);
+  return poly.map(([x, y, bg]) => (bg ? [(x - wall.a[0]) * c + (y - wall.a[1]) * s, -(x - wall.a[0]) * s + (y - wall.a[1]) * c, bg] : [(x - wall.a[0]) * c + (y - wall.a[1]) * s, -(x - wall.a[0]) * s + (y - wall.a[1]) * c]));
 };
 function samePoly(a, b) {
   if (a.length !== b.length) return false;
@@ -431,11 +565,24 @@ export function storedShape(w, id) {
     if (ident === 'Body' && item?.SweptArea) {
       depth = Number(val(item.Depth)) * w.unitMm;
       const curve = g(g(item.SweptArea)?.OuterCurve);
-      points = (curve?.Points || []).map((p) => g(p).Coordinates.map((v) => Number(val(v)) * w.unitMm));
+      // 0.6 round 2: a curved wall's profile is an IfcIndexedPolyCurve (its point list: corners and the arcs' middles)
+      if (Array.isArray(curve?.Points)) points = curve.Points.map((p) => g(p).Coordinates.map((v) => Number(val(v)) * w.unitMm));
+      else points = (g(curve?.Points)?.CoordList || []).map((q) => q.map((v) => Number(val(v)) * w.unitMm));
       if (points.length > 1 && dist(points[0], points[points.length - 1]) < 1e-6) points.pop();
     } else if (ident === 'Axis' && item?.Points) {
       const pts = item.Points.map((p) => g(p).Coordinates.map((v) => Number(val(v)) * w.unitMm));
       len = pts.length > 1 ? dist(pts[0], pts[pts.length - 1]) : 0;
+    } else if (ident === 'Axis' && item?.BasisCurve) {
+      // an IfcTrimmedCurve of an IfcCircle: the arc between its two trimming points, the way it runs
+      const circ = g(item.BasisCurve), R = Number(val(circ?.Radius)) * w.unitMm, cpt = g(g(circ?.Position)?.Location)?.Coordinates?.map((v) => Number(val(v)) * w.unitMm);
+      const tp = (tr) => { const h = (tr || []).find((x) => x && typeof x === 'object' && x.type === 5 && g(x)?.Coordinates); return h ? g(h).Coordinates.map((v) => Number(val(v)) * w.unitMm) : null; };
+      const p1 = tp(item.Trim1), p2 = tp(item.Trim2);
+      if (R > 0 && cpt && p1 && p2) {
+        const sense = item.SenseAgreement === true || /^(\.?T\.?|true)$/i.test(String(val(item.SenseAgreement)));
+        let d = Math.atan2(p2[1] - cpt[1], p2[0] - cpt[0]) - Math.atan2(p1[1] - cpt[1], p1[0] - cpt[0]);
+        if (sense) { while (d <= 0) d += 2 * Math.PI; } else { while (d >= 0) d -= 2 * Math.PI; }
+        len = R * Math.abs(d);
+      }
     }
   }
   return points ? { points, depth, len } : null;
@@ -444,8 +591,11 @@ export function storedShape(w, id) {
 /** The wall's Axis and Body from its outline (plan, mm) and height; quantities with its openings taken off. */
 export function writeWallShape(w, wall, poly, host = w.hostIndex()) {
   const local = toLocal(wall, poly);
-  const axis = w.rep('axis', 'Axis', 'Curve2D', [w.polyline2([[0, 0], [wall.len, 0]])]);
-  const body = w.rep('body', 'Body', 'SweptSolid', [w.extrude(w.profile(local), 0, wall.height)]);
+  // 0.6 round 2: a curved wall's Axis is an arc (IfcTrimmedCurve of an IfcCircle) and its profile has arc edges
+  const curved = !!arcOf(wall.a, wall.b, wall.bulge) && poly.bulged;
+  const axis = w.rep('axis', 'Axis', 'Curve2D', [curved ? arcAxisCurve(w, wall) : w.polyline2([[0, 0], [wall.len, 0]])]);
+  const prof = curved ? w.make('IFCARBITRARYCLOSEDPROFILEDEF', 'AREA', null, w.H(profileCurve(w, toLocal(wall, poly.bulged)))) : w.profile(local);
+  const body = w.rep('body', 'Body', 'SweptSolid', [w.extrude(prof, 0, wall.height)]);
   w.setShape(wall.id, [axis, body]);
   const foot = Math.abs(polyArea(local));
   let openArea = 0, openVol = 0;

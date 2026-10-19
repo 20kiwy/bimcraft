@@ -3,7 +3,7 @@ title: Place equipment and furniture from the library
 summary: Find an item in LibraryCraft, a file or the open drawing, place it on a storey of an IFC model with a ghost preview, turn it, snap it to a wall, and save.
 section: tasks
 order: 150
-keywords: library, librarycraft, place, insert, equipment, furniture, block, family, item, catalog, content, kcl, csv, gltf, obj, rfa, dwg, ifc type
+keywords: move, rotate, turn, drag, library, librarycraft, place, insert, equipment, furniture, block, family, item, catalog, content, kcl, csv, gltf, obj, rfa, dwg, ifc type
 ---
 
 ## What you'll do
@@ -25,9 +25,22 @@ Put a library item into an IFC model: a sink, a work table, a chair. BimCraft wr
 7. Move the pointer over the model: a see-through box shows where the item goes.
 8. Press {{key:R}} to turn it 90°. Press {{key:Tab}} (or {{ui:Wall snap}}) to put its back against the nearest wall, facing the room.
 9. Click to place it. Or type the position in **X, Y (mm)**, for example `1200, 3400`, and press {{key:Enter}}.
+
+A light or anything else hung from above: set **Mount** to **At the ceiling**. The item's top then sits at the underside of the ceiling over the spot (or at the level's height where there is no ceiling). With a ceiling plan on the plan view, **Mount** starts on **At the ceiling**.
 10. Answer the one question: the **item number** (the next free number is filled in), the quantity and a note. Press {{key:Enter}}.
 11. Place more, or press {{key:Esc}} to stop.
 12. Click {{ui:Save as IFC}} to download the edited copy.
+
+## Move or turn a placed item
+
+In {{ui:Draw}}, pick the item in the plan. A square grip shows at its insertion point and a round grip beside it.
+
+- Drag the item, or its square grip, to move it. It snaps like the Wall tool (wall ends and faces); {{key:Shift}} keeps it square to where it was.
+- Drag the round grip to turn it in 15° steps. Hold {{key:Shift}} for 1° steps.
+- Press {{key:R}} to turn it 90°.
+- In **Properties** (also in the 3D view), type **X**, **Y** and **Rotation (°)**, or click **Turn 90°**.
+
+Each move is one undo step and travels in Studio Live. The item keeps its item number, its library data and its height above the level. Not built yet: dragging it in the 3D view.
 
 ## What you should see
 
@@ -44,6 +57,10 @@ Put a library item into an IFC model: a sink, a work table, a chair. BimCraft wr
 - **Entourage** (trees, shrubs, people, cars) is in the library too: search for "tree", "person" or "car". These are drawn by CadCraft (CC0) and keep their colors when placed (a trunk brown, leaves green, a car's windows see-through), in BimCraft and in other BIM programs. They show in [rendered pictures](topic:render).
 - In an IFC2X3 file the body is written as a faceted solid; in IFC4 as a triangulated face set. Both open in other IFC tools.
 - A drawing (DWG or DXF) cannot be saved here, so items are placed into IFC models only. Use **This file** on a drawing to see what its blocks would become.
+
+## Items in your language
+
+An item can carry its name, description and type in other languages. When it has them in the language BimCraft is set to (Settings › General › Language), the item's page shows those, with the name its maker gave it underneath, and **Place** writes the name in your language into the model, so the {{ui:Equipment}} schedule lists it that way. The item stays the same item: checking for updates and swapping go by the item itself, never by its name. Items without a translation keep their own words.
 
 ## Common mistakes
 

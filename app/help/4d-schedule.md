@@ -3,7 +3,7 @@ title: Play a construction schedule on the model
 summary: Open a task list as a CSV, link each task to elements by a property, and move through the dates to see what is built, in progress and not started yet.
 section: tasks
 order: 36
-keywords: 4d, schedule, construction sequence, timeline, phasing, programme, gantt, tasks, dates, simulation, progress, built, csv
+keywords: 4d, schedule, construction sequence, timeline, phasing, programme, gantt, tasks, dates, simulation, progress, built, csv, stage, phase, work package, wbs, group
 ---
 
 ## What you'll do
@@ -30,6 +30,28 @@ A CSV with a header row and the columns **Task**, **Start**, **Finish**, **Field
 - Write dates as YYYY-MM-DD.
 - A row links the task to every element whose **Field** has exactly that **Value**. The field is a property such as Storey, Class, Name, Type, Material, Tag or GlobalId, or any property written as its set and name: `Pset_WallCommon.FireRating`.
 - Repeat a task on more rows, with the same dates, to link more elements to it.
+
+## Stages and work packages
+
+Add a **Stage** column, a **Package** column, or both, to gather tasks into stages and work packages. Phase and WBS work as column names too.
+
+| Task | Start | Finish | Field | Value | Stage | Package |
+|---|---|---|---|---|---|---|
+| Level 1 slab | 2026-11-02 | 2026-11-04 | Class | IfcSlab | Structure | Frame |
+| Level 1 walls | 2026-11-05 | 2026-11-13 | Storey | Level 1 | Structure | Frame |
+| Doors | 2026-11-30 | 2026-12-04 | Class | IfcDoor | Fit-out | Joinery |
+
+- A task belongs to one stage and one package. If a later row of the same task names another, that row is listed with its line number and left out.
+- The same package name in two stages is two packages.
+
+When the list has groups, a {{ui:Show}} list appears above the date. Choose a stage or a package and it plays as one:
+
+- the slider and {{ui:Play}} run from the group's first start to its last finish,
+- only the group's tasks are listed and painted, and everything outside the group is see-through,
+- the line under the list says how many of its tasks are done, under way and to come on that date,
+- {{ui:Select its elements}} selects every element of the group, for {{ui:Show}}, {{ui:Section}} or a schedule.
+
+Choose **Every task** to see the whole schedule again.
 
 ## What you should see
 

@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const app = fs.existsSync(path.join(root, 'app/model-tools.js')) ? path.join(root, 'app') : path.join(root, 'public_html/assets/apps/bimcraft/dev');
+const here = path.dirname(fileURLToPath(import.meta.url));
+// the public repo keeps the build in app/ (this file in tests/); the site keeps it in public_html/assets/apps/bimcraft/dev (this file in bin/)
+const app = [path.join(here, '../app'), path.join(here, '../../app'), path.join(here, '../public_html/assets/apps/bimcraft/dev')]
+  .find((d) => fs.existsSync(path.join(d, 'model-tools.js')));
 const { snapPoint, wallPath } = await import(pathToFileURL(path.join(app, 'model-tools.js')));
 const { openingType, windowParts, openingSymbol, windowWell } = await import(pathToFileURL(path.join(app, 'model-openings.js')));
 const close = (p, q) => p.every((x, i) => Math.abs(x - q[i]) < 1e-6);

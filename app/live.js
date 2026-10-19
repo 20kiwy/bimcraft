@@ -166,6 +166,13 @@ export function createLive(opts) {
     app: 'bimcraft', schema: SCHEMA,
     get client() { return client; },
     onLocalChange(cb) { live.report = cb; },
+    // presence (0.6 LC.19, session lc-model): only design review in a headset (xr/xr-session.js) sends any — heads, hands and
+    // pointers of the people in VR; the client keeps the newest of each peer and hands them here
+    others: new Map(),
+    drawPresence(peers) { live.others = new Map(peers); },
+    setPresence(p) { client?.setPresence(p); },
+    peers() { return live.others; },
+    nameOf(c) { const p = client && client.peers && client.peers.get(c); return (p && p.name) || t('live.someone'); },
     apply(ops) { applyOps(ops); },
     invert(ops) { const out = []; for (let i = ops.length - 1; i >= 0; i--) { const r = invertOp(ops[i]); if (r) out.push(r); } const gi = out.findIndex((o) => o.o === 'g'); if (gi > 0) out.unshift(out.splice(gi, 1)[0]); return out; },
     touched, validate,

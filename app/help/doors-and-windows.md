@@ -13,7 +13,7 @@ Put doors and windows in walls you drew ([Draw walls](topic:draw-walls)). Point 
 ## Place a door
 
 1. With {{ui:Draw}} on, click {{ui:Door}} (or press {{key:D}}).
-2. Choose the type: **Single swing door**, **Double swing door**, **Sliding door**, **Pocket door**, **Garage door**, **Bifold closet door**, **French doors**, **Barn door (on the wall)** or **Entry door with sidelites**. Its usual size fills **W** and **H**; type others if you like, for example `2'-8"` or `800`.
+2. Choose the type: **Single swing door**, **Double swing door**, **Sliding door**, **Pocket door**, **Garage door**, **Bifold closet door**, **French doors**, **Barn door (on the wall)** or **Entry door with sidelites**. Its usual size fills **W** and **H**; pick another from the size list beside it, or type others, for example `2'-8"` or `800`. The list also offers the door families of this model (see [Families and their sizes](topic:families)).
 3. Point at a wall. The door's symbol follows the pointer along the wall, and the distance from each end of that face shows on the plan.
 4. The door swings to the side of the wall the pointer is on. Press {{key:H}} (or click {{ui:Flip}}) to put the hinges at the other end.
 5. Click. The door is placed and the tool stays on for the next one. Point at the middle of a wall and the door centers itself.
@@ -40,7 +40,7 @@ To place it at an exact distance, point at the wall near the corner you measure 
 
 ## What is saved
 
-Each door or window is an IFC door or window with its size, operation (for example single swing left), type, `Pset_DoorCommon` or `Pset_WindowCommon` and base quantities, filling an IFC opening in its wall. The wall's net side area and volume leave the opening out. Other BIM programs open it as a door in a wall.
+Each door or window is an IFC door or window with its size, operation (for example single swing left), its size's type (one type for each size of its family), `Pset_DoorCommon` or `Pset_WindowCommon` and base quantities, filling an IFC opening in its wall. The wall's net side area and volume leave the opening out. Other BIM programs open it as a door in a wall.
 
 ## Good to know
 

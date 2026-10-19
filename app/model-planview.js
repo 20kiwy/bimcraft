@@ -6,12 +6,19 @@
  *
  *   const pv = new PlanView(canvas, { move(pt, e), click(pt, e), dblclick(pt, e), leave(), contextmenu(pt, e) })
  *   pv.setScene({ walls, symbols, cut, below, rooms, dims })   (see below)   pv.setOverlay({ … })   pv.setSelection(keys)
+ *   pv.markers = [{ p, kind: 'origin' | 'survey' | 'both', label }]   the project origin / survey point (0.6 DF.15; not printed)
+ *   scene.grids = [{ tag, a, b, bubbles: 'both' | 'start' | 'end' | 'none', sel }]   grid lines with their bubbles (0.6 DF.16)
+ *   scene.cloud = { xy, n }   a point cloud's slice as dots (0.6 DF.22); snap kind 'cloud' = a diamond
+ *   scene.underlay = { segs }  another level drawn light under everything, never picked (0.6 DC.117)
+ *   scene.crop = [x0, y0, x1, y1]  the view's crop region: outside it the plan is veiled (still editable), a dashed frame round it
+ *   scene.drafting = [{ key, kind 'lines' | 'hatch', lines: [[[x, y]…]], closed, rings, solid, segs }]  drafting drawn in this view
+ *                  (0.6 DC.117 (d), drafting.js draftingItem): over the building, picked first
  *   pv.fit()  pv.toPlan(clientX, clientY) → [x, y]  pv.toScreen([x, y]) → { x, y } (canvas px)  pv.pxToMm(px)
  *   pv.hit(clientX, clientY) → key | null      what a click would pick (walls, doors / windows, other cut elements)
  *   pv.render()
  *
  * Scene: walls [{ key, pieces: [polygon], poly }], symbols [{ key, lines: [[x1, y1, x2, y2]…], arcs: [{ c, r, a0, a1 }],
- * box: [x0, y0, x1, y1], thin: [[…]] }], cut [{ key, loops: [[x, y, …]], segs }], below [{ key, segs }], rooms [{ key,
+ * box: [x0, y0, x1, y1], thin: [[…]], color: a page token for its ink (0.6 DF.29: a system's colour) }], cut [{ key, loops: [[x, y, …]], segs }], below [{ key, segs }], rooms [{ key,
  * poly, label: [lines], at }], dims [{ a, b, off, text }]. Overlay: walls [polygon], lines [[x1, y1, x2, y2]], dashed,
  * points [[x, y]], snap { p, kind }, hud { p, text }, symbols (as in the scene).
  *
@@ -19,7 +26,8 @@
  * click (≤ 4 px of movement) goes to the handlers with the plan point; a left drag with no tool pans.
  */
 import { panButton, wheelFactor } from './input-mouse.js';   // 0.5 IP.1: buttons and wheel from the input profile
-const TOKENS = ['--ink', '--ink-2', '--line', '--grid', '--grid-minor', '--sheet', '--sheet-2', '--action', '--poche', '--layer-blue', '--layer-red', '--layer-ochre'];
+const TOKENS = ['--ink', '--ink-2', '--line', '--grid', '--grid-minor', '--sheet', '--sheet-2', '--action', '--poche', '--layer-blue', '--layer-red', '--layer-ochre',
+  '--layer-green', '--layer-orange', '--layer-magenta', '--layer-violet', '--layer-cyan'];   // 0.6 DF.29: pipe and duct systems' colours
 
 
 export class PlanView {
@@ -29,6 +37,7 @@ export class PlanView {
     this.ctx = canvas.getContext('2d');
     this.scene = { walls: [], symbols: [], cut: [], below: [], rooms: [], dims: [] };
     this.overlay = null;
+    this.markers = [];   // 0.6 DF.15: [{ p, kind: 'origin' | 'survey' | 'both', label }] (coords-ui.js planMarkers)
     this.selection = new Set();
     this.hover = null;
     this.cx = 0; this.cy = 0; this.scale = 0.05;   // px per mm
@@ -56,7 +65,7 @@ export class PlanView {
   fromCanvas(px, py) { return [(px - this.w / 2) / this.scale + this.cx, (this.h2 / 2 - py) / this.scale + this.cy]; }
   pxToMm(px) { return px / this.scale; }
 
-  setScene(s) { this.scene = { walls: [], symbols: [], cut: [], below: [], rooms: [], dims: [], ...s }; this.render(); }
+  setScene(s) { this.scene = { walls: [], symbols: [], cut: [], below: [], above: [], rooms: [], dims: [], grids: [], ...s }; this.render(); }
   setOverlay(o) { this.overlay = o; this.render(); }
   setSelection(keys) { this.selection = new Set(keys || []); this.render(); }
 
@@ -67,6 +76,8 @@ export class PlanView {
     for (const c of this.scene.cut) for (let i = 0; i < c.segs.length; i += 2) g(c.segs[i], c.segs[i + 1]);
     for (const c of this.scene.below) for (let i = 0; i < c.segs.length; i += 2) g(c.segs[i], c.segs[i + 1]);
     for (const s of this.scene.symbols) { if (s.box) { g(s.box[0], s.box[1]); g(s.box[2], s.box[3]); } for (const q of s.poly || []) g(q[0], q[1]); }
+    for (const x of this.scene.grids || []) { g(x.a[0], x.a[1]); g(x.b[0], x.b[1]); }
+    for (const d of this.scene.drafting || []) for (const l of d.lines || []) for (const q of l) g(q[0], q[1]);   // 0.6 DC.117 (d)
     return Number.isFinite(bb.x0) ? bb : null;
   }
   /** Fit the drawing (or a 12 m square round the origin when there is nothing yet). Room is left for the bars on top. */
@@ -163,6 +174,11 @@ export class PlanView {
   // ---- picking ----
   hit(clientX, clientY, tolPx = 6) {
     const [x, y] = this.toPlan(clientX, clientY), tol = tolPx / this.scale;
+    // 0.6 DC.117 (d): drafting first (it is drawn over the building): near a line, or inside a hatch region
+    for (const d of this.scene.drafting || []) {
+      for (const l of d.lines || []) for (let i = 0; i + 1 < l.length + (d.closed ? 1 : 0); i++) { const a = l[i], b = l[(i + 1) % l.length]; if (segD(x, y, a[0], a[1], b[0], b[1]) <= tol) return d.key; }
+      if (d.rings && d.rings.reduce((n, r) => n + (inPoly(x, y, r) ? 1 : 0), 0) % 2) return d.key;
+    }
     for (const s of this.scene.symbols) {
       if (s.roof) continue;   // a roof's outline covers everything under it: it picks last
       if (s.poly) { if (inPoly(x, y, s.poly) || near(x, y, s.poly, tol)) return s.key; continue; }
@@ -202,10 +218,18 @@ export class PlanView {
     const flat = (l) => { g.beginPath(); for (let i = 0; i < l.length; i += 2) { const s = S([l[i], l[i + 1]]); if (i) g.lineTo(s.x, s.y); else g.moveTo(s.x, s.y); } g.closePath(); };
     const segs = (a) => { g.beginPath(); for (let i = 0; i < a.length; i += 4) { const p = S([a[i], a[i + 1]]), q = S([a[i + 2], a[i + 3]]); g.moveTo(p.x, p.y); g.lineTo(q.x, q.y); } g.stroke(); };
     const sel = (k) => this.selection.has(k), hov = (k) => this.hover === k;
+    // 0.6 DC.117: an underlay (another level), very light, under everything
+    if (this.scene.underlay?.segs?.length) { g.lineWidth = 1; g.strokeStyle = ink2; g.globalAlpha = 0.3; segs(this.scene.underlay.segs); g.globalAlpha = 1; }
     // what lies below the cut: thin
     g.lineWidth = 1; g.strokeStyle = ink2; g.globalAlpha = 0.7;
     for (const b of this.scene.below) { g.strokeStyle = sel(b.key) ? action : ink2; segs(b.segs); }
+    // 0.6 DF.19: what lies above the cut and under the view range's top (a high cabinet, a beam): dashed
+    g.setLineDash([6, 4]);
+    for (const b of this.scene.above || []) { g.strokeStyle = sel(b.key) ? action : ink2; segs(b.segs); }
+    g.setLineDash([]);
     g.globalAlpha = 1;
+    this.drawCloud(g, C);   // 0.6 DF.22: a point cloud's slice at the cut, under everything
+    this.drawGridLines(g, C, S);   // 0.6 DF.16: grid lines under everything, their bubbles on top
     // rooms: a faint fill and the label
     for (const r of this.scene.rooms || []) {
       if (r.poly) { path(r.poly); g.fillStyle = sel(r.key) ? action : (C['--layer-blue'] || action); g.globalAlpha = sel(r.key) ? 0.16 : 0.06; g.fill(); g.globalAlpha = 1; }
@@ -232,7 +256,8 @@ export class PlanView {
       for (const w of this.scene.walls) if (sel(w.key) || hov(w.key)) for (const p of w.pieces || [w.poly]) { path(p); g.strokeStyle = action; g.lineWidth = sel(w.key) ? 2.5 : 1.75; g.stroke(); }
     }
     // doors and windows
-    for (const s of this.scene.symbols) this.drawSymbol(g, s, sel(s.key) || hov(s.key) ? action : ink, S);
+    for (const s of this.scene.symbols) this.drawSymbol(g, s, sel(s.key) || hov(s.key) ? action : (s.color && C[s.color]) || ink, S);   // s.color: a token name (0.6 DF.29)
+    this.drawDrafting(g, C, S, sel, hov);   // 0.6 DC.117 (d)
     // dimensions
     g.font = '600 11px system-ui, sans-serif';
     for (const d of this.scene.dims || []) this.drawDim(g, d, ink2, S);
@@ -243,7 +268,93 @@ export class PlanView {
       const s = S(r.at);
       r.label.forEach((t, i) => { g.font = (i ? '500 11px ' : '700 12px ') + 'system-ui, sans-serif'; g.fillStyle = sel(r.key) ? action : ink; g.fillText(t, s.x, s.y + (i - (r.label.length - 1) / 2) * 15); });
     }
+    this.drawGridBubbles(g, C, S);
+    this.drawCrop(g, sheet, ink2, S);
+    this.drawMarkers(g, C, S);
     this.drawOverlay(g, { ink, ink2, action, poche }, S, path);
+  }
+  /** 0.6 DC.117 (d): drafting lines and hatch regions of this view — solid fills light, hatch strokes thin, outlines over them. */
+  drawDrafting(g, C, S, sel, hov) {
+    const list = this.scene.drafting || [];
+    if (!list.length) return;
+    const ink = C['--ink'] || '#111', action = C['--action'] || '#2563eb';
+    for (const d of list) {
+      const col = sel(d.key) || hov(d.key) ? action : ink;
+      if (d.solid && d.rings) { g.beginPath(); for (const r of d.rings) r.forEach((q, i) => { const s = S(q); if (i) g.lineTo(s.x, s.y); else g.moveTo(s.x, s.y); }); g.closePath(); g.fillStyle = col; g.globalAlpha = 0.35; g.fill('evenodd'); g.globalAlpha = 1; }
+      if (d.segs?.length) { g.strokeStyle = col; g.lineWidth = 0.75; g.beginPath(); const a = d.segs; for (let i = 0; i < a.length; i += 4) { const p = S([a[i], a[i + 1]]), q = S([a[i + 2], a[i + 3]]); g.moveTo(p.x, p.y); g.lineTo(q.x, q.y); } g.stroke(); }
+      g.strokeStyle = col; g.lineWidth = d.kind === 'hatch' ? 1 : (sel(d.key) ? 2 : 1.25);
+      for (const l of d.lines || []) { g.beginPath(); l.forEach((q, i) => { const s = S(q); if (i) g.lineTo(s.x, s.y); else g.moveTo(s.x, s.y); }); if (d.closed) g.closePath(); g.stroke(); }
+    }
+  }
+  /** 0.6 DC.117: the crop region — the plan outside it veiled in the sheet's colour, a dashed frame on its edge. */
+  drawCrop(g, sheet, ink2, S) {
+    const c = this.scene.crop;
+    if (!c) return;
+    const a = S([c[0], c[1]]), b = S([c[2], c[3]]);
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+    g.beginPath(); g.rect(0, 0, this.w, this.h2); g.rect(x, y, w, h);
+    g.fillStyle = sheet; g.globalAlpha = 0.62; g.fill('evenodd'); g.globalAlpha = 1;
+    g.setLineDash([8, 4]); g.strokeStyle = ink2; g.lineWidth = 1; g.strokeRect(x, y, w, h); g.setLineDash([]);
+  }
+  /** A point cloud's slice: scene.cloud { xy: Float32Array (2 per point, plan mm), n } as small dots. */
+  drawCloud(g, C) {
+    const c = this.scene.cloud;
+    if (!c?.n) return;
+    const s = this.scale, ox = this.w / 2 - this.cx * s, oy = this.h2 / 2 + this.cy * s, r = s * 15 > 2 ? 2 : 1.5;
+    g.fillStyle = C['--layer-blue'] || '#2563eb'; g.globalAlpha = 0.75;
+    for (let i = 0; i < c.n; i++) { const x = ox + c.xy[i * 2] * s, y = oy - c.xy[i * 2 + 1] * s; if (x > -2 && y > -2 && x < this.w + 2 && y < this.h2 + 2) g.fillRect(x - r / 2, y - r / 2, r, r); }
+    g.globalAlpha = 1;
+  }
+  /** Grid lines: thin, dash-dot (a centre line), the picked one in the action colour. scene.grids [{ tag, a, b, bubbles, sel }]. */
+  drawGridLines(g, C, S) {
+    const list = this.scene.grids || [];
+    if (!list.length) return;
+    g.save(); g.lineWidth = 1; g.setLineDash([14, 4, 2, 4]);
+    for (const x of list) {
+      const [p, q] = this.gridEnds(x, S);
+      g.strokeStyle = x.sel ? (C['--action'] || '#2563eb') : (C['--ink-2'] || '#666'); g.globalAlpha = x.sel ? 1 : 0.85;
+      g.beginPath(); g.moveTo(p.x, p.y); g.lineTo(q.x, q.y); g.stroke();
+    }
+    g.restore();
+  }
+  /** The screen ends of a grid line, pulled back to the edge of its bubbles. */
+  gridEnds(x, S) {
+    const p = S(x.a), q = S(x.b), d = Math.hypot(q.x - p.x, q.y - p.y) || 1, u = { x: (q.x - p.x) / d, y: (q.y - p.y) / d };
+    return [p, q, u];
+  }
+  /** Bubbles: a circle beyond each end the grid shows them at (both / start / end / none), the label inside. */
+  drawGridBubbles(g, C, S) {
+    const R = 11;
+    for (const x of this.scene.grids || []) {
+      if (x.bubbles === 'none') continue;
+      const [p, q, u] = this.gridEnds(x, S);
+      const at = [];
+      if (x.bubbles !== 'end') at.push({ x: p.x - u.x * R, y: p.y - u.y * R });
+      if (x.bubbles !== 'start') at.push({ x: q.x + u.x * R, y: q.y + u.y * R });
+      const col = x.sel ? (C['--action'] || '#2563eb') : (C['--ink'] || '#111');
+      for (const c of at) {
+        g.beginPath(); g.arc(c.x, c.y, R, 0, Math.PI * 2);
+        g.fillStyle = C['--sheet'] || '#fff'; g.fill(); g.lineWidth = 1.25; g.strokeStyle = col; g.stroke();
+        g.fillStyle = col; g.font = '700 ' + (x.tag.length > 2 ? 9 : 11) + 'px system-ui, sans-serif';   // i18n-ignore: a CSS font g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(x.tag, c.x, c.y + 0.5);
+      }
+    }
+  }
+  /** The project origin (a circle with a cross) and the survey point (a triangle in a circle), with their names. */
+  drawMarkers(g, C, S) {
+    for (const m of this.markers || []) {
+      const s = S(m.p), col = m.kind === 'survey' ? (C['--layer-blue'] || '#2563eb') : (C['--layer-red'] || '#c33');
+      if (s.x < -40 || s.y < -40 || s.x > this.w + 40 || s.y > this.h2 + 40) continue;
+      g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath(); g.arc(s.x, s.y, 8, 0, Math.PI * 2); g.stroke();
+      g.lineWidth = 1.25; g.beginPath();
+      if (m.kind !== 'survey') { g.moveTo(s.x - 11, s.y); g.lineTo(s.x + 11, s.y); g.moveTo(s.x, s.y - 11); g.lineTo(s.x, s.y + 11); }
+      if (m.kind !== 'origin') { g.moveTo(s.x, s.y - 5.5); g.lineTo(s.x + 5, s.y + 3.5); g.lineTo(s.x - 5, s.y + 3.5); g.closePath(); }
+      g.stroke();
+      g.font = '600 11px system-ui, sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle';
+      const tw = g.measureText(m.label).width;
+      g.fillStyle = C['--sheet'] || '#fff'; g.globalAlpha = 0.85; g.fillRect(s.x + 12, s.y + 4, tw + 6, 15); g.globalAlpha = 1;
+      g.fillStyle = col; g.fillText(m.label, s.x + 15, s.y + 11.5);
+    }
   }
   drawGrid(g, color) {
     // a light grid: 1 m (or 1 ft) lines once they are 12 px apart, 5 m / 10 ft stronger
@@ -324,6 +435,8 @@ export class PlanView {
     if (o.snap) {
       const s = S(o.snap.p); g.strokeStyle = C.action; g.lineWidth = 1.5; g.beginPath();
       if (o.snap.kind === 'end') g.rect(s.x - 5, s.y - 5, 10, 10);
+      else if (o.snap.kind === 'cloud') { g.moveTo(s.x, s.y - 6); g.lineTo(s.x + 6, s.y); g.lineTo(s.x, s.y + 6); g.lineTo(s.x - 6, s.y); g.closePath(); }
+      else if (o.snap.kind === 'grid') { g.arc(s.x, s.y, 6, 0, Math.PI * 2); g.moveTo(s.x - 9, s.y); g.lineTo(s.x + 9, s.y); g.moveTo(s.x, s.y - 9); g.lineTo(s.x, s.y + 9); }
       else if (o.snap.kind === 'mid') { g.moveTo(s.x, s.y - 6); g.lineTo(s.x + 6, s.y + 5); g.lineTo(s.x - 6, s.y + 5); g.closePath(); }
       else if (o.snap.kind === 'on') { g.moveTo(s.x - 5, s.y - 5); g.lineTo(s.x + 5, s.y + 5); g.moveTo(s.x + 5, s.y - 5); g.lineTo(s.x - 5, s.y + 5); }
       else { g.moveTo(s.x - 7, s.y); g.lineTo(s.x + 7, s.y); g.moveTo(s.x, s.y - 7); g.lineTo(s.x, s.y + 7); }
@@ -342,19 +455,19 @@ export class PlanView {
   /** The plan as a picture (print / PDF): the same drawing at a scale, on a white sheet. → canvas */
   snapshot(widthPx = 2400) {
     const bb = this.bounds() || { x0: 0, y0: 0, x1: 10000, y1: 10000 };
-    const keep = { cx: this.cx, cy: this.cy, scale: this.scale, w: this.w, h2: this.h2, dpr: this.dpr, ctx: this.ctx, overlay: this.overlay, sel: this.selection, hover: this.hover };
+    const keep = { cx: this.cx, cy: this.cy, scale: this.scale, w: this.w, h2: this.h2, dpr: this.dpr, ctx: this.ctx, overlay: this.overlay, sel: this.selection, hover: this.hover, markers: this.markers };
     const pad = 0.06, W = bb.x1 - bb.x0, H = bb.y1 - bb.y0;
     const c = document.createElement('canvas');
     c.width = widthPx; c.height = Math.round(widthPx * (H + 2 * pad * W) / (W * (1 + 2 * pad)));
     this.ctx = c.getContext('2d'); this.w = c.width; this.h2 = c.height; this.dpr = 1;
     this.scale = Math.min(c.width / (W * (1 + 2 * pad)), c.height / (H + 2 * pad * W));
     this.cx = (bb.x0 + bb.x1) / 2; this.cy = (bb.y0 + bb.y1) / 2;
-    this.overlay = null; this.selection = new Set(); this.hover = null;
+    this.overlay = null; this.selection = new Set(); this.hover = null; this.markers = [];
     const grid = this.gridUnit; this.gridUnit = 1e12;
     this.draw();
     const pxPerMm = this.scale;
     this.gridUnit = grid;
-    Object.assign(this, { cx: keep.cx, cy: keep.cy, scale: keep.scale, w: keep.w, h2: keep.h2, dpr: keep.dpr, ctx: keep.ctx, overlay: keep.overlay, selection: keep.sel, hover: keep.hover });
+    Object.assign(this, { cx: keep.cx, cy: keep.cy, scale: keep.scale, w: keep.w, h2: keep.h2, dpr: keep.dpr, ctx: keep.ctx, overlay: keep.overlay, selection: keep.sel, hover: keep.hover, markers: keep.markers });
     this.render();
     return { canvas: c, pxPerMm };
   }

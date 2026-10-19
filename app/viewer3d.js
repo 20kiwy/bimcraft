@@ -19,6 +19,8 @@
  *   v.setSectionTurn(rad)                      sections square to a building turned in its site (0.5 BM.9): the Front / Side
  *                                              planes and the box run along axes turned by `rad` about the vertical (the
  *                                              building's own, IfcPlacer.planRotation); 0 = the model's axes, as before
+ *   v.setViewTurn(rad)                         the view presets (view(name): Fit, Top, Front, Side) look along a building
+ *                                              turned by `rad` about the vertical (0.6 DC.57); 0 = the model's axes
  *   v.vis.hide(keys) / isolate(keys, {ghost}) / showAll(); v.applyVisibility()   hide, isolate, see-through (ifc-vis.js)
  *   v.select(key | [keys] | null, { also })   highlight one or more elements (+ `also`, lit but not picked); v.selection
  *   v.frameKeys(keys)                          zoom to elements, keeping the view direction
@@ -43,7 +45,7 @@ import { Visibility, batchIndex, batchEdges, edgeIndex, boundsOf, SOLID } from '
 import { KEY_SPAN } from './ifc-model.js';
 import { runOf, runEdges, faceRegion, snapTo } from './measure.js';
 import { cleanVolume, cellPlanes, polyhedron, modelSpec, capSpec, specKey, clipGlsl } from './section-volume.js';
-import { openElements, stencilIndex } from './caps-closed.js';
+import { openAcross, stencilIndex } from './caps-closed.js';
 import { onMouse } from './input-mouse.js';   // 0.5 IP.1: the input profile's buttons and wheel
 
 const CLIP_EPS = 0.0005;   // m: section planes sit this far outside the kept part (setClip)
@@ -67,6 +69,8 @@ export class Viewer3D {
     this.clipGroups = null;
     this.caps = [];       // stencil meshes and cap planes while a section shows
     this.capsOn = true;
+    this.sectionTurn = 0;
+    this.viewTurn = 0;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000);
@@ -472,12 +476,14 @@ export class Viewer3D {
     this.caps = [];
     if (!this.capsOn || !this.clip.length || this.box.isEmpty()) { this.render(); return; }
     const size = this.box.getSize(new THREE.Vector3()).length() * 2 + 1;
-    // Per batch, once: the closed elements' shown triangles, as an index over the batch's own vertices.
+    // Once per set of batches: which elements are open, judged over every batch an element is in (an element of several
+    // colours is in several: 0.6 DC.53); then per batch the closed elements' shown triangles, over its own vertices.
+    const solid = this.meshes.filter((m) => !m.userData.space && m.userData.batch).map((m) => m.userData.batch);
+    if (solid.some((b) => !b.openIds)) { const open = openAcross(solid); for (const b of solid) b.openIds = open; }
     const parts = [];
     for (const m of this.meshes) {
       if (m.userData.space) continue;
       const b = m.userData.batch;
-      if (b && !b.openIds) b.openIds = openElements(b.positions, b.indices, b.triIds);
       const idx = m.geometry.index.array;
       const nSolid = m.userData.nSolid ?? idx.length / 3;
       const sel = stencilIndex(idx, nSolid, m.userData.triIds, b ? b.openIds : new Set());
@@ -654,7 +660,11 @@ export class Viewer3D {
     this.render();
   }
 
-  /** Camera presets around the model's bounding box. IFC is Z-up; web-ifc hands us Y-up. */
+  /** The view presets' frame (0.6 DC.57): turned by `rad` about the vertical, so a building turned in its site is seen
+   *  square — Top with its walls along the screen, Front facing its front. The camera is not moved here. */
+  setViewTurn(rad = 0) { this.viewTurn = Number(rad) || 0; }
+
+  /** Camera presets around the model's bounding box, in the view frame (setViewTurn). IFC is Z-up; web-ifc hands us Y-up. */
   view(name = 'iso') {
     this.onUserMove?.();   // a preset wins over a view-cube turn still running
     if (this.box.isEmpty()) return;
@@ -668,7 +678,7 @@ export class Viewer3D {
       front: new THREE.Vector3(0, 0.05, 1),
       side: new THREE.Vector3(1, 0.05, 0),
     };
-    const d = (dirs[name] || dirs.iso).clone().normalize();
+    const d = (dirs[name] || dirs.iso).clone().normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.viewTurn);
     this.camera.near = Math.max(dist / 1000, 0.01);
     this.camera.far = dist * 20;
     this.camera.updateProjectionMatrix();

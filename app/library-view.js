@@ -16,7 +16,7 @@
  */
 import { el } from './ui-util.js';
 import * as L from './libitem.js';
-import { t } from "./i18n.js";
+import { t, locale } from "./i18n.js";
 
 const API = '/api/v1/library';
 const TOKEN_KEY = 'bimcraft.library.token';
@@ -218,7 +218,7 @@ export class LibraryPanel {
     this.fileNotes = r.notes;
     this.fileEntries = r.items.map((raw, i) => {
       const item = L.cleanItem(raw);
-      return { key: 'file:' + i + ':' + item.name, name: item.name, maker: item.maker, model: item.model, category: item.category, license: null, version: null, local: true, item,
+      return { key: 'file:' + i + ':' + item.name, name: L.localized(item, locale()).name, maker: item.maker, model: item.model, category: item.category, license: null, version: null, local: true, item,
         load: async () => ({ item, meta: { library: 'file', source: file.name, sourceFile: file.name, sha256: await L.itemHash(item), notes: r.notes.filter((n) => n.startsWith(raw.name) || !/: /.test(n)) } }) };
     });
     this.source = 'files';
@@ -402,19 +402,22 @@ export class LibraryPanel {
     if (d.loading) return el('div', { className: 'bc-lib-detail' }, back, el('p', { className: 'bc-muted', 'aria-live': 'polite' }, t('lib.detail.reading')));
     if (d.error) return el('div', { className: 'bc-lib-detail' }, back, el('p', { className: 'bc-input-err', role: 'alert' }, d.error));
     const it = d.item, m = d.meta, p = it.params || {};
+    const loc = L.localized(it, locale()), put = L.localizedItem(it, locale());   // 0.6 WL.7: the item in the page's language
     const fmt = (v) => (v > 0 ? Math.round(v) + ' mm' : '');
     const mode = this.host.mode(), swapT = this.host.swapTarget();
     const lic = it.license;
-    const rows = [[t('lib.row.category'), L.CATEGORIES[it.category] ? t('lib.category.option', { group: it.category.split('/')[0], label: L.CATEGORIES[it.category] }) : it.category], [t('lib.row.kind'), it.kind],
+    const rows = [[t('lib.row.type'), loc.type || ''], [t('lib.row.category'), L.CATEGORIES[it.category] ? t('lib.category.option', { group: it.category.split('/')[0], label: L.CATEGORIES[it.category] }) : it.category], [t('lib.row.kind'), it.kind],
       [t('lib.row.maker'), it.maker], [t('lib.row.model'), it.model], [t('lib.row.width'), fmt(p.width)], [t('lib.row.depth'), fmt(p.depth)], [t('lib.row.height'), fmt(p.height)],
-      [t('lib.row.elec'), p.elec ? Object.entries(p.elec).map(([k, v]) => k + ' ' + v).join(', ') : ''], [t('lib.row.plumb'), p.plumb ? Object.entries(p.plumb).map(([k, v]) => k.toUpperCase() + ' ' + v).join(', ') : ''],
+      [t('lib.row.elec'), p.elec ? Object.entries(p.elec).map(([k, v]) => loc.label('elec.' + k, k) + ' ' + v).join(', ') : ''], [t('lib.row.plumb'), p.plumb ? Object.entries(p.plumb).map(([k, v]) => loc.label('plumb.' + k, k.toUpperCase()) + ' ' + v).join(', ') : ''],
       [t('lib.row.remarks'), p.remarks], [t('lib.row.body'), it.body ? (it.body.type === 'box' ? t('lib.body.box') : t('lib.body.mesh', { n: it.body.indices.length / 3 })) : t('lib.body.none')],
       [t('lib.row.version'), it.version ? String(it.version) : ''], [t('lib.row.from'), m.source]];
     const url = svgUrl(L.previewSvg(it));
     const withdrawn = m.withdrawn || e.withdrawn;
     return el('div', { className: 'bc-lib-detail' }, back,
       el('div', { className: 'bc-lib-bigprev' }, el('img', { src: url, alt: t('lib.detail.plan_alt', { name: it.name }) })),
-      el('p', { className: 'bc-prop-name' }, it.name),
+      el('p', { className: 'bc-prop-name', 'data-lib-name': '' }, loc.name),
+      loc.translated && loc.name !== it.name ? el('p', { className: 'bc-muted', 'data-lib-original': '' }, t('lib.detail.original', { name: it.name })) : null,
+      loc.description ? el('p', { className: 'bc-lib-desc', 'data-lib-desc': '' }, loc.description) : null,
       withdrawn ? el('p', { className: 'bc-input-err', role: 'alert' }, m.version?.withdrawn_reason ? t('lib.withdrawn.reason', { reason: m.version.withdrawn_reason }) : t('lib.withdrawn.default')) : null,
       el('dl', { className: 'bc-dl' }, rows.filter(([, v]) => v).flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, String(v))])),
       el('div', { className: 'bc-lib-license' },
@@ -423,9 +426,9 @@ export class LibraryPanel {
         lic && lic.url && /^https?:/.test(lic.url) ? el('p', {}, el('a', { href: lic.url, rel: 'noopener noreferrer', target: '_blank' }, t('lib.license.link'))) : null),   // i18n-ignore: rel attribute value
       m.notes && m.notes.length ? el('details', { className: 'bc-lib-notes' }, el('summary', {}, t('lib.notes', { n: m.notes.length })), el('ul', {}, m.notes.map((n) => el('li', {}, n)))) : null,
       el('p', { className: 'bc-lib-actions' },
-        mode === 'ifc' && !withdrawn ? el('button', { type: 'button', className: 'btn-plot btn-sm-cc', 'data-lib-place': '', onClick: () => this.host.place({ item: it, meta: m }) },
+        mode === 'ifc' && !withdrawn ? el('button', { type: 'button', className: 'btn-plot btn-sm-cc', 'data-lib-place': '', onClick: () => this.host.place({ item: put, meta: m }) },
           el('i', { className: 'bi bi-plus-square', 'aria-hidden': 'true' }), ' ' + t('lib.place')) : null,
-        mode === 'ifc' && swapT && !withdrawn ? el('button', { type: 'button', className: 'btn-line btn-sm-cc', onClick: () => this.host.swap({ item: it, meta: m }) },
+        mode === 'ifc' && swapT && !withdrawn ? el('button', { type: 'button', className: 'btn-line btn-sm-cc', onClick: () => this.host.swap({ item: put, meta: m }) },
           el('i', { className: 'bi bi-arrow-left-right', 'aria-hidden': 'true' }), ' ' + t('lib.swap', { name: swapT.name })) : null,
         it.uuid && m.library === 'librarycraft' ? el('a', { className: 'bc-linkbtn', href: '/library/item/' + encodeURIComponent(m.info?.slug || ''), target: '_blank', rel: 'noopener' }, t('lib.open_on')) : null),
       mode !== 'ifc' ? el('p', { className: 'bc-muted' }, t('lib.needs_ifc')) : null);

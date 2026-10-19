@@ -30,6 +30,7 @@
  *                     res-sheets.js)
  */
 import { el } from './ui-util.js';
+import { readGrids, toPlan as gridsToPlan, gridsInView } from './model-grids.js';   // 0.6 DF.16 (bim-draw): grids on the elevations and sections
 import { fmtLen, parseLen, parsePitch, fmtPitch, fmtArea } from './model-units.js';
 import { snapshotModel } from './model-ops.js';
 import { ModelWriter } from './model-write.js';
@@ -37,7 +38,11 @@ import { snapPoint } from './model-tools.js';
 import { readRoofPlanes, placeRoofPlane, changeRoofPlane, removeRoofPlanes, planeFrame } from './res-roofplane.js';
 import { FOUNDATION_KINDS, readFoundations, placeFoundation, changeFoundation, removeFoundations, foundationParams, foundationGeometry, loadsOn } from './res-foundation.js';
 import { loopAt, labelPoint } from './model-rooms.js';
-import { STAIR_KINDS, STAIR_DEFAULTS, STAIR_LIMITS, stairLayout, readStairs, placeStair, changeStair, removeStairs, stairHeight } from './res-stair.js';
+import { viewNotes, openingFacts, interiorView, ROOM_SIDES } from './comforts-views.js';
+import { placedItems } from './model-move.js';
+const interiorCtx = new Map();   // per setInput: a level's triangles, rooms and items for its interior elevations   // 0.6 round 2 (bim-comforts_PART_2): dimensions, level marks, tags
+import { wallGeom } from './model-arcs.js';
+import { STAIR_KINDS, STAIR_DEFAULTS, STAIR_LIMITS, stairLayout, readStairs, placeStair, changeStair, removeStairs, stairHeight, SPIRAL_DEFAULTS } from './res-stair.js';
 import { RAIL_DEFAULTS, railingParts, readRailings, placeRailing, changeRailing, removeRailings } from './res-railing.js';
 import { FRAME_DEFAULTS, readFraming, frameHosts, changeFraming, removeFraming, keepPiece, lumberList, frameWall, LUMBER } from './res-framing.js';
 import { readOpenings, openingType, openingTypeName } from './model-openings.js';
@@ -46,7 +51,7 @@ import { roofGeometry, edgeKinds } from './res-roof.js';
 import { modelQuantities, buildTakeoff } from './res-takeoff.js';
 import { newHandoffId, putHandoff } from './handoff.js';
 import { loadTin, readTerrain, readPads, readHardscape, finishedSurface, existingSurface, placeTerrain, changeTerrain, removeTerrain, placePad, changePad, removePads, placeHardscape, changeHardscape, removeHardscape,
-  parsePointText, drawingContours, thinToGrid, toModel, autoOffset, landXml, padShape, PAD_DEFAULTS, HARD_KINDS } from './res-terrain.js';
+  parsePointText, drawingContours, thinToGrid, toModel, autoOffset, landXml, readLandXmlSurfaces, padShape, PAD_DEFAULTS, HARD_KINDS } from './res-terrain.js';
 import { modelTriangles, projectView, elevationDirs } from './res-views.js';
 import { buildSet, setPdf, sheetSvg, PAPERS, readSectionLines, placeSectionLine, changeSectionLine, removeSectionLines, sectionDir } from './res-sheets.js';
 import { viewerToPlan } from './model-plan.js';
@@ -70,6 +75,8 @@ export function mountRes(modelUi) {
   const R = { planes: [], plane: { pitch: Math.atan(4 / 12) / D2R, base: null, pts: null, at: null }, founds: [], found: { kind: 'slab', hover: null }, stairs: [], stair: { ...STAIR_DEFAULTS, start: null, at: null }, rails: [], rail: { kind: 'guard', height: RAIL_DEFAULTS.height, pts: null, at: null }, frames: [], frame: { ...FRAME_DEFAULTS, show: true, see: false, hover: null }, terrain: null, pads: [], hards: [], tr: { spots: [], z: 0, unit: 'ft', tinReady: false, fin: null, finKey: null, contours: null, pad: { ...PAD_DEFAULTS }, hard: { kind: 'walk', pts: null, at: null } }, devs: [], el: { kind: 'socket.double', circuit: '', height: null, at: null, link: null }, secs: [], sec: { a: null, at: null }, sheets: null, counters: [], counter: { overhang: COUNTER_DEFAULTS.overhang, thickness: COUNTER_DEFAULTS.thickness, hover: null }, cabinets: [] };
   let A = null;   // the plan's API (model-ui.js extend)
   const t = (k, v) => A.t(k, v);
+  /** A stair kind's name (0.6 round 2: the spiral stair's words are comforts.* keys, beside the res.* set); needs t, so inside. */
+  const stairKindName = (k) => (k === 'spiral' ? t('comforts.st.spiral') : t('res.st.kind.' + k));
   const L = (mm) => fmtLen(mm, A.units());
   const writer = () => { const e = A.ed(); return e ? new ModelWriter(e.W, e.api, e.mid) : null; };
   const levelGuid = () => A.level()?.guid;
@@ -129,6 +136,13 @@ export function mountRes(modelUi) {
       const pick = (sel, key) => root.querySelector(sel)?.addEventListener('change', (e) => { R.stair[key] = e.target.value; A.drawOverlay(); });
       pick('[data-res-stkind]', 'kind'); pick('[data-res-stturn]', 'turn'); pick('[data-res-strail]', 'railings');
       const sw = root.querySelector('[data-res-stwidth]');
+      // 0.6 round 2: a spiral stair starts 30" wide (its own labelled default) unless a width was typed
+      root.querySelector('[data-res-stkind]')?.addEventListener('change', (e) => {
+        if (e.target.value === 'spiral' && R.stair.width === STAIR_DEFAULTS.width) R.stair.width = SPIRAL_DEFAULTS.width;
+        else if (e.target.value !== 'spiral' && R.stair.width === SPIRAL_DEFAULTS.width) R.stair.width = STAIR_DEFAULTS.width;
+        if (sw) sw.value = L(R.stair.width);
+        if (A.S.tool === 'stair' && A.root.querySelector('[data-model-hint]')) A.root.querySelector('[data-model-hint]').textContent = t(e.target.value === 'spiral' ? 'comforts.hint.spiral' : 'res.hint.stair');
+      });
       sw?.addEventListener('change', () => { const mm = parseLen(sw.value, A.units()); if (mm >= 500) R.stair.width = mm; else A.host.status(t('res.err.stairwidth'), true); sw.value = L(R.stair.width); A.drawOverlay(); });
       root.querySelector('[data-res-rlkind]')?.addEventListener('change', (e) => { R.rail.kind = e.target.value; R.rail.height = e.target.value === 'handrail' ? 36 * 25.4 : RAIL_DEFAULTS.height; const rh = root.querySelector('[data-res-rlheight]'); if (rh) rh.value = L(R.rail.height); });
       const rh = root.querySelector('[data-res-rlheight]');
@@ -324,7 +338,7 @@ export function mountRes(modelUi) {
   }
   function stairSymbols(L, onTop, k, key) {
     const dashed = [], thin = [], lines = [];
-    for (const pc of L.pieces) for (const tr2 of (pc.kind === 'landing' ? [{ poly: pc.poly, z: pc.z }] : pc.treads)) (onTop || tr2.z <= CUT ? thin : dashed).push(...pp(tr2.poly));
+    for (const pc of L.pieces) for (const tr2 of (pc.kind === 'landing' ? [{ poly: pc.poly, z: pc.z }] : pc.treads || [])) (onTop || tr2.z <= CUT ? thin : dashed).push(...pp(tr2.poly));   // a spiral's post has no treads
     for (const o of L.outline) lines.push(...pp(o));
     // the walk line with an arrow at its end (up on the bottom level, down from the top)
     const W = onTop ? L.walk.slice().reverse() : L.walk;
@@ -393,11 +407,12 @@ export function mountRes(modelUi) {
     const st = R.stairs.find((x) => x.guid === items[0].guid);
     if (!st) return null;
     const run = (ch) => A.commit(changeStair(st.guid, ch), { ...kit.one(t('res.stair')), reselect: again(() => R.stairs, st.guid) });
-    kit.field(t('res.st.kind'), kit.select(STAIR_KINDS.map((x) => [x, t('res.st.kind.' + x)]), st.kind, 'data-mp-stkind', (v) => run({ kind: v })));
+    kit.field(t('res.st.kind'), kit.select(STAIR_KINDS.map((x) => [x, stairKindName(x)]), st.kind, 'data-mp-stkind', (v) => run({ kind: v })));
     if (st.kind !== 'straight') kit.field(t('res.st.turn'), kit.select([['left', t('res.st.turn.left')], ['right', t('res.st.turn.right')]], st.turn, 'data-mp-stturn', (v) => run({ turn: v })));
     kit.field(t('res.st.width'), kit.lenInput(st.width, 'data-mp-stwidth', (mm) => run({ width: mm }), { min: 500 }));
     kit.field(t('res.st.risermax'), kit.lenInput(st.riserMax, 'data-mp-strisermax', (mm) => run({ riserMax: mm }), { min: 100 }));
-    kit.field(t('res.st.tread'), kit.lenInput(st.tread, 'data-mp-sttread', (mm) => run({ tread: mm }), { min: 150 }));
+    kit.field(t('res.st.tread'), kit.lenInput(st.tread, 'data-mp-sttread', (mm) => run({ tread: mm }), { min: st.kind === 'spiral' ? 100 : 150 }), st.kind === 'spiral' ? el('span', { className: 'bc-sub' }, ' ' + t('comforts.st.onwalk')) : null);
+    if (st.kind === 'spiral') kit.field(t('comforts.st.post'), kit.lenInput(st.post, 'data-mp-stpost', (mm) => run({ post: mm }), { min: 40 }));
     kit.field(t('res.st.railings'), kit.select(['both', 'left', 'right', 'none'].map((x) => [x, t('res.st.rail.' + x)]), st.railings, 'data-mp-strail', (v) => run({ railings: v })));
     if (st.railings !== 'none') kit.field(t('res.st.railheight'), kit.lenInput(st.railHeight, 'data-mp-strailh', (mm) => run({ railHeight: mm }), { min: 300 }));
     const wl = el('input', { type: 'checkbox', checked: !!st.well, 'data-mp-stwell': '' });
@@ -406,8 +421,9 @@ export function mountRes(modelUi) {
     const Lt = st.layout;
     if (Lt) {
       kit.rows.push(el('dt', {}, t('res.st.risers')), el('dd', { 'data-mp-strisers': '' }, t('res.st.risers.v', { n: Lt.n, r: L(Lt.riser) })), el('dt', {}, t('res.st.treads')), el('dd', {}, t('res.st.risers.v', { n: Lt.treads, r: L(Lt.tread) })));
-      const bad = Object.entries(Lt.checks).filter(([, ok]) => !ok).map(([k2]) => t('res.st.check.' + k2));
-      kit.rows.push(el('dt', { className: 'bc-mp-wide' }, ''), el('dd', { className: 'bc-mp-wide bc-sub', 'data-mp-stchecks': '' }, bad.length ? t('res.st.checks.bad', { list: bad.join(', ') }) : t('res.st.checks.ok')));
+      const sp = st.kind === 'spiral';   // 0.6 round 2: a spiral stair's labelled defaults are its own
+      const bad = Object.entries(Lt.checks).filter(([, ok]) => !ok).map(([k2]) => t((sp ? 'comforts.st.check.' : 'res.st.check.') + k2));
+      kit.rows.push(el('dt', { className: 'bc-mp-wide' }, ''), el('dd', { className: 'bc-mp-wide bc-sub', 'data-mp-stchecks': '' }, bad.length ? t('res.st.checks.bad', { list: bad.join(', ') }) : t(sp ? 'comforts.st.checks.ok' : 'res.st.checks.ok')));
     }
     return { title: t('res.stair') };
   }
@@ -592,13 +608,34 @@ export function mountRes(modelUi) {
       const r = drawingContours(model);
       return { points: r.points, lines: r.lines, unit: R.tr.unit };
     }
+    if (/\.(xml|landxml)$/.test(name)) {   // 0.6 DF.24: CivilCraft's LandXML surfaces, their own triangles kept
+      const lx = readLandXmlSurfaces(await f.text());
+      const i = lx.surfaces.length > 1 ? await chooseSurface(lx.surfaces) : 0;
+      if (i < 0) return null;
+      const sf = lx.surfaces[i];
+      return { points: sf.pts, lines: [], faces: sf.faces.length ? sf.faces : null, unit: lx.unit, source: 'landxml', notes: lx.notes, surface: sf.name };
+    }
     return { points: parsePointText(await f.text()), lines: [], unit: R.tr.unit };
+  }
+  /** A LandXML file with several surfaces: which one is the ground (0.6 DF.24). → its index, or −1 (Cancel). */
+  function chooseSurface(list) {
+    return new Promise((done) => {
+      const dlg = el('dialog', { className: 'bc-dialog', 'aria-labelledby': 'bc-lx-h', 'data-res-lxdialog': '' },
+        el('form', { method: 'dialog' },
+          el('h2', { className: 'bc-h', id: 'bc-lx-h' }, t('res.lx.choose')),
+          el('p', { className: 'bc-lib-actions' }, ...list.map((sf, i) => el('button', { type: 'submit', className: i ? 'btn-line btn-sm-cc' : 'btn-plot btn-sm-cc', value: String(i), 'data-res-lxpick': String(i) }, t('res.lx.option', { name: sf.name, n: sf.pts.length }))),
+            el('button', { type: 'submit', className: 'btn-line btn-sm-cc', value: 'cancel' }, t('model.gp.cancel')))));
+      dlg.addEventListener('close', () => { const v = dlg.returnValue; dlg.remove(); done(v === 'cancel' || v === '' ? -1 : Number(v)); });
+      A.root.append(dlg);
+      dlg.showModal();
+    });
   }
   async function groundFromFile(f) {
     try {
       await ensureTin();
       A.host.status(t('res.tr.reading', { name: f.name }));
       const r = await readGroundFile(f);
+      if (!r) { A.host.status(''); return; }
       const all = [...r.points, ...r.lines.flat()];
       if (all.length < 3) { A.host.status(t('res.err.nosurvey'), true); return; }
       const k = UNIT_MM[r.unit] || 1;
@@ -608,7 +645,8 @@ export function mountRes(modelUi) {
       const zs = near.length ? near : all.map((p) => p.z).sort((a, b) => a - b);
       const datum = zs[Math.floor(zs.length / 2)] + 200 / k;
       const pts = toModel(r.points, { unitMm: k, offset, datum }), lines = r.lines.map((l) => toModel(l, { unitMm: k, offset, datum }));
-      A.commit(placeTerrain({ source: /\.(las|laz)$/i.test(f.name) ? 'las' : /\.(tif|tiff|asc)$/i.test(f.name) ? 'grid' : /\.(dxf|dwg)$/i.test(f.name) ? 'contours' : 'points', points: pts, lines, datum, offset, unit: r.unit, interval: A.units() === 'mm' ? 500 : 304.8 }), { label: t('res.terrain'), verb: t('model.verb.placed') });
+      A.commit(placeTerrain({ source: r.source || (/\.(las|laz)$/i.test(f.name) ? 'las' : /\.(tif|tiff|asc)$/i.test(f.name) ? 'grid' : /\.(dxf|dwg)$/i.test(f.name) ? 'contours' : 'points'), points: pts, lines, faces: r.faces || null, datum, offset, unit: r.unit, interval: A.units() === 'mm' ? 500 : 304.8 }), { label: t('res.terrain'), verb: t('model.verb.placed') });
+      if (r.source === 'landxml') A.host.status(t('res.lx.done', { name: r.surface, n: r.points.length }) + (r.notes?.length ? ' ' + r.notes.join(' ') : ''), false, true);
     } catch (e) { console.error(e); A.host.status(t('res.err.readground', { why: e.message || e }), true); }
   }
   function exportLandXml() {
@@ -834,6 +872,7 @@ export function mountRes(modelUi) {
     const d = takeoffData();
     if (!d) return null;
     const input = modelQuantities(d, t);
+    A.ask('takeoffExtra', input);   // 0.6 DF.29: pipes, ducts, fittings and valves (mep-ui.js)
     input.paper = (() => { let p = null; try { p = localStorage.getItem('bimcraft.sheets.paper'); } catch (e) { /* none */ } return PAPERS[p] ? p : null; })();
     return buildTakeoff(input);
   }
@@ -894,9 +933,17 @@ export function mountRes(modelUi) {
   const paperNow = () => { let p = null; try { p = localStorage.getItem(PAPER_KEY); } catch (e) { /* none */ } return PAPERS[p] ? p : (A.units() === 'mm' ? 'a3' : 'tabloid'); };
   /** Every drawing of the set, from the model as it is now. */
   function makeSet(paper) {
+    const input = setInput();
+    if (!input) return [];
+    return buildSet(input, setOpts(paper));
+  }
+  const setOpts = (paper) => ({ paper, units: A.units(), project: String(A.host.fileName?.() || '').replace(/\.ifc$/i, ''), date: new Date().toISOString().slice(0, 10) });
+  /** What the sheets draw, from the model as it is now (refs: a level's / section line's GlobalId, a side, a schedule kind:
+   *  0.6 DF.19's own sheets find their views by them). */
+  function setInput() {
     const model = A.host.model(), ifc = A.host.ifc?.(), w = writer();
     const levels = A.S.data?.levels || [];
-    if (!model || !ifc || !w || !levels.length) return [];
+    if (!model || !ifc || !w || !levels.length) return null;
     const C = ifc.api.GetCoordinationMatrix(model.modelID);
     const k = A.kb();
     const skip = new Set();
@@ -904,20 +951,62 @@ export function mountRes(modelUi) {
     const g = groundLevel() || levels[0];
     const Mg = viewerToPlan(C, w.storeyWorld(g.id));
     const els = modelTriangles(model, Mg, { skip });
-    const input = { plans: [], elevations: [], sections: [], schedules: [], framing: [] };
-    for (const lv of levels.slice().filter((l) => (A.S.data.walls || []).some((x) => x.storey === l.id) || l.id === g.id)) input.plans.push({ title: t('res.sh.plan', { level: lv.name }), scene: A.sceneFor(lv.id) });
-    for (const [side, dir] of Object.entries(elevationDirs)) input.elevations.push({ title: t('res.sh.elev.' + side), view: projectView(els, { dir }) });
+    const input = { plans: [], rcps: [], elevations: [], sections: [], schedules: [], framing: [] };
+    interiorCtx.clear();
+    for (const lv of levels.slice().filter((l) => (A.S.data.walls || []).some((x) => x.storey === l.id) || l.id === g.id)) {
+      input.plans.push({ ref: lv.guid, title: t('res.sh.plan', { level: lv.name }), scene: A.sceneFor(lv.id) });
+      // 0.6 DC.117: its reflected ceiling plan, drawn only when a sheet shows it
+      input.rcps.push({ ref: lv.guid, title: t('res.sh.rcp', { level: lv.name }), get scene() { return this._scene || (this._scene = A.sceneFor(lv.id, 'rcp')); } });
+    }
+    // 0.6 DF.16: the building's grid lines seen end on, in the ground level's plan (the elevations' frame) or the section's level
+    const gridsOn = (storey) => { try { return gridsToPlan(w, storey, readGrids(w)).flatMap((x) => x.axes); } catch (e) { return []; } };
+    const gAxes = gridsOn(g.id);
+    // 0.6 round 2 (comforts-views.js): each elevation and section carries its notes — level marks, the heights between levels,
+    // the building's width and the door / window tags on an elevation (`view.notes`, drawn by the sheets)
+    const lvls = levels.map((l) => ({ name: l.name, elevation: l.elevation }));
+    const fmtN = (mm) => L(mm);
+    const facts = (() => { try { return openingFacts(A.S.data.openings || [], A.S.data.walls || [], wallGeom).map((o) => { const lv = levels.find((l) => l.id === o.storey), dz = lv ? lv.elevation - g.elevation : 0; return { ...o, z0: o.z0 + dz, z1: o.z1 + dz }; }); } catch (e) { return []; } })();
+    const widthOn = (dir) => { const r = [dir[1], -dir[0]], xs = []; for (const x of A.S.data.walls || []) for (const q of [x.a, x.b]) xs.push(q[0] * r[0] + q[1] * r[1] - x.t / 2, q[0] * r[0] + q[1] * r[1] + x.t / 2); /* the outside faces (square walls exactly) */ return xs.length ? { x0: Math.min(...xs), x1: Math.max(...xs) } : null; };
+    const noted = (view, ctx) => { try { return viewNotes(view, { ...ctx, levels: lvls, fmt: fmtN }); } catch (e) { console.error(e); return []; } };
+    for (const [side, dir] of Object.entries(elevationDirs)) {
+      const view = { ...projectView(els, { dir }), grids: gridsInView(gAxes, dir) };
+      view.notes = noted(view, { kind: 'elevation', dir, base: g.elevation, openings: facts, width: widthOn(dir) });
+      input.elevations.push({ ref: side, title: t('res.sh.elev.' + side), view });
+    }
     for (const sl of R.secs) {
       const M = viewerToPlan(C, w.storeyWorld(sl.storey));
       const { o, dir } = sectionDir(sl);
-      input.sections.push({ title: t('res.sec.name', { name: sl.name }), view: projectView(modelTriangles(model, M, { skip }), { dir, cut: { o }, far: sl.depth }) });
+      const view = { ...projectView(modelTriangles(model, M, { skip }), { dir, cut: { o }, far: sl.depth }), grids: gridsInView(gridsOn(sl.storey), dir) };
+      view.notes = noted(view, { kind: 'section', dir, base: levels.find((l) => l.id === sl.storey)?.elevation || 0 });
+      input.sections.push({ ref: sl.guid, title: t('res.sec.name', { name: sl.name }), view });
+    }
+    // 0.6 round 2 (comforts-views.js): every room's four walls as interior elevations, made only when a sheet shows one
+    input.interiors = [];
+    for (const sp of A.S.data.derived?.spaces || []) {
+      const i = levels.findIndex((l) => l.id === sp.storey), lv = levels[i];
+      if (!lv) continue;
+      const height = levels[i + 1] ? levels[i + 1].elevation - lv.elevation : lv.height, name = [sp.number, sp.name].filter(Boolean).join(' ');
+      const ctx = () => {
+        if (interiorCtx.has(lv.id)) return interiorCtx.get(lv.id);
+        const pl = w.placements();
+        const its = placedItems(w, lv.id).map((p) => ({ tag: p.itemNumber, at: [p.x, p.y], z: p.z, h: Number(pl.find((r) => r.id === p.id)?.equipment?.Height || 0) * w.unitMm || 900 }));
+        const r = { els: modelTriangles(model, viewerToPlan(C, w.storeyWorld(lv.id)), { skip }), its, loops: A.loopsOf(lv.id) };
+        interiorCtx.set(lv.id, r);
+        return r;
+      };
+      for (const side of ROOM_SIDES) input.interiors.push({ ref: sp.guid + ':' + side, title: t('comforts.ie.title', { room: name, side: t('comforts.ie.side.' + side) }), get view() {
+        if (this._view) return this._view;
+        const c = ctx(), loop = loopAt(c.loops.rooms, sp.seed);
+        const v = loop ? interiorView(c.els, { poly: loop.poly, name }, side, { height }) : { bounds: null };
+        if (loop) v.notes = noted(v, { kind: 'interior', openings: facts.filter((o) => o.storey === lv.id).map((o) => { const dz = lv.elevation - g.elevation; return { ...o, z0: o.z0 - dz, z1: o.z1 - dz }; }), items: c.its });
+        return (this._view = v);
+      } });
     }
     const sch = A.schedules?.() || {};
     const schTitle = { lumber: t('res.fr.sch.lumber'), devices: t('res.el.sch.devicesched'), circuits: t('res.el.sch.circuitsched') };
-    for (const kind of ['doors', 'windows', 'rooms', 'devices', 'circuits', 'lumber']) if (sch[kind]?.rows?.length) input.schedules.push({ title: schTitle[kind] || t('model.sch.' + kind), ...sch[kind] });
+    for (const kind of ['doors', 'windows', 'rooms', 'devices', 'circuits', 'lumber']) if (sch[kind]?.rows?.length) input.schedules.push({ ref: kind, title: schTitle[kind] || t('model.sch.' + kind), ...sch[kind] });
     for (const fr of R.frames) if (fr.kind === 'wall' && fr.wallPieces?.pieces?.length) { const wall = A.S.data.walls.find((x) => x.guid === fr.host); input.framing.push({ title: t('res.sh.framewall', { len: L(wall?.len || 0), level: levels.find((l) => l.id === fr.storey)?.name || '' }), pieces: fr.wallPieces.pieces }); }
-    const base = String(A.host.fileName?.() || '').replace(/\.ifc$/i, '');
-    return buildSet(input, { paper, units: A.units(), project: base, date: new Date().toISOString().slice(0, 10) });
+    return input;
   }
   function openSheets() {
     const dlg = A.root.querySelector('[data-res-sheets-dlg]');
@@ -956,9 +1045,11 @@ export function mountRes(modelUi) {
   // ---- the extension ----
   const ext = {
     tools: ['roofplane', 'foundation', 'countertop', 'stair', 'railing', 'framing', 'terrain', 'pad', 'paving', 'section', 'electrical', 'ellink'],
-    hint: (name) => 'res.hint.' + name,
+    hint: (name) => (name === 'stair' && R.stair.kind === 'spiral' ? 'comforts.hint.spiral' : 'res.hint.' + name),   // 0.6 round 2: the spiral stair's own
     typed: () => false,
     classes: /^Ifc(Roof|Slab|ElementAssembly|Footing|Wall|Furniture|FurnishingElement|Stair|StairFlight|Railing|Member|Beam|GeographicElement|Annotation|Outlet|SwitchingDevice|LightFixture|Sensor|JunctionBox|ElectricDistributionBoard|FlowTerminal|FlowController|FlowFitting)$/,
+    /** 0.6 DF.19 (views-ui.js): what a sheet can show, and the set's paper / title-block options. */
+    sheetInput: () => setInput(), sheetOpts: () => setOpts(paperNow()),
     schedules() { const sc = A.S.on ? lumberSchedule() : null; return { ...(sc ? { lumber: sc } : {}), ...elSchedules() }; },
     scheduleKeys(kind, i) {
       if (kind === 'devices' || kind === 'circuits') return elScheduleKeys(kind, i);

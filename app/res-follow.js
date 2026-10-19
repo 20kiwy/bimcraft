@@ -10,6 +10,9 @@ import { syncStairs } from './res-stair.js';
 import { syncElectrical } from './res-elec.js';
 import { syncFraming } from './res-framing.js';
 import { syncTerrain } from './res-terrain.js';
+import { syncColumns } from './model-columns.js';   // 0.6 DF.16 (bim-draw): columns to the level above follow its height
+import { syncRamps } from './model-ramps.js';   // 0.6 DF.18 (bim-draw): so do ramps
+import { syncDormers } from './res-dormer.js';   // 0.6 round 2 (bim-comforts_PART_2): dormers stand on the roof made again
 
 export function syncResidential(w, storey, ctx = {}) {
   let n = 0;
@@ -19,5 +22,8 @@ export function syncResidential(w, storey, ctx = {}) {
   n += syncStairs(w, storey, ctx);
   n += syncElectrical(w, storey);   // outlets, switches and panels stay on their walls
   n += syncFraming(w, storey);   // last: walls, floors, roofs and their openings are final by now
+  n += syncColumns(w, storey);
+  n += syncRamps(w, storey);
+  n += syncDormers(w, storey, ctx);
   return n;
 }

@@ -7,12 +7,17 @@
  *
  *   buildSet(input, { paper, units, project, date }) → sheets: [{ number, title, items }]
  *     input = { plans: [{ title, scene }], elevations: [{ title, view }], sections: [{ title, view }],
- *               schedules: [{ title, head, rows, total }], framing: [{ title, pieces, length, height }] }
- *     (scene: model-ui.js plan scene; view: res-views.js projectView; pieces: res-framing.js frameWall pieces)
+ *               schedules: [{ title, head, rows, total }], framing: [{ title, pieces, length, height }],
+ *               rcps: [{ ref, title, scene }] (0.6 DC.117: ceiling plans; composeSheet only),
+ *               callouts: [{ ref (its id), title, scene }] (0.6 DC.117 (c): callouts; composeSheet only) }
+ *     scene.drafting [{ lines, closed, rings, solid, segs }] (0.6 DC.117 (d), drafting.js draftingItem): drawn on every plan sheet
+ *     (scene: model-ui.js plan scene; view: res-views.js projectView, + grids [{ tag, x }] from model-grids.js gridsInView
+ *     (0.6 DF.16: drawn as lines with a bubble on top); pieces: res-framing.js frameWall pieces)
  *   setPdf(sheets, { paper, title, attach }) → Uint8Array   one vector page per sheet (Helvetica, WinAnsi); attach =
  *                                                    { name, bytes, mime, desc }: a file attached to the PDF (EmbeddedFiles)
  *   planSheet(number, title, scene, { paper, units, project, date, extra }) → a sheet with `place` { P (plan mm → sheet mm),
  *                                                    ratio, label }: the plan at the largest standard scale that fits (RC.8)
+ *   composeSheet(spec, input, opts) → a sheet you arranged (0.6 DF.19: views at their places and scales; see below)
  *   sheetSvg(sheet, { paper }) → svg text               the same drawing for the preview
  *   PAPERS · scaleFor(w, h, room, units, minRatio)
  *   readSectionLines(w) · placeSectionLine({ level, a, b, look, name }) → op · changeSectionLine(guid, ch) → op ·
@@ -24,9 +29,11 @@
 import { ModelWriter, round } from './model-write.js';
 import { ids, val } from './ifc-util.js';
 import { t as tr } from './i18n.js';
+import { noteItems } from './comforts-views.js';   // 0.6 round 2 (bim-comforts_PART_2): dimensions, level marks and tags on views
 
 export const SECTION_PSET = 'CadCraft_SectionLine';
 export const PAPERS = { letter: [279.4, 215.9], tabloid: [431.8, 279.4], archd: [914.4, 609.6], a3: [420, 297], a1: [841, 594] };
+export const scalesFor = (units) => (SCALES[units] || SCALES.ftin).map(([ratio, label]) => ({ ratio, label }));   // 0.6 DF.19: the sheet editor's list
 const SCALES = {
   ftin: [[16, '3/4" = 1\'-0"'], [24, '1/2" = 1\'-0"'], [32, '3/8" = 1\'-0"'], [48, '1/4" = 1\'-0"'], [64, '3/16" = 1\'-0"'], [96, '1/8" = 1\'-0"'], [192, '1/16" = 1\'-0"'], [384, '1/32" = 1\'-0"']],   // i18n-ignore: drawing scales
   mm: [[20, '1:20'], [25, '1:25'], [50, '1:50'], [100, '1:100'], [200, '1:200'], [500, '1:500'], [1000, '1:1000']],   // i18n-ignore: drawing scales
@@ -41,11 +48,14 @@ export function scaleFor(w, h, room, units = 'ftin', minRatio = 0) {
 
 // ------------------------------------------------------------------------------------------------- drawing → items
 // item: { t: 'line', pts: [[x, y]…], w (mm), g (grey 0 black … 1 white), dash } | { t: 'fill', polys, g } | { t: 'text', s, x, y,
-//        size (pt), align, bold, rot }   — all in sheet millimetres, y up from the sheet's bottom
+//        size (pt), align, bold, rot } | { t: 'clip', rect: [x0, y0, x1, y1] } … { t: 'unclip' } (0.6 DC.117: what lies between
+//        is clipped to the rectangle — a view's crop region)   — all in sheet millimetres, y up from the sheet's bottom
 const at = (k, ox, oy) => (p) => [ox + p[0] * k, oy + p[1] * k];
 function planItems(scene, P, k) {
   const out = [], seg = (a, w, g, dash) => { for (let i = 0; i < a.length; i += 4) out.push({ t: 'line', pts: [P([a[i], a[i + 1]]), P([a[i + 2], a[i + 3]])], w, g, dash }); };
+  if (scene.underlay?.segs?.length) seg(scene.underlay.segs, 0.13, 0.72);   // 0.6 DC.117: another level, light, under everything
   for (const b of scene.below || []) seg(b.segs, 0.13, 0.45);
+  for (const b of scene.above || []) seg(b.segs, 0.13, 0.45, [2, 1.2]);   // 0.6 DF.19: above the cut, under the range's top
   for (const c of scene.cut || []) {
     if (c.loops?.length) out.push({ t: 'fill', polys: c.loops.map((l) => { const pts = []; for (let i = 0; i + 1 < l.length; i += 2) pts.push(P([l[i], l[i + 1]])); return pts; }), g: 0.75 });
     seg(c.segs, 0.25, 0);
@@ -57,6 +67,12 @@ function planItems(scene, P, k) {
     for (const a of s.arcs || []) { const steps = Math.max(8, Math.ceil(Math.abs(a.a1 - a.a0) / (Math.PI / 32))); const pts = []; for (let i = 0; i <= steps; i++) { const t = a.a0 + (a.a1 - a.a0) * i / steps; pts.push(P([a.c[0] + a.r * Math.cos(t), a.c[1] + a.r * Math.sin(t)])); } out.push({ t: 'line', pts, w: 0.18, g: 0 }); }
     for (const l of s.thin || []) seg(l, 0.18, 0);
     for (const l of s.dashed || []) seg(l, 0.18, 0, [1.5, 1]);
+  }
+  // 0.6 DC.117 (d): drafting lines and hatch regions drawn in this view
+  for (const d of scene.drafting || []) {
+    if (d.solid && d.rings) out.push({ t: 'fill', polys: d.rings.map((r) => r.map(P)), g: 0.6 });
+    if (d.segs?.length) seg(d.segs, 0.13, 0);
+    for (const l of d.lines || []) if (l.length > 1) out.push({ t: 'line', pts: [...l.map(P), ...(d.closed ? [P(l[0])] : [])], w: d.kind === 'hatch' ? 0.18 : 0.25, g: 0 });
   }
   for (const d of scene.dims || []) {
     const L = Math.hypot(d.b[0] - d.a[0], d.b[1] - d.a[1]);
@@ -76,9 +92,25 @@ function planItems(scene, P, k) {
     const q = P(r.at);
     r.label.forEach((s, i) => out.push({ t: 'text', s, x: q[0], y: q[1] - (i - (r.label.length - 1) / 2) * 3.4, size: i ? 6.5 : 7.5, bold: !i }));
   }
+  // grid lines (0.6 DF.16): thin dash-dot, a 7 mm bubble beyond each end the grid shows them at
+  for (const x of scene.grids || []) {
+    const a = P(x.a), b = P(x.b), L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, u = [(b[0] - a[0]) / L, (b[1] - a[1]) / L];
+    out.unshift({ t: 'line', pts: [a, b], w: 0.13, g: 0.35, dash: [5, 1, 0.6, 1] });
+    if (x.bubbles === 'none') continue;
+    if (x.bubbles !== 'end') out.push(...bubble([a[0] - u[0] * 3.5, a[1] - u[1] * 3.5], x.tag));
+    if (x.bubbles !== 'start') out.push(...bubble([b[0] + u[0] * 3.5, b[1] + u[1] * 3.5], x.tag));
+  }
+  // 0.6 DC.117: a crop region clips the whole view
+  if (scene.crop) { const a = P([scene.crop[0], scene.crop[1]]), b = P([scene.crop[2], scene.crop[3]]); return [{ t: 'clip', rect: [a[0], a[1], b[0], b[1]] }, ...out, { t: 'unclip' }]; }
   return out;
 }
-function viewItems(view, P) {
+/** A grid bubble (sheet mm): a white circle, its outline, the label. */
+function bubble(c, tag, r = 3.5) {
+  const pts = [];
+  for (let i = 0; i <= 24; i++) { const a = i / 24 * Math.PI * 2; pts.push([c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]); }
+  return [{ t: 'fill', polys: [pts], g: 1 }, { t: 'line', pts, w: 0.25, g: 0 }, { t: 'text', s: tag, x: c[0], y: c[1] - 1.1, size: tag.length > 2 ? 5 : 6.5, bold: true }];
+}
+function viewItems(view, P, k = 0) {
   const out = [];
   for (const c of view.cuts || []) {
     const polys = c.loops.map((l) => l.map(P));
@@ -86,9 +118,17 @@ function viewItems(view, P) {
     for (const pl of polys) out.push({ t: 'line', pts: [...pl, pl[0]], w: 0.45, g: 0 });
   }
   for (const l of view.lines || []) out.push({ t: 'line', pts: [P([l[0], l[1]]), P([l[2], l[3]])], w: 0.18, g: 0 });
-  // the ground line under it all, past both ends — unless the model has its ground (terrain draws itself)
+  // grid lines seen end on (0.6 DF.16): from under the ground line to above the top, the bubble on top
   const b = view.bounds;
+  if (b) for (const g of view.grids || []) {
+    if (g.x < b.x0 - 1 || g.x > b.x1 + 1) continue;
+    const lo = P([g.x, b.y0 - 300]), hi = P([g.x, b.y1 + 600]);
+    out.push({ t: 'line', pts: [lo, hi], w: 0.13, g: 0.35, dash: [5, 1, 0.6, 1] }, ...bubble([hi[0], hi[1] + 3.5], g.tag));
+  }
+  // the ground line under it all, past both ends — unless the model has its ground (terrain draws itself)
   if (b && !view.ground) out.push({ t: 'line', pts: [P([b.x0 - 450, b.y0]), P([b.x1 + 450, b.y0])], w: 0.6, g: 0 });
+  // 0.6 round 2 (bim-comforts_PART_2): the view's notes — level marks, dimensions, door / window / item tags (comforts-views.js)
+  if (view.notes?.length && k > 0) out.push(...noteItems(view.notes, P, k));
   return out;
 }
 function framingItems(fr, P) {
@@ -116,11 +156,14 @@ function tableItems(sc, x, yTop, width) {
 
 // ------------------------------------------------------------------------------------------------------------ sheets
 function boundsOfScene(scene) {
+  if (scene.crop) return { x0: scene.crop[0], y0: scene.crop[1], x1: scene.crop[2], y1: scene.crop[3] };   // 0.6 DC.117: the crop is the view
   const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
   const g = (x, y) => { if (x < b.x0) b.x0 = x; if (x > b.x1) b.x1 = x; if (y < b.y0) b.y0 = y; if (y > b.y1) b.y1 = y; };
   for (const w of scene.walls || []) for (const q of w.poly || []) g(q[0], q[1]);
   for (const c of [...(scene.cut || []), ...(scene.below || [])]) for (let i = 0; i + 1 < c.segs.length; i += 2) g(c.segs[i], c.segs[i + 1]);
   for (const s of scene.symbols || []) for (const q of s.poly || []) g(q[0], q[1]);
+  for (const x of scene.grids || []) { g(x.a[0], x.a[1]); g(x.b[0], x.b[1]); }   // 0.6 DF.16
+  for (const d of scene.drafting || []) for (const l of d.lines || []) for (const q of l) g(q[0], q[1]);   // 0.6 DC.117 (d)
   if (!Number.isFinite(b.x0)) return null;
   const pad = Math.max(b.x1 - b.x0, b.y1 - b.y0) * 0.03 + 300;
   return { x0: b.x0 - pad, y0: b.y0 - pad, x1: b.x1 + pad, y1: b.y1 + pad };
@@ -183,14 +226,14 @@ export function buildSet(input, { paper = 'tabloid', units = 'ftin', project = '
   if (els.length) {
     const ratio = Math.max(...els.map((e) => scaleFor(e.view.bounds.x1 - e.view.bounds.x0 + 1000, e.view.bounds.y1 - e.view.bounds.y0 + 1000, roomFor(2), units, BUILDING).ratio));
     for (let i = 0; i < els.length; i += 2) {
-      const cells = els.slice(i, i + 2).map((e) => drawCell(e.title, pad(e.view.bounds, 500), units, (P) => viewItems(e.view, P), ratio));
+      const cells = els.slice(i, i + 2).map((e) => drawCell(e.title, pad(e.view.bounds, 500), units, (P, k) => viewItems(e.view, P, k), ratio));
       sheets.push(sheet('A-2' + String(i / 2 + 1).padStart(2, '0'), tr('res.sh.elevations'), cells, opts));
     }
   }
   // sections: two a sheet
   const secs = (input.sections || []).filter((e) => e.view?.bounds);
   for (let i = 0; i < secs.length; i += 2) {
-    const cells = secs.slice(i, i + 2).map((e) => drawCell(e.title, pad(e.view.bounds, 500), units, (P) => viewItems(e.view, P), null, BUILDING));
+    const cells = secs.slice(i, i + 2).map((e) => drawCell(e.title, pad(e.view.bounds, 500), units, (P, k) => viewItems(e.view, P, k), null, BUILDING));
     sheets.push(sheet('A-3' + String(i / 2 + 1).padStart(2, '0'), tr('res.sh.sections'), cells, opts));
   }
   // schedules: side by side, as many columns as the paper's width takes; a table taller than the sheet goes on in the next
@@ -218,6 +261,45 @@ export function buildSet(input, { paper = 'tabloid', units = 'ftin', project = '
   return sheets;
 }
 const pad = (b, p) => ({ x0: b.x0 - p, y0: b.y0 - p, x1: b.x1 + p, y1: b.y1 + p });
+
+/** 0.6 DF.19: a sheet arranged by hand (views-model.js CadCraft_Sheets): each view at its place (its middle, sheet mm) and
+ *  scale (1:ratio; 0 = the plan's own scale (DC.117), else the largest standard scale that fits a third of the sheet), drawn from `input` as buildSet's (plans,
+ *  elevations, sections, schedules carry `ref`). → { number, title, items, views: [{ i, kind, ref, box [x0, y0, x1, y1],
+ *  ratio, label }], missing: [index of views whose drawing is gone] }. */
+export function composeSheet(spec, input, { paper = 'tabloid', units = 'ftin', project = '', date = '' } = {}) {
+  const [PW, PH] = PAPERS[paper] || PAPERS.tabloid;
+  const s = sheet(spec.number || '', spec.title || '', [], { paper, project, date });
+  s.views = []; s.missing = [];
+  const label = (r) => (SCALES[units] || SCALES.ftin).find((x) => x[0] === r)?.[1] || '1:' + r;   // i18n-ignore: a scale ratio
+  const find = (kind, ref) => ((kind === 'plan' ? input.plans : kind === 'rcp' ? input.rcps : kind === 'callout' ? input.callouts : kind === 'elevation' ? input.elevations : kind === 'interior' ? input.interiors : kind === 'section' ? input.sections : input.schedules) || []).find((x) => x.ref === ref);
+  const planLike = (kind) => kind === 'plan' || kind === 'rcp' || kind === 'callout';   // 0.6 DC.117: a ceiling plan and a callout draw as a plan
+  (spec.views || []).forEach((v, i) => {
+    const src = find(v.kind, v.ref);
+    if (!src) { s.missing.push(i); return; }
+    let w, h, draw, ratio = 0;
+    if (v.kind === 'schedule') {
+      w = 130; h = 5 * (src.rows.length + 1 + (src.total ? 1 : 0));
+      draw = (x0, y0) => tableItems(src, x0, y0 + h, w).items;
+    } else {
+      const bb = planLike(v.kind) ? boundsOfScene(src.scene) : src.view?.bounds ? pad(src.view.bounds, 500) : null;
+      if (!bb) { s.missing.push(i); return; }
+      const W = bb.x1 - bb.x0, H = bb.y1 - bb.y0;
+      // 1:ratio as placed; else the view's own scale (0.6 DC.117); else the largest standard scale that fits a third of the sheet
+      ratio = v.ratio > 0 ? v.ratio : src.scene?.scale > 0 ? src.scene.scale : scaleFor(W, H, [PW / 3, PH / 3], units, units === 'mm' ? 50 : 48).ratio;
+      const k = 1 / ratio;
+      w = W * k; h = H * k;
+      draw = (x0, y0) => { const P = at(k, x0 - bb.x0 * k, y0 - bb.y0 * k); return planLike(v.kind) ? planItems(src.scene, P, k) : viewItems(src.view, P, k); };
+    }
+    const x0 = v.x - w / 2, y0 = v.y - h / 2;
+    s.items.push(...draw(x0, y0));
+    // its title under it, underlined, the scale under that (as the set's cells)
+    s.items.push({ t: 'text', s: src.title, x: x0, y: y0 - 6, size: 9, align: 'left', bold: true });
+    s.items.push({ t: 'line', pts: [[x0, y0 - 7], [x0 + Math.min(w, 90), y0 - 7]], w: 0.35, g: 0 });
+    if (ratio) s.items.push({ t: 'text', s: label(ratio), x: x0, y: y0 - 10, size: 7, align: 'left', g: 0.25 });
+    s.views.push({ i, kind: v.kind, ref: v.ref, box: [x0, y0, x0 + w, y0 + h], ratio, label: ratio ? label(ratio) : '' });
+  });
+  return s;
+}
 /** A sheet with its frame and title block and nothing in it (the caller adds items). */
 export const blankSheet = (number, title, opts = {}) => sheet(number, title, [], { paper: 'tabloid', ...opts });
 /** One plan on its own sheet; `extra` = more plan points the drawing must take in (what is measured on it). */
@@ -251,6 +333,8 @@ function pageOps(items) {
   for (const it of items) {
     if (it.t === 'fill') { ops.push(num(it.g) + ' g'); for (const p of it.polys) { p.forEach((q, i) => ops.push(num(q[0] * PT) + ' ' + num(q[1] * PT) + (i ? ' l' : ' m'))); ops.push('h'); } ops.push('f*'); }
     else if (it.t === 'line') { ops.push(num(it.w * PT) + ' w ' + num(it.g || 0) + ' G ' + (it.dash ? '[' + it.dash.map((d) => num(d * PT)).join(' ') + '] 0 d' : '[] 0 d')); it.pts.forEach((q, i) => ops.push(num(q[0] * PT) + ' ' + num(q[1] * PT) + (i ? ' l' : ' m'))); ops.push('S'); }
+    else if (it.t === 'clip') { const [x0, y0, x1, y1] = it.rect; ops.push('q ' + [x0, y0, x1 - x0, y1 - y0].map((v) => num(v * PT)).join(' ') + ' re W n'); }   // i18n-ignore: PDF operators
+    else if (it.t === 'unclip') ops.push('Q');
     else if (it.t === 'text') {
       const w = textW(it.s, it.size), dx = it.align === 'left' ? 0 : it.align === 'right' ? -w : -w / 2, rot = it.rot || 0, c = Math.cos(rot), sn = Math.sin(rot);
       ops.push('BT /' + (it.bold ? 'F2' : 'F1') + ' ' + num(it.size) + ' Tf ' + num(it.g || 0) + ' g ' + [c, sn, -sn, c, it.x * PT + dx * c, it.y * PT + dx * sn].map(num).join(' ') + ' Tm ' + lit(it.s) + ' Tj ET');   // i18n-ignore: PDF text operators
@@ -302,7 +386,10 @@ export function sheetSvg(s, { paper = 'tabloid' } = {}) {
   const Y = (y) => (PH - y).toFixed(2), X = (x) => x.toFixed(2);
   const grey = (g) => { const v = Math.round((g || 0) * 255); return 'rgb(' + v + ',' + v + ',' + v + ')'; };
   const out = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${PW} ${PH}" width="${PW}mm" height="${PH}mm"><rect width="${PW}" height="${PH}" fill="#fff"/>`];
+  let clips = 0;
   for (const it of s.items) {
+    if (it.t === 'clip') { const [x0, y0, x1, y1] = it.rect, id = 'cc-crop-' + (clips++); out.push(`<clipPath id="${id}"><rect x="${X(x0)}" y="${Y(y1)}" width="${(x1 - x0).toFixed(2)}" height="${(y1 - y0).toFixed(2)}"/></clipPath><g clip-path="url(#${id})">`); continue; }
+    if (it.t === 'unclip') { out.push('</g>'); continue; }
     if (it.t === 'fill') out.push(`<path fill-rule="evenodd" fill="${grey(it.g)}" d="${it.polys.map((p) => 'M' + p.map((q) => X(q[0]) + ',' + Y(q[1])).join('L') + 'Z').join('')}"/>`);
     else if (it.t === 'line') out.push(`<polyline fill="none" stroke="${grey(it.g)}" stroke-width="${it.w}" stroke-linecap="round" stroke-linejoin="round"${it.dash ? ' stroke-dasharray="' + it.dash.join(' ') + '"' : ''} points="${it.pts.map((q) => X(q[0]) + ',' + Y(q[1])).join(' ')}"/>`);
     else if (it.t === 'text') {

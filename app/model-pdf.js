@@ -4,11 +4,14 @@
  * writes one and checks it (and with poppler's pdfinfo / pdftotext when they are installed).
  *
  *   planPdf(scene, { title, lines, paper, units, scale }) → { bytes: Uint8Array, scale: { label, ratio }, missing }
- *     scene    what the plan view draws (model-ui.js: walls, symbols, cut, below, rooms, dims; plan mm, y up)
+ *     scene    what the plan view draws (model-ui.js: walls, symbols, cut, below, rooms, dims, grids; plan mm, y up)
  *     title    the drawing's title (the level), lines: more lines under it (building, date) — printed in the title strip
  *     paper    'letter' | 'a4' | 'tabloid' | 'a3', landscape; units 'ftin' | 'mm' picks the scales tried
  *     scale    a ratio to use (48 = 1/4" = 1'-0"), else the largest standard scale the plan fits at
  *
+ * 0.6 DC.117: scene.crop [x0, y0, x1, y1] (a view's crop region) is the drawing's extent and clips it; scene.underlay { segs }
+ * (another level) is drawn first in light grey; scene.drafting (drafting.js draftingItem: lines, hatch strokes, solid fills) is drawn
+ * over the building, under the dimensions.
  * Drawn as on screen, in black on white: walls filled grey with a heavy outline, other cut elements filled lighter, what
  * lies below the cut in thin lines, doors and windows (arcs as short lines), room names and areas, dimensions with ticks.
  * Text is Helvetica in WinAnsiEncoding (characters outside it print as "?" and are counted in `missing`).
@@ -61,10 +64,21 @@ export function planPdf(scene, { title = '', lines = [], paper = 'letter', units
     const tx = x * PT + (dx * c) , ty = y * PT + (dx * sn);
     ops.push('BT /' + (bold ? 'F2' : 'F1') + ' ' + n(size) + ' Tf ' + n(gray) + ' g ' + [c, sn, -sn, c, tx, ty].map(n).join(' ') + ' Tm ' + l.s + ' Tj ET');   // i18n-ignore: PDF text operators
   };
+  // 0.6 DC.117: the crop region clips everything up to the title strip
+  if (scene.crop) { const a = P([scene.crop[0], scene.crop[1]]), b = P([scene.crop[2], scene.crop[3]]); ops.push('q ' + [a[0], a[1], b[0] - a[0], b[1] - a[1]].map((v) => n(v * PT)).join(' ') + ' re W n'); }   // i18n-ignore: PDF operators
+  if (scene.underlay?.segs?.length) { pen(0.13, 0.72); seg(scene.underlay.segs); ops.push('S'); }   // another level, light, under everything
+  // grid lines (0.6 DF.16): thin dash-dot, under everything; their bubbles (7 mm on paper) come with the room labels
+  if (scene.grids?.length) {
+    pen(0.13, 0.35, [5, 1, 0.6, 1]);
+    for (const x of scene.grids) path([x.a, x.b]);
+    ops.push('S');
+  }
   // below the cut: thin grey
   pen(0.13, 0.45);
   for (const b of scene.below || []) seg(b.segs);
   ops.push('S');
+  // above the cut, under the view range's top (0.6 DF.19): thin dashed
+  if (scene.above?.length) { pen(0.13, 0.45, [2, 1.2]); for (const b of scene.above) seg(b.segs); ops.push('S'); }
   // rooms: names and areas come last; nothing filled for them on paper
   // other cut elements: light fill, outline
   for (const c of scene.cut || []) {
@@ -82,6 +96,12 @@ export function planPdf(scene, { title = '', lines = [], paper = 'letter', units
     for (const a of s.arcs || []) { const steps = Math.max(8, Math.ceil(Math.abs(a.a1 - a.a0) / (Math.PI / 32))); const pts = []; for (let i = 0; i <= steps; i++) { const t = a.a0 + (a.a1 - a.a0) * i / steps; pts.push([a.c[0] + a.r * Math.cos(t), a.c[1] + a.r * Math.sin(t)]); } path(pts); }
     seg((s.thin || []).flat()); ops.push('S');
     if (s.dashed?.length) { pen(0.18, 0, [1.5, 1]); seg(s.dashed.flat()); ops.push('S'); }
+  }
+  // 0.6 DC.117 (d): drafting lines and hatch regions drawn in this view
+  for (const d of scene.drafting || []) {
+    if (d.solid && d.rings) { ops.push('0.6 g'); for (const r of d.rings) path(r, true); ops.push('f*'); }
+    if (d.segs?.length) { pen(0.13, 0); seg(d.segs); ops.push('S'); }
+    pen(d.kind === 'hatch' ? 0.18 : 0.25, 0); for (const l of d.lines || []) if (l.length > 1) path(l, !!d.closed); ops.push('S');
   }
   // dimensions: line, ticks, text above
   for (const d of scene.dims || []) {
@@ -109,6 +129,20 @@ export function planPdf(scene, { title = '', lines = [], paper = 'letter', units
     const q = P(r.at);
     r.label.forEach((s, i) => text(s, q[0], q[1] - (i - (r.label.length - 1) / 2) * 3.4, i ? 6.5 : 7.5, { bold: !i }));
   }
+  // grid bubbles: a circle beyond each end the grid shows them at, its label inside
+  for (const x of scene.grids || []) {
+    if (x.bubbles === 'none') continue;
+    const a = P(x.a), b = P(x.b), L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, u = [(b[0] - a[0]) / L, (b[1] - a[1]) / L], R = 3.5;
+    const at = [];
+    if (x.bubbles !== 'end') at.push([a[0] - u[0] * R, a[1] - u[1] * R]);
+    if (x.bubbles !== 'start') at.push([b[0] + u[0] * R, b[1] + u[1] * R]);
+    for (const c of at) {
+      const pts = []; for (let i = 0; i <= 24; i++) { const t = i / 24 * Math.PI * 2; pts.push([(c[0] + R * Math.cos(t) - ox) / k, (c[1] + R * Math.sin(t) - oy) / k]); }
+      ops.push('1 g'); path(pts, true); ops.push('f'); pen(0.25, 0); path(pts, true); ops.push('S');
+      text(x.tag, c[0], c[1] - 1.1, x.tag.length > 2 ? 5 : 6.5, { bold: true });
+    }
+  }
+  if (scene.crop) ops.push('Q');
   // title strip
   pen(0.35, 0);
   path([[(margin - ox) / k, (margin + strip - 2 - oy) / k], [(PW - margin - ox) / k, (margin + strip - 2 - oy) / k]]);
@@ -120,12 +154,15 @@ export function planPdf(scene, { title = '', lines = [], paper = 'letter', units
 }
 
 function bounds(scene) {
+  if (scene.crop) return { x0: scene.crop[0], y0: scene.crop[1], x1: scene.crop[2], y1: scene.crop[3] };   // 0.6 DC.117
   const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
   const g = (x, y) => { if (x < b.x0) b.x0 = x; if (x > b.x1) b.x1 = x; if (y < b.y0) b.y0 = y; if (y > b.y1) b.y1 = y; };
   for (const w of scene.walls || []) for (const q of w.poly || []) g(q[0], q[1]);
   for (const c of [...(scene.cut || []), ...(scene.below || [])]) for (let i = 0; i + 1 < c.segs.length; i += 2) g(c.segs[i], c.segs[i + 1]);
   for (const s of scene.symbols || []) for (const q of s.poly || []) g(q[0], q[1]);
   for (const d of scene.dims || []) { g(d.a[0], d.a[1]); g(d.b[0], d.b[1]); }
+  for (const x of scene.grids || []) { g(x.a[0], x.a[1]); g(x.b[0], x.b[1]); }
+  for (const d of scene.drafting || []) for (const l of d.lines || []) for (const q of l) g(q[0], q[1]);   // 0.6 DC.117 (d)
   if (!Number.isFinite(b.x0)) return { x0: 0, y0: 0, x1: 10000, y1: 10000 };
   const pad = Math.max(b.x1 - b.x0, b.y1 - b.y0) * 0.06 + 600;   // room for the dimensions outside the walls
   return { x0: b.x0 - pad, y0: b.y0 - pad, x1: b.x1 + pad, y1: b.y1 + pad };

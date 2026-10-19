@@ -3,7 +3,7 @@ title: Draw walls
 summary: Draw walls on the plan of a level by clicking their corners or typing lengths; corners join by themselves, and the walls are saved as IFC.
 section: tasks
 order: 16
-keywords: wall, walls, draw, plan, floor plan, room, corner, join, wall type, 2x6, 2x4, cmu, concrete, height, level, levels, storey, typed length, ortho, snap
+keywords: curved, arc, location line, justification, wall, walls, draw, plan, floor plan, room, corner, join, wall type, 2x6, 2x4, cmu, concrete, height, level, levels, storey, typed length, ortho, snap
 ---
 
 ## What you'll do
@@ -15,7 +15,7 @@ Draw the walls of a building on a plan of each level. Click where a wall starts 
 1. Start a new building ([Start a new building](topic:start-a-new-building)) or open an IFC model.
 2. Click {{ui:Draw}} in the toolbar. A new building opens with it on already.
 3. The plan of a level shows on the left and the 3D view on the right. Pick the level in the list at the top of the plan, or with the round button beside it in the **Levels** panel.
-4. Use {{ui:Plan}} for the plan alone, {{ui:Split}} for both, {{ui:3D}} to close the plan.
+4. Use {{ui:Plan}} for the plan alone, {{ui:Split}} for both, {{ui:3D}} to close the plan. When the window is narrow (or the interface size large), {{ui:Split}} puts the plan above the 3D view instead of beside it.
 
 The plan cuts the level 4'-0" (1200 mm) above its floor, as a floor plan does. Scroll to zoom, drag with the middle or right button (or hold {{key:Space}} and drag) to pan; with {{ui:Select}} on, a plain drag pans too. {{key:F}} with the pointer over the plan fits it.
 
@@ -38,6 +38,21 @@ Choose **Centerline**, **Inside face** or **Outside face** before the first clic
 Changing the wall type, reference or outside side ends the current chain. Near a reversing corner, long mitres are capped by leaving square ends.
 
 While drawing, an endpoint across empty space can align horizontally or vertically with a wall endpoint or an earlier corner. A dashed guide joins that point to the snapped pointer. Shift keeps the drawing direction square; alignment then stops along that direction. Nearby endpoints, midpoints and wall intersections keep priority over distant alignment.
+
+## Location line
+
+With **Reference** on **Outside face** or **Inside face**, the wall keeps that face as its location line. Later, if the wall gets thicker or its outside is flipped, that face stays where it is and the wall grows or flips around it. A straight wall that meets it at a corner follows, so the corner still closes. You can change the location line afterwards in **Properties**: see [Change a wall, door or window](topic:change-a-wall-or-door).
+
+## Draw a curved wall
+
+1. Click {{ui:Wall}}, then choose **Curved** in the **Shape** list of the options row.
+2. Click where the wall starts, then where it ends.
+3. Click a point on its arc. Or type the arc height and press {{key:Enter}}.
+4. The chain goes on from the end of the wall. Press {{key:Esc}} to end it.
+
+A curved wall joins the walls at its ends (corners and T joins work), makes rooms, and holds doors and windows along its arc. They stay straight units, square to the wall at their middle, and their distance is measured along the arc. A wall can turn at most three quarters of a circle. It snaps to its ends and to the middle of its arc.
+
+Not built yet for curved walls: {{ui:Trim / extend}} and {{ui:Corner}}, framing, automatic plan dimensions and snapping along the arc. See [What is not built yet](topic:not-built-yet).
 
 ## Type a length instead of clicking
 

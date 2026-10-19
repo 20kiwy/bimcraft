@@ -41,6 +41,12 @@
     <label><input type="radio" name="bcView" value="side"> <i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i> <?= Lang::e('ui.view.side') ?></label>
   </div>
   <p class="shell-hint-text"><?= Lang::e('set.view.hint') ?></p>
+  <p class="shell-hint-text" id="bc-set-turned-label"><strong><?= Lang::e('set.turned') ?></strong></p>
+  <div class="shell-seg" role="radiogroup" aria-labelledby="bc-set-turned-label">
+    <label><input type="radio" name="bcTurned" value="square"> <i class="bi bi-bounding-box-circles" aria-hidden="true"></i> <?= Lang::e('set.turned.square') ?></label>
+    <label><input type="radio" name="bcTurned" value="placed"> <i class="bi bi-compass" aria-hidden="true"></i> <?= Lang::e('set.turned.placed') ?></label>
+  </div>
+  <p class="shell-hint-text"><?= Lang::e('set.turned.hint') ?></p>
 </fieldset>
 <fieldset class="shell-set">
   <legend><?= Lang::e('set.snap.legend') ?></legend>
@@ -103,6 +109,7 @@
   <p class="shell-hint-text"><?= Lang::e('set.assist.hint') ?></p>
   <label class="shell-check bc-set-sub"><input type="checkbox" name="bcAssistRead"> <?= Lang::e('set.assist.read') ?></label>
   <label class="shell-check bc-set-sub"><input type="checkbox" name="bcAssistEdit"> <?= Lang::e('set.assist.edit') ?></label>
+  <label class="shell-check bc-set-sub"><input type="checkbox" name="bcAssistSave"> <?= Lang::e('set.assist.save') ?></label>
   <details class="bc-assist-log" data-bc-assist-log>
     <summary><?= Lang::e('set.assist.activity') ?></summary>
     <ol></ol>

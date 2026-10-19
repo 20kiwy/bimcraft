@@ -19,6 +19,7 @@
  */
 import { runEdges } from './ifc-vis.js';
 import { mul4, inv4 } from './ifc-util.js';
+import { wallMap } from './model-arcs.js';   // 0.6 round 2 (bim-comforts_PART_2): curved walls
 
 /** viewer (Y up, m) → model mm (Z up, file axes) → storey plan (mm). */
 export function viewerToPlan(C, storeyWorldMm) {
@@ -28,11 +29,12 @@ export function viewerToPlan(C, storeyWorldMm) {
 
 /**
  * Cut every element of `storey` (a storey expressID; batch.storey) at plan height cutZ (mm above the storey's origin).
- * `skip` = keys drawn some other way. Elements wholly below the cut (and not more than `depth` below the level) give
- * their feature edges instead (30°), flattened. → { cut, below, bounds: { x0, y0, x1, y1 } | null }
+ * `skip` = keys drawn some other way. Elements wholly below the cut (and not more than `depth` below `bottom`, 0 = the level)
+ * give their feature edges instead (30°), flattened; with `top` (0.6 DF.19, a view range), elements wholly above the cut and
+ * starting under `top` give theirs as `above` (drawn dashed: overhead). → { cut, below, above, bounds: { x0, y0, x1, y1 } | null }
  */
-export function planCut(model, { M, storey, cutZ = 1200, skip = null, depth = 50, edges = true } = {}) {
-  const cut = new Map(), below = new Map();
+export function planCut(model, { M, storey, cutZ = 1200, skip = null, depth = 50, bottom = 0, top = null, edges = true } = {}) {
+  const cut = new Map(), below = new Map(), above = new Map();
   const bb = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
   const grow = (x, y) => { if (x < bb.x0) bb.x0 = x; if (x > bb.x1) bb.x1 = x; if (y < bb.y0) bb.y0 = y; if (y > bb.y1) bb.y1 = y; };
   for (const b of model.batches || []) {
@@ -59,7 +61,8 @@ export function planCut(model, { M, storey, cutZ = 1200, skip = null, depth = 50
           triCut(X, Y, Z, a, c, d, cutZ, out);
         }
         if (out.length) { const prev = cut.get(key); cut.set(key, prev ? concat(prev, out) : Float64Array.from(out)); for (let i = 0; i < out.length; i += 2) grow(out[i], out[i + 1]); }
-      } else if (edges && zmax < cutZ && zmax > -depth) {
+      } else if (edges && ((zmax < cutZ && zmax > bottom - depth) || (top !== null && zmin > cutZ && zmin < top))) {
+        const into = zmax < cutZ ? below : above;
         const raw = runEdges(P, I, t0, tn, 30, []), out = [];
         for (let i = 0; i < raw.length; i += 3) {
           const x = raw[i], y = raw[i + 1], z = raw[i + 2];
@@ -68,11 +71,11 @@ export function planCut(model, { M, storey, cutZ = 1200, skip = null, depth = 50
         // drop edges seen end on (vertical ones)
         const keep = [];
         for (let i = 0; i < out.length; i += 4) if (Math.hypot(out[i + 2] - out[i], out[i + 3] - out[i + 1]) > 0.5) { keep.push(out[i], out[i + 1], out[i + 2], out[i + 3]); grow(out[i], out[i + 1]); }
-        if (keep.length) { const prev = below.get(key); below.set(key, prev ? concat(prev, keep) : Float64Array.from(keep)); }
+        if (keep.length) { const prev = into.get(key); into.set(key, prev ? concat(prev, keep) : Float64Array.from(keep)); }
       }
     }
   }
-  return { cut, below, bounds: Number.isFinite(bb.x0) ? bb : null };
+  return { cut, below, above, bounds: Number.isFinite(bb.x0) ? bb : null };
 }
 const concat = (a, b) => { const o = new Float64Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
 
@@ -135,8 +138,10 @@ export function chainLoops(segs) {
  */
 export function wallPieces(wall, poly, openings = [], cutZ = 1200) {
   const ang = Math.atan2(wall.b[1] - wall.a[1], wall.b[0] - wall.a[0]), c = Math.cos(ang), s = Math.sin(ang);
-  const toL = ([x, y]) => [(x - wall.a[0]) * c + (y - wall.a[1]) * s, -(x - wall.a[0]) * s + (y - wall.a[1]) * c];
-  const toW = ([u, v]) => [wall.a[0] + u * c - v * s, wall.a[1] + u * s + v * c];
+  let toL = ([x, y]) => [(x - wall.a[0]) * c + (y - wall.a[1]) * s, -(x - wall.a[0]) * s + (y - wall.a[1]) * c];
+  let toW = ([u, v]) => [wall.a[0] + u * c - v * s, wall.a[1] + u * s + v * c];
+  // a curved wall: along its arc and across it (polar), so openings are cut along the radius as in 3D
+  if (wall.bulge) ({ toL, toW } = wallMap(wall));
   let pieces = [poly.map(toL)];
   for (const o of openings) {
     if (!(o.width > 0) || cutZ < o.sill || cutZ > o.sill + o.height) continue;   // both above the level's floor
@@ -206,7 +211,7 @@ export function wallDims(walls, outlines, openings, fmt, { exteriorOf = () => tr
     const poly = outlines.get(w.guid);
     if (!poly) continue;
     const L = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
-    if (L < 1) continue;
+    if (L < 1 || w.bulge) continue;   // a curved wall's length is in its Properties (no arc dimension yet)
     const u = [(w.b[0] - w.a[0]) / L, (w.b[1] - w.a[1]) / L], n = [-u[1], u[0]];
     const side = exteriorOf(w) ? (w.extSide === 'right' ? -1 : 1) : 1;
     const local = poly.map(([x, y]) => [(x - w.a[0]) * u[0] + (y - w.a[1]) * u[1], (x - w.a[0]) * n[0] + (y - w.a[1]) * n[1]]);

@@ -3,7 +3,7 @@ title: Change a wall, door or window
 summary: Click a drawn wall, door or window and change its type, size, height or place in Properties, or drag it in the plan; each change is one undo step.
 section: tasks
 order: 18
-keywords: change, edit, properties, wall type, thickness, length, height, base offset, top, level, flip, outside, door size, window size, sill, distance, move, grip, drag, change type, several
+keywords: curved, arc, arc height, radius, location line, justification, change, edit, properties, wall type, thickness, length, height, base offset, top, level, flip, outside, door size, window size, sill, distance, move, grip, drag, change type, several
 ---
 
 ## What you'll do
@@ -20,6 +20,8 @@ Change what you drew: pick a wall, door or window, then type a new number in **P
    - **Wall height**: **Up to the level above** follows that level (typing a height then sets how far below or above it the top is), **Fixed height** keeps the number you type.
    - **Base offset**: how far above the level the wall starts. Its top stays where it was.
    - **Outside**: {{ui:Flip}} puts the outside layers on the other face.
+   - **Location line**: **Center line**, **Outside face**, **Inside face**, **Left face** or **Right face**. Changing it moves nothing. Later, when the wall gets thicker (by type or **Thickness**) or its outside is flipped, the location line stays put and the wall grows or flips around it. A straight wall meeting it at a corner follows, so the corner still closes. The picked wall's location line is drawn dashed in the plan. Pick several walls to set it for all of them.
+   - **Arc height** (curved walls): how far the middle bows off a straight line. 0 makes it straight; a negative value bows it to the other side. The radius shows beside it.
 3. Each change is one step in **Changes**; {{ui:Undo}} takes it back.
 
 ## Drag a wall in the plan
@@ -28,12 +30,13 @@ When one wall is picked, it shows three grips: a square at each end and a circle
 
 - Drag an end to make the wall longer, shorter or turn it. It snaps like the Wall tool; {{key:Shift}} keeps it square.
 - Drag the middle to move the whole wall. Walls joined to its ends stretch to follow.
+- A picked curved wall shows grips at its ends and a round grip at the middle of its arc. Drag the round grip to bend it.
 - Doors and windows stay in the wall. A wall too short for what it holds is refused with "It doesn't fit in that wall."
 
 ## Change a door or window
 
 1. Click the door or window in the plan.
-2. In **Properties**: **Type** (another door or window of the same kind), **Width**, **Height**, **Sill** (windows), **From the start** and **From the end** (the distance from each end of the wall face to its edge), **Hinges** {{ui:Flip}}, and **Swings to** (doors) or **Frame side** (windows) {{ui:Flip}}.
+2. In **Properties**: **Type** (another door or window of the same kind), **Width**, **Height**, **Sill** (windows), **From the start** and **From the end** (the distance from each end of the wall face to its edge), **Hinges** {{ui:Flip}} (doors with one leaf and casement windows; sliding, pocket, barn and bifold doors say **Opens to** instead; fixed, hung and picture windows and double doors have none), and **Swings to** (doors) or **Frame side** (windows) {{ui:Flip}}.
 3. Or drag it along its wall, or onto another wall: see [Doors and windows](topic:doors-and-windows).
 
 ## Change several at once

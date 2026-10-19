@@ -13,7 +13,8 @@
  *   w.storeyWorld(storey)                the storey's world matrix in MILLIMETRES (Z up); local plan = its X/Y
  *   w.placeAt(relTo, x, y, z, angDeg)    a new IfcLocalPlacement relative to a placement (mm, degrees about Z)
  *   w.movePlacement(lp, x, y, z, ang)    the same placement line, a new IfcAxis2Placement3D (children follow)
- *   w.setShape(pid, reps)                the product's representation replaced (the old shape's lines deleted)
+ *   w.setShape(pid, reps)                the product's representation replaced (the old shape's lines deleted; a painted
+ *                                        material's style moves to the new body items: paintStyleOf, bodyItemsOf)
  *   w.profile(points) / w.extrude(profile, z0, depth) / w.box(x0, y0, z0, x1, y1, z1) / w.polyline2(points)
  *   w.rep(ctxKey, ident, type, items)    an IfcShapeRepresentation in the Body / Axis / FootPrint sub-context
  *   w.readPset(id, name) → { prop: value } · w.upsertPset(id, name, rows) · w.upsertQto(id, name, rows)
@@ -34,7 +35,9 @@ const isH = (v) => v && typeof v === 'object' && v.type === 5 && typeof v.value 
 const KEEP = /^IFC(GEOMETRICREPRESENTATION(SUB)?CONTEXT|OWNERHISTORY|LOCALPLACEMENT|REPRESENTATIONMAP|MATERIAL.*|PRESENTATIONLAYERASSIGNMENT|PRESENTATIONSTYLEASSIGNMENT|SURFACESTYLE.*|COLOURRGB)$/;
 /** Classes the tools look up by GlobalId. */
 const GUID_CLASSES = ['IFCBUILDINGSTOREY', 'IFCBUILDING', 'IFCWALL', 'IFCWALLSTANDARDCASE', 'IFCDOOR', 'IFCWINDOW', 'IFCOPENINGELEMENT', 'IFCSLAB', 'IFCCOVERING', 'IFCROOF', 'IFCSPACE',
-  'IFCWALLTYPE', 'IFCDOORTYPE', 'IFCWINDOWTYPE', 'IFCSLABTYPE', 'IFCCOVERINGTYPE', 'IFCROOFTYPE'];
+  'IFCWALLTYPE', 'IFCDOORTYPE', 'IFCWINDOWTYPE', 'IFCSLABTYPE', 'IFCCOVERINGTYPE', 'IFCROOFTYPE',
+  'IFCCOLUMN', 'IFCGRID', 'IFCRAMP', 'IFCRAMPFLIGHT', 'IFCSITE',   // 0.6 (bim-draw): columns, grids, ramps, the site
+  'IFCELEMENTASSEMBLY'];   // 0.6 DF.29: pipe and duct runs (mep-model.js)
 export const round = (v, d = 6) => { const r = Math.round(v * 10 ** d) / 10 ** d; return Object.is(r, -0) ? 0 : r; };
 
 export class ModelWriter extends IfcPlacer {
@@ -145,11 +148,33 @@ export class ModelWriter extends IfcPlacer {
   }
   rep(ctxKey, ident, type, items) { return this.make('IFCSHAPEREPRESENTATION', this.H(this.ctxOf(ctxKey)), this.L(ident), this.L(type), items.map((i) => this.H(i))); }
   setShape(pid, reps) {
+    const paint = this.paintStyleOf(pid);   // 0.6 BIM-F6: a painted material (paint-bim.js) stays on the new shape
     const line = this.touch(pid);
     const old = line.Representation?.value;
     line.Representation = this.H(this.make('IFCPRODUCTDEFINITIONSHAPE', null, null, reps.map((r) => this.H(r))));
     this.write(line);
     if (old) this.dropTree(old);
+    if (paint) for (const item of this.bodyItemsOf(pid)) if (!this.styledOf(item).some((st) => this.api.GetLine(this.mid, st, false))) this.styleItem(item, paint);
+  }
+  /** The items of a product's 'Body' representations (every representation when none is named so). */
+  bodyItemsOf(pid) {
+    const p = this.api.GetLine(this.mid, pid, false);
+    const sh = p?.Representation?.value ? this.api.GetLine(this.mid, p.Representation.value, false) : null;
+    const reps = (sh?.Representations || []).map((h) => this.api.GetLine(this.mid, h.value, false)).filter(Boolean);
+    const body = reps.filter((r) => String(val(r.RepresentationIdentifier) || '').toLowerCase() === 'body');
+    return (body.length ? body : reps).flatMap((r) => (r.Items || []).map((h) => h.value));
+  }
+  /** The surface style a painted material gave the product's body ("<material> (CadCraft)", paint-bim.js), or null. */
+  paintStyleOf(pid) {
+    for (const item of this.bodyItemsOf(pid)) for (const st of this.styledOf(item)) {
+      const si = this.api.GetLine(this.mid, st, false);
+      for (const h of si?.Styles || []) {
+        let sid = h.value, s0 = this.api.GetLine(this.mid, sid, false);
+        if (s0 && !this.v4 && s0.Styles) { sid = s0.Styles[0]?.value; s0 = sid ? this.api.GetLine(this.mid, sid, false) : null; }   // IFC2X3: IfcPresentationStyleAssignment
+        if (s0 && / \(CadCraft\)$/.test(String(val(s0.Name) || ''))) return sid;
+      }
+    }
+    return null;
   }
   /** Delete a line and every line under it that only geometry uses (see KEEP). Journaled, so undo writes them back. */
   dropTree(id, seen = new Set()) {

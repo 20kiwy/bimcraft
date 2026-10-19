@@ -271,6 +271,12 @@ export async function modelMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, a
     ok(qs.NetSideArea.some((v) => near(v, (6000 * 3000 - 914.4 * 2032) / 1e6, 1e-4)), 'the wall\'s NetSideArea takes the door off: ' + ((6000 * 3000 - 914.4 * 2032) / 1e6).toFixed(4) + ' m²');
     const sym = O.openingSymbol(door, south);
     ok(sym.arcs.length === 1 && near(sym.arcs[0].r, 914.4 - 2 * 1.5 * 25.4) && sym.lines.length === 3, 'plan symbol: two jambs, the open leaf and its swing arc');
+    // 0.6 BIM-F2: only types with a hand offer Hinges / Opens to: Flip
+    const hk = Object.fromEntries([...O.DOOR_TYPES, ...O.WINDOW_TYPES].map((x) => [x.key, O.handKind(x)]));
+    ok(hk['door-single'] === 'hinges' && hk['door-entry-sidelites'] === 'hinges' && hk['win-casement'] === 'hinges' && hk['door-sliding'] === 'slides' && hk['door-pocket'] === 'slides' && hk['door-barn'] === 'slides' && hk['door-bifold'] === 'folds',
+      'hand kinds: single / entry doors and casements hinge, sliding / pocket / barn doors slide, a bifold folds');
+    ok(['win-fixed', 'win-picture', 'win-single-hung', 'win-double-hung', 'win-slider', 'win-awning', 'win-transom', 'door-double', 'door-french', 'door-garage'].every((k) => hk[k] === null),
+      'fixed, picture, hung, slider, awning and transom windows, double, French and garage doors: no hand to flip');
     // a window on the east wall
     const east = s.walls.find((x) => near(x.a[0], 6000) && near(x.b[0], 6000));
     ed2.modelChange(OPS.placeOpening({ wall: east.guid, typeKey: 'win-double-hung', face: 'right' }));

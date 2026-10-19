@@ -30,11 +30,12 @@
         "robust-predicates": "3.0.3",
         "three": "0.186.1",
         "three-gpu-pathtracer": "0.0.26",
-        "three-mesh-bvh": "0.9.15"
+        "three-mesh-bvh": "0.9.15",
+        "web-e57": "1.2.0"
     },
     "origin": "https://getcadcraft.com",
     "packed": {
-        "at": "2026-10-15T13:48:16Z",
+        "at": "2026-10-19T00:34:43Z",
         "build": "dev"
     }
 }

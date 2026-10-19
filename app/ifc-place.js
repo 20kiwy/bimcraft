@@ -6,7 +6,8 @@
  *
  *   const pl = new IfcPlacer(WebIFC, api, modelID);
  *   pl.info()                       { schema, unitMm, storeys:[{id, name, elevation (mm)}] }
- *   pl.place(item, { storey, x, y, rot, itemNumber, quantity, notes, library, sha256, sourceFile, standInHeight })
+ *   pl.place(item, { storey, x, y, rot, z, itemNumber, quantity, notes, library, sha256, sourceFile, standInHeight })
+ *                                   z: mm above the storey (0.6 DC.117: a fixture at the ceiling); default 0
  *        → { id, typeId, journal }   x, y in mm in model coordinates (Z up, the file's own origin), rot in degrees
  *   pl.placeLike(srcId, { storey, x, y, rot, itemNumber, quantity, notes })   another placement of an existing one
  *        → { id, typeId, journal }   same type, class and library data; no item JSON needed (copy / paste / duplicate)
@@ -459,7 +460,7 @@ export class IfcPlacer {
     const [lx, ly] = apply4(Wi, this.u(opts.x), this.u(opts.y), Ws[14]);
     const r = (opts.rot || 0) * D2R;
     const dl = [Wi[0] * Math.cos(r) + Wi[4] * Math.sin(r), Wi[1] * Math.cos(r) + Wi[5] * Math.sin(r)];
-    const loc = this.point3(round(lx), round(ly), 0);
+    const loc = this.point3(round(lx), round(ly), Number(opts.z) ? round(this.u(Number(opts.z))) : 0);   // 0.6 DC.117: z above the storey
     const ax = this.make('IFCAXIS2PLACEMENT3D', this.H(loc), this.H(this.dir(0, 0, 1)), this.H(this.dir(round(dl[0], 9), round(dl[1], 9), 0)));
     return this.make('IFCLOCALPLACEMENT', st.ObjectPlacement, this.H(ax));
   }

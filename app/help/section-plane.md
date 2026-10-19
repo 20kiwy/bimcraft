@@ -46,7 +46,7 @@ If the outline disappears and nothing is left, the tilts or planes leave nothing
 
 ## A building turned in its site
 
-Many models put the building at an angle to the file's axes (true north, shared coordinates), so {{ui:Front}}, {{ui:Side}} and the box cut it at a slant. When the walls run at an angle, the section bar shows {{ui:Square to the building}}: click it and the planes and the box run along the building's own walls (the status line says by how much it is turned). Click it again for the model's axes. Turning the section off starts the next one on the model's axes.
+Many models put the building at an angle to the file's axes (true north, shared coordinates). When the walls run at an angle, a new section starts square to the building: {{ui:Front}}, {{ui:Side}} and the box run along its own walls, and {{ui:Square to the building}} in the section bar is on. Click it for the model's axes, and again to go back (the status line says by how much the building is turned). With **Settings › BimCraft › A building turned in its site › As placed in the site**, sections and views start on the model's axes instead. See [Settings](topic:settings).
 
 ## What you should see
 
@@ -63,7 +63,8 @@ Many models put the building at an angle to the file's axes (true north, shared 
 - **The offset jumped back.** A distance beyond the model is moved to its end, and the status line says so.
 - **An issue shows only part of my volume.** An issue (BCF) keeps one box with its tilted faces and planes: the first box of a volume. The status line says so when you make the issue.
 - **The cut is hollow.** {{ui:Fill}} in the bar is off: click it to fill the cut faces of walls, slabs and other solids.
-- **A filled cut looks speckled or misses a piece.** Filling needs closed solids; an element whose shape in the file is not closed cannot be filled cleanly.
+- **A filled cut looks speckled or misses a piece.** Filling needs closed solids; an element whose shape in the file is not closed (a single sheet, tree foliage) is left unfilled rather than painted over. An element made of parts in different colours (a frame and its glass) is filled when its parts close together.
+- **Where is the section bar?** It sits at the top of the 3D view it cuts: on the 3D half in {{ui:Split}}, and under the drawing bar in {{ui:Plan}} alone. In a short view it scrolls.
 
 ## Next
 

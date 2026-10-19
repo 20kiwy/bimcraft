@@ -7,6 +7,8 @@
  *   Task, Start, Finish, Field, Value
  *   Level 1 walls, 2026-11-02, 2026-11-20, Storey, Level 1
  *   Level 1 walls, 2026-11-02, 2026-11-20, Class, IfcSlab          ← the same task again: more elements for it
+ * Optional columns (0.6 WL.6): Stage and Package (aliases Phase; Work package, WBS) gather tasks into work packages and
+ * stages; a task keeps one stage and one package (a later row that names others is refused, 'group-differs').
  * A row's elements: those whose Field has exactly that Value (text ignores case and surrounding spaces). Field is a
  * built-in by its English name or id (Class, Storey, Name, Type, Material, Tag, GlobalId, Object type, Long name,
  * Predefined type) or "<property set>.<property>". Dates are YYYY-MM-DD only (07/11/2026 means two different days in
@@ -21,6 +23,11 @@
  *   span(matched)               → { first, last } days, or null
  *   templateCsv(storeys)        → a starting CSV: one task per storey, a week each
  *   dayText(day) / parseDay(s)  YYYY-MM-DD ↔ day number
+ *   groupsOf(tasks)             → [{ key, kind 'stage'|'package', name, stage, start, finish, tasks }] (0.6 WL.6) stages, each
+ *                                 followed by its packages, by first start; packages with no stage after them
+ *   inGroup(tasks, key)         → the tasks of one group ('' / null = all)
+ *   groupKeys(tasks)            → every element key of those tasks (no repeats)
+ *   groupState(tasks, day)      → { done, now, todo } task counts on that day
  */
 
 const FIELDS = { class: 'cls', cls: 'cls', storey: 'storey', name: 'name', type: 'type', material: 'material', tag: 'tag', globalid: 'guid', guid: 'guid', 'object type': 'objtype', objtype: 'objtype', 'long name': 'longname', longname: 'longname', 'predefined type': 'predefined', predefined: 'predefined' };   // i18n-ignore: field names of the file format
@@ -68,6 +75,7 @@ export function parseTasks(text) {
   const col = (...names) => head.findIndex((h) => names.includes(h));
   const ci = { task: col('task', 'task name', 'name'), start: col('start', 'start date'), finish: col('finish', 'end', 'finish date', 'end date'), field: col('field', 'property'), value: col('value') };   // i18n-ignore: column names of the file format
   const missing = Object.entries(ci).filter(([, i]) => i < 0).map(([k]) => k);
+  const gi = { stage: col('stage', 'phase'), package: col('package', 'work package', 'wbs') };   // i18n-ignore: column names of the file format (0.6 WL.6, optional)
   if (missing.length) return { tasks: [], errors: [{ line: rows[0].line, message: 'header', missing }] };
   const byName = new Map();
   for (const r of rows.slice(1)) {
@@ -76,9 +84,13 @@ export function parseTasks(text) {
     if (!name) { errors.push({ line: r.line, message: 'noname' }); continue; }
     if (start === null || finish === null) { errors.push({ line: r.line, message: 'date', task: name }); continue; }
     if (finish < start) { errors.push({ line: r.line, message: 'order', task: name }); continue; }
+    const gg = (i) => (i >= 0 ? String(r.cells[i] ?? '').trim().slice(0, 200) : '');
+    const stage = gg(gi.stage), pkg = gg(gi.package);
     let t = byName.get(name);
-    if (!t) byName.set(name, (t = { name, start, finish, rows: [] }));
+    if (!t) byName.set(name, (t = { name, start, finish, stage, package: pkg, rows: [] }));
     else if (t.start !== start || t.finish !== finish) { errors.push({ line: r.line, message: 'dates-differ', task: name }); continue; }
+    else if ((stage && t.stage && stage !== t.stage) || (pkg && t.package && pkg !== t.package)) { errors.push({ line: r.line, message: 'group-differs', task: name }); continue; }
+    else { t.stage ||= stage; t.package ||= pkg; }   // a later row may fill in a group the first left blank
     if (field && value) t.rows.push({ field: field.slice(0, 300), value: value.slice(0, 300), line: r.line });
     else if (field || value) errors.push({ line: r.line, message: 'half', task: name });
   }
@@ -136,4 +148,42 @@ export function templateCsv(storeys, from = null) {
   const lines = ['Task,Start,Finish,Field,Value'];   // i18n-ignore: the file format's own column names
   for (const s of storeys) { lines.push([q(s + ''), dayText(d), dayText(d + 4), 'Storey', q(s + '')].join(',')); d += 7; }   // i18n-ignore: a field name of the format
   return lines.join('\r\n') + '\r\n';
+}
+
+// ---- groups: stages and work packages (0.6 WL.6) ----
+const SEP = '\u0000';
+const stageKey = (stage) => 's:' + stage;
+const packageKey = (stage, pkg) => 'p:' + stage + SEP + pkg;
+
+export function groupsOf(tasks) {
+  const stages = new Map(), packages = new Map();
+  const grow = (map, key, make, t) => { let g = map.get(key); if (!g) map.set(key, (g = { ...make, start: t.start, finish: t.finish, tasks: 0 })); g.start = Math.min(g.start, t.start); g.finish = Math.max(g.finish, t.finish); g.tasks++; };
+  for (const t of tasks) {
+    if (t.stage) grow(stages, stageKey(t.stage), { key: stageKey(t.stage), kind: 'stage', name: t.stage, stage: t.stage }, t);
+    if (t.package) grow(packages, packageKey(t.stage || '', t.package), { key: packageKey(t.stage || '', t.package), kind: 'package', name: t.package, stage: t.stage || '' }, t);
+  }
+  const byStart = (a, b) => a.start - b.start || a.finish - b.finish || a.name.localeCompare(b.name);
+  const out = [];
+  for (const st of [...stages.values()].sort(byStart)) out.push(st, ...[...packages.values()].filter((p) => p.stage === st.name).sort(byStart));
+  out.push(...[...packages.values()].filter((p) => !p.stage).sort(byStart));
+  return out;
+}
+
+export function inGroup(tasks, key) {
+  if (!key) return tasks;
+  if (key.startsWith('s:')) { const st = key.slice(2); return tasks.filter((t) => t.stage === st); }
+  if (key.startsWith('p:')) { const [st, pkg] = key.slice(2).split(SEP); return tasks.filter((t) => (t.stage || '') === st && t.package === pkg); }
+  return [];
+}
+
+export function groupKeys(tasks) {
+  const keys = new Set();
+  for (const t of tasks) for (const k of t.keys || []) keys.add(k);
+  return [...keys];
+}
+
+export function groupState(tasks, day) {
+  const n = { done: 0, now: 0, todo: 0 };
+  for (const t of tasks) n[day > t.finish ? 'done' : day >= t.start ? 'now' : 'todo']++;
+  return n;
 }

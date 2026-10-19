@@ -4,7 +4,10 @@
  * BimCraft" and #600 "as-built drawings"). Imported by bimcraft.js the first time a cloud is opened.
  *
  *   const pc = installClouds(host)   host = { root, viewer(), ensureViewer(), models(), status, frame, sendHandoff }
- *   await pc.open(file)               LAS / LAZ / XYZ / PTS into the scene, beside an open model (or on its own)
+ *   await pc.open(file)               LAS / LAZ / XYZ / PTS / PLY / PCD / PTX into the scene, beside an open model (or on its
+ *                                     own); a scanner maker's own format (RCP, RCS, FLS, LGS, TZF, ZFS) shows a card instead:
+ *                                     what it is, how to export E57 or LAS, a link to help point-cloud-formats (0.6 PF.3)
+ *   pc.card()                         → the card's format id while it shows, else null
  *   pc.snap(clientX, clientY)         → { point, dist, index } | null   the drawn cloud point under the pointer (Measure)
  *   pc.locate(point)                  → { lon, lat, e, n, h, crs } | null   a cloud point's place on the earth (its own system)
  *   pc.has() · pc.toggleBar() · pc.remove() · pc.state()   (state for tests)
@@ -19,7 +22,8 @@
  * (hands the file over; CadCraft attaches it under the drawing), hide, remove. Its choices persist in localStorage
  * "bimcraft.cloud" {color, size, budget, thick}.
  */
-import { readCloudInfo, loadCloud, colorize, colorModes, cloudSummary, UNIT_M } from './pointcloud.js';
+import { readCloudInfo, loadCloud, colorize, colorModes, cloudSummary, nativeCard, UNIT_M } from './pointcloud.js';
+import { nativeCloud, CLOUD_NATIVE } from './cloud-types.js';
 import { CloudLayer, M4 } from './pointcloud-three.js';
 import { readGeoref } from './ifc-geo.js';
 import { el } from './ui-util.js';
@@ -42,25 +46,56 @@ export function installClouds(host) {
 
   let layer = null, cloud = null, file = null, info = null, place = 'own', unit = null, slice = null, notes = [];
   let abort = null;
+  let adjustM = null;   // DF.22 (bim-draw): an extra viewer-space 4 × 4 after the placement (pc.adjust)
   const bar = buildBar();
   const secBar = host.root.querySelector('[data-sectionbar]'), toolbar = host.root.querySelector('[data-toolbar]');
   secBar.after(bar.el);
-  // under the toolbar, and under the section bar while that shows (both sit over the top of the view)
+  // under the toolbar, and under the section bar while that shows (both sit over the top of the view); the card likewise
+  let card = null;
   function position() {
-    if (bar.el.hidden) return;
-    const st = bar.el.offsetParent?.getBoundingClientRect();
-    if (!st) return;
-    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const above = [toolbar, secBar].filter((x) => !x.hidden).map((x) => x.getBoundingClientRect().bottom);
-    if (above.length) bar.el.style.setProperty('--bc-cloud-top', ((Math.max(...above) - st.top) / rem + 0.4).toFixed(3) + 'rem');
+    for (const box of [bar.el, card]) {
+      if (!box || box.hidden) continue;
+      const st = box.offsetParent?.getBoundingClientRect();
+      if (!st) continue;
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const mb = host.root.querySelector('[data-plan-wrap]:not([hidden]) [data-modelbar]');   // the plan's Draw bar (bim-draw DF.22)
+      const above = [toolbar, secBar, mb].filter((x) => x && !x.hidden && x.offsetParent).map((x) => x.getBoundingClientRect().bottom);
+      if (above.length) box.style.setProperty('--bc-cloud-top', ((Math.max(...above) - st.top) / rem + 0.4).toFixed(3) + 'rem');
+    }
   }
   new ResizeObserver(position).observe(toolbar);
   new ResizeObserver(position).observe(secBar);
+  { // the plan's Draw bar (bim-draw DF.22): stack under it while its plan shows
+    const mbar = host.root.querySelector('[data-modelbar]'), plan = host.root.querySelector('[data-plan-wrap]');
+    if (mbar) new ResizeObserver(position).observe(mbar);
+    if (plan) new MutationObserver(position).observe(plan, { attributes: true, attributeFilter: ['hidden'] });
+  }
   new MutationObserver(position).observe(secBar, { attributes: true, attributeFilter: ['hidden', 'style'] });
   new MutationObserver(position).observe(bar.el, { attributes: true, attributeFilter: ['hidden'] });
 
+  // ---- a scanner maker's own format (0.6 PF.3): a card, not an error ----
+  function showCard(name, format) {
+    host.ensureViewer();
+    const w = nativeCard(name, format);
+    card?.remove();
+    card = el('div', { className: 'bc-sectionbar bc-cloudbar', 'data-cloud-card': format, role: 'alertdialog', 'aria-labelledby': 'bc-cloud-card-title' },
+      el('strong', { id: 'bc-cloud-card-title' }, w.title),
+      el('span', { 'data-cloud-card-body': '' }, w.body),
+      el('span', { className: 'bc-sub', 'data-cloud-card-how': '' }, w.how),
+      el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-cloud-card-help': '', onClick: () => window.cadcraftHelp?.open('point-cloud-formats') }, t('pc.native.help')),
+      el('button', { type: 'button', className: 'btn-line btn-sm-cc', 'data-cloud-card-close': '', onClick: () => { card?.remove(); card = null; } }, t('pc.native.close')));
+    bar.el.after(card);
+    position();
+    host.status(t('pc.native.short', { name, format: CLOUD_NATIVE[format].name }), true);
+    card.querySelector('[data-cloud-card-help]').focus();
+  }
+
   // ---- open ----
-  async function open(f) {
+  async function open(f, keepAdjust = false) {
+    const nat = nativeCloud(f.name, new Uint8Array(await f.slice(0, 16).arrayBuffer()));
+    if (nat) { showCard(f.name, nat); return; }
+    card?.remove(); card = null;
+    if (!keepAdjust) adjustM = null;
     const v = host.ensureViewer();
     host.status(t('pc.reading', { file: f.name }));
     await host.frame();
@@ -154,13 +189,15 @@ export function installClouds(host) {
     notes.push(t('pc.place.centered'));
     return 'center';
   }
+  /** The placement, then pc.adjust's matrix. */
+  const placed = () => { const m = matrixFor(place) || matrixFor('center'); return adjustM ? M4.mul(adjustM, m) : m; };
   function applyPlace(fit = false) {
-    const m = matrixFor(place) || matrixFor('center');
-    layer.setMatrix(m);
+    layer.setMatrix(placed());
     const v = host.viewer();
     v.relist();
     if (fit && !host.models().length) v.view('iso');
     if (slice) applySlice();
+    host.cloudChanged?.();
   }
 
   // ---- slice ----
@@ -194,7 +231,7 @@ export function installClouds(host) {
   }
   /** A viewer point back in the cloud's own coordinates (file units). */
   function toCloud(p) {
-    const m = M4.inv(M4.mul(matrixFor(place) || matrixFor('center'), M4.T(...cloud.origin.map((x) => -x))));
+    const m = M4.inv(M4.mul(placed(), M4.T(...cloud.origin.map((x) => -x))));
     return M4.apply(m, p);
   }
   async function locate(p) {
@@ -234,7 +271,7 @@ export function installClouds(host) {
       trace: q('[data-cloud-trace]'), hide: q('[data-cloud-hide]'), remove: q('[data-cloud-remove]') };
     b.color.addEventListener('change', () => { pref.color = b.color.value; save(); layer.setColors(colorize(cloud, pref.color)); });
     b.size.addEventListener('input', () => { pref.size = Number(b.size.value); save(); layer.setSize(pref.size); });
-    b.budget.addEventListener('change', () => { pref.budget = Number(b.budget.value); save(); if (file) host.guard(() => open(file)); });
+    b.budget.addEventListener('change', () => { pref.budget = Number(b.budget.value); save(); if (file) host.guard(() => open(file, true)); });
     b.units.addEventListener('change', () => { unit = b.units.value; applyPlace(true); fillBar(); });
     b.place.addEventListener('change', () => { place = b.place.value; applyPlace(); host.viewer().view('iso'); });
     root.addEventListener('click', (e) => {
@@ -291,11 +328,12 @@ export function installClouds(host) {
   function remove() {
     abort?.abort();
     if (layer) layer.dispose();
-    cloud = null; file = null; info = null; slice = null;
+    cloud = null; file = null; info = null; slice = null; adjustM = null;
     bar.el.hidden = true;
     const v = host.viewer();
     if (v) { v.extraBoxes = []; v.relist(); v.render(); }
     host.cloudShown?.(false);
+    host.cloudChanged?.();
   }
 
   return {
@@ -307,6 +345,10 @@ export function installClouds(host) {
     barShown: () => !!cloud && !bar.el.hidden,
     state: () => cloud && { name: cloud.name, kept: cloud.n, read: cloud.read, place, unit, color: pref.color, size: pref.size, budget: pref.budget, slice: slice && { ...slice, thick: pref.thick }, notes: [...notes], visible: layer.visible, box: layer.box() && [layer.box().min.toArray(), layer.box().max.toArray()] },
     layer: () => layer,
+    /** DF.22: adjust(m) sets an extra viewer-space 4 × 4 (column-major, after the placement; null = none) and places the cloud
+     *  again; adjust() → the current one (identity when none). Kept across modelChanged() and a budget re-read. */
+    adjust(...a) { if (!a.length) return adjustM || M4.I(); adjustM = a[0] || null; if (cloud) applyPlace(); return adjustM || M4.I(); },
+    card: () => card?.dataset.cloudCard || null,
     toCloud,
   };
 }

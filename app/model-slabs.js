@@ -15,6 +15,8 @@
  *   addCeiling(w, { storey, seed, mode, height, thickness, guid })
  *   addRoof(w, { storey (the walls' level), seed, pitch, overhang, gables: [edge…], thickness, guid })
  *   updateDerived(w, guid, changes) · deleteDerived(w, guids)
+ *   CEILING_PATTERNS   0.6 DC.117 (bim-views_PART_2): the short list of grids a ceiling plan draws on a ceiling — '' none, '600x600',
+ *                    '600x1200', '2x2', '2x4' ({ key, u, v } module in mm); CadCraft_Ceiling Pattern, changed by updateDerived
  *
  * Written as: IfcSpace (.SPACE.) aggregated into its storey (Name = its number, LongName = its name; Body = the room swept up
  * to the next level; Qto_SpaceBaseQuantities NetFloorArea, GrossFloorArea, NetPerimeter, Height, NetVolume; CadCraft_Room);
@@ -30,7 +32,7 @@
 import { ids, val, inv4, mul4, apply4 } from './ifc-util.js';
 import { round } from './model-write.js';
 import { readLevels } from './model-levels.js';
-import { readWalls, wallOutlines } from './model-walls.js';
+import { readWalls, wallOutlines, buildingOutlines } from './model-walls.js';
 import { planLoops, loopAt, labelPoint, area as loopArea, perim } from './model-rooms.js';
 import { roofPlan } from './model-roof.js';
 import { writeRoofParts, edgeKinds, roofGeometry, ROOF_DEFAULTS } from './res-roof.js';   // 0.5 part 4 RC.1 (bim-residential)
@@ -44,13 +46,17 @@ export const FLOOR_KINDS = [
   { key: 'concrete', t: 6 * IN, mat: 'concrete' },
 ];
 const D2R = Math.PI / 180;
+export const CEILING_PATTERNS = [
+  { key: '', u: 0, v: 0 }, { key: '600x600', u: 600, v: 600 }, { key: '600x1200', u: 600, v: 1200 }, { key: '2x2', u: 2 * 12 * IN, v: 2 * 12 * IN }, { key: '2x4', u: 2 * 12 * IN, v: 4 * 12 * IN },
+];
 
 // ---------------------------------------------------------------------------------------------------------------- reading
 export function storeyLoops(w, storey) {
   const walls = readWalls(w, storey);
-  const polys = [...wallOutlines(walls.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t }))).values()];
-  return { walls, ...planLoops(polys) };
+  const polys = [...wallOutlines(walls.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t, bulge: x.bulge }))).values()];
+  return { walls, ...planLoops(polys), outlines: buildingOutlines(walls) };
 }
+
 
 export function readDerived(w) {
   const so = w.storeyOf(), agg = aggParents(w);
@@ -74,7 +80,7 @@ export function readDerived(w) {
     if (!ps) continue;
     const l = w.api.GetLine(w.mid, id, false);
     out.ceilings.push({ id, guid: val(l.GlobalId), storey: so.get(id) ?? null, seed: seedOf(ps), mode: ps.Mode === 'building' ? 'building' : 'room',
-      height: Number(ps.Height) * w.unitMm, thickness: Number(ps.Thickness) * w.unitMm, key: ps.ShapeKey || '' });
+      height: Number(ps.Height) * w.unitMm, thickness: Number(ps.Thickness) * w.unitMm, key: ps.ShapeKey || '', pattern: CEILING_PATTERNS.some((x) => x.key === ps.Pattern) ? ps.Pattern : '' });
   }
   for (const id of safeIds(w, 'IFCROOF')) {
     const ps = w.readPset(id, ROOF_PSET);
@@ -320,6 +326,10 @@ export function updateDerived(w, guid, ch = {}) {
   } else if (kind === 'ceiling') {
     if (ch.thickness > 0) rows.push(PL('Thickness', ch.thickness));
     if (Number.isFinite(ch.height)) rows.push(L('Height', ch.height));
+    if (ch.pattern !== undefined) {
+      if (!CEILING_PATTERNS.some((p) => p.key === ch.pattern)) throw Object.assign(new Error('model.err.ce.pattern'), { key: 'model.err.ce.pattern' });
+      rows.push(['Pattern', 'IFCLABEL', ch.pattern]);
+    }
     w.upsertPset(x.id, CEILING_PSET, rows);
   } else {
     if (ch.thickness > 0) rows.push(PL('Thickness', ch.thickness));

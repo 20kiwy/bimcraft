@@ -3,7 +3,7 @@ title: Roofs: a pitch for each wall, gables, sheds and roof planes
 summary: Set each wall under a roof to pitched, gable end or none, use the hip, gable and shed presets, lift the roof with the plate height, add fascia and soffit, and draw single roof planes where the automatic roof doesn't fit.
 section: tasks
 order: 20
-keywords: roof, pitch, per wall, gable, gable end, shed, lean-to, hip, valley, ridge, plate height, heel, fascia, soffit, eave, rake, overhang, roof plane, porch roof, dormer
+keywords: roof, pitch, per wall, gable, gable end, shed, lean-to, hip, valley, ridge, plate height, heel, fascia, soffit, eave, rake, overhang, roof plane, porch roof, dormer, gable dormer, shed dormer
 ---
 
 ## What you'll do
@@ -46,6 +46,17 @@ Every plane meets its wall at the plate height, so walls with different pitches 
 4. Click the first corner again, double-click, or press {{key:Enter}} to finish. {{key:Esc}} drops the corners.
 
 A roof plane doesn't follow the walls. Pick it on the level above (click inside it) to change its pitch, eave height or thickness, or press {{key:Delete}} to remove it.
+
+## Add a dormer
+
+1. Show the level the roof is on.
+2. Open {{ui:Build}} and choose {{ui:Dormer}}.
+3. In the options row choose **Dormer kind** (**Gable** or **Shed**) and set **Width**, **Front wall** (the height of the front wall from the roof's top to the dormer's eave), **Pitch** and **Overhang**.
+4. Click on a roof face where the middle of the dormer's front goes.
+
+BimCraft builds the front wall, two cheek walls and the dormer's roof, and runs it back until it meets the roof. A gable dormer has two planes that meet at a ridge. A shed dormer has one plane, which must be less steep than the roof. The roof below the dormer is cut away. The dormer follows the roof when the walls move.
+
+Pick it to change its kind, width, front wall, pitch or overhang in **Properties**. {{key:Delete}} removes it and closes the roof again. It must fit on one roof face, away from hips, valleys and the ridge, and only roofs made with the {{ui:Roof}} tool take dormers, not roof planes drawn by hand. Not built yet: a window in the dormer's front, and dormers on hand-drawn roof planes.
 
 ## What's saved
 

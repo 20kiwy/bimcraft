@@ -24,7 +24,7 @@
  */
 import { ModelWriter, round } from './model-write.js';
 import { readLevels } from './model-levels.js';
-import { readWalls, wallOutlines } from './model-walls.js';
+import { readWalls, wallOutlines, buildingOutlines } from './model-walls.js';
 import { planLoops, loopAt, labelPoint } from './model-rooms.js';
 import { ids, val } from './ifc-util.js';
 import { t as tr } from './i18n.js';
@@ -164,8 +164,8 @@ export function foundationGeometry(outline, p, { grade = null } = {}) {
 // ------------------------------------------------------------------------------------------------------------ reading
 function storeyOutlines(w, storey) {
   const walls = readWalls(w, storey);
-  const polys = [...wallOutlines(walls.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t }))).values()];
-  return { walls, ...planLoops(polys) };
+  const polys = [...wallOutlines(walls.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t, bulge: x.bulge }))).values()];
+  return { walls, ...planLoops(polys), outlines: buildingOutlines(walls) };   // 0.6 BIM-F1: posts / inside walls leave it alone
 }
 export function readFoundations(w) {
   const out = [];

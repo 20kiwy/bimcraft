@@ -16,6 +16,11 @@
  *                                                              slopes of `slope` run per rise out to where they meet the ground
  *   cutFill(existing, finished, { cell }) → { cut, fill }       m³ between the two over where they differ
  *   landXml(surfaces, { name, unit }) → text                    LandXML 1.2 surfaces (CivilCraft opens it)
+ *   readLandXmlSurfaces(text) → { unit ('m' | 'mm' | 'ft' | 'ftUS'), surfaces: [{ name, pts: [{ x, y, z }], faces: [[i, j, k]],
+ *                                 breaklines: [[{ x, y, z }]] }], notes }   (0.6 DF.24) the TIN surfaces of a LandXML 1.2 file
+ *                                 — CivilCraft's export: Units (Metric / Imperial linearUnit), Surface/Definition surfType TIN
+ *                                 Pnts/P id ("N E Z": northing first) and Faces/F (point ids; i="1" = invisible, left out),
+ *                                 SourceData/Breaklines; grid surfaces and the rest are named in notes
  *   readTerrain(w) · placeTerrain(spec) → op · changeTerrain(guid, ch) → op · removeTerrain(guid) → op
  *   readPads(w) · placePad({ level, seed, margin, slope, depth }) → op · changePad(guid, ch) → op · removePads([guid]) → op
  *   readHardscape(w) · placeHardscape({ level, points, kind, thickness }) → op · changeHardscape · removeHardscape
@@ -42,6 +47,7 @@ import { planLoops, loopAt, labelPoint } from './model-rooms.js';
 import { ids, val, inv4, apply4 } from './ifc-util.js';
 import { t as tr } from './i18n.js';
 import { syncFoundations } from './res-foundation.js';   // footings step to the grade a pad changes
+import { parseXml, kids, kid, textOf } from './xml.js';   // 0.6 DF.24: LandXML in (the copy CivilCraft's terrain sync brings)
 
 const IN = 25.4, FT = 304.8;
 export const TERRAIN_PSET = 'CadCraft_Terrain', PAD_PSET = 'CadCraft_Pad', HARD_PSET = 'CadCraft_Hardscape';
@@ -113,6 +119,47 @@ export function autoOffset(points, unitMm, to = [0, 0]) {
 }
 export function buildGround({ points = [], lines = [], boundary = null }) {
   return buildSurface({ points, breaklines: lines.map((pts) => ({ pts })), boundary, maxEdge: 0 });
+}
+
+// LandXML in (0.6 DF.24, session bim-draw): CivilCraft's surfaces become BimCraft's ground, its own triangles kept
+const LX_UNITS = { meter: ['m', 1], millimeter: ['mm', 1], centimeter: ['m', 0.01], kilometer: ['m', 1000], foot: ['ft', 1], intlFoot: ['ft', 1], USSurveyFoot: ['ftUS', 1], inch: ['ft', 1 / 12] };
+export function readLandXmlSurfaces(text) {
+  const root = parseXml(String(text));
+  if (root.name !== 'LandXML') throw Object.assign(new Error('res.err.landxml'), { key: 'res.err.landxml' });
+  const notes = [];
+  const U = kid(root, 'Units'), uel = U ? (kid(U, 'Metric') || kid(U, 'Imperial')) : null;
+  const lin = uel?.attrs?.linearUnit || (uel?.name === 'Imperial' ? 'foot' : 'meter');
+  const [unit, k] = LX_UNITS[lin] || (uel?.name === 'Imperial' ? ['ft', 1] : ['m', 1]);
+  if (!LX_UNITS[lin]) notes.push(tr('res.lx.unit', { unit: lin }));
+  const nez = (s) => { const v = String(s).trim().split(/\s+/).map(Number); return v.length >= 3 && v.every(Number.isFinite) ? { x: v[1] * k, y: v[0] * k, z: v[2] * k } : null; };
+  const surfaces = [];
+  for (const S of kids(kid(root, 'Surfaces') || { children: [] }, 'Surface')) {
+    const name = S.attrs.name || tr('res.lx.surface', { n: surfaces.length + 1 });
+    const D = kid(S, 'Definition');
+    if (!D || (D.attrs.surfType && D.attrs.surfType !== 'TIN')) { notes.push(tr('res.lx.notin', { name })); continue; }
+    const ids2 = new Map(), pts = [];
+    for (const P of kids(kid(D, 'Pnts') || { children: [] }, 'P')) { const q = nez(textOf(P)); if (!q) continue; ids2.set(String(P.attrs.id), pts.length); pts.push(q); }
+    const faces = [];
+    let invisible = 0;
+    for (const F of kids(kid(D, 'Faces') || { children: [] }, 'F')) {
+      if (F.attrs.i === '1') { invisible++; continue; }
+      const f = textOf(F).trim().split(/\s+/).map((x) => ids2.get(x));
+      if (f.length === 3 && f.every((x) => x !== undefined)) faces.push(f);
+    }
+    const breaklines = [];
+    const SD = kid(S, 'SourceData'), BL = SD && kid(SD, 'Breaklines');
+    for (const B of BL ? kids(BL, 'Breakline') : []) {
+      const list = kid(B, 'PntList3D');
+      if (!list) continue;
+      const v = textOf(list).trim().split(/\s+/).map(Number), line = [];
+      for (let i = 0; i + 2 < v.length; i += 3) line.push({ x: v[i + 1] * k, y: v[i] * k, z: v[i + 2] * k });
+      if (line.length >= 2) breaklines.push(line);
+    }
+    if (pts.length < 3) { notes.push(tr('res.lx.empty', { name })); continue; }
+    surfaces.push({ name, pts, faces, breaklines, invisible });
+  }
+  if (!surfaces.length) throw Object.assign(new Error('res.err.landxml'), { key: 'res.err.landxml' });
+  return { unit, surfaces, notes };
 }
 
 // ------------------------------------------------------------------------------------------------------------ grading
@@ -242,7 +289,7 @@ export function padShape(w, pd, levels = readLevels(w)) {
   const lv = levels.find((l) => l.guid === pd.level);
   if (!lv) return null;
   const walls = readWalls(w, lv.id);
-  const L = planLoops([...wallOutlines(walls.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t }))).values()]);
+  const L = planLoops([...wallOutlines(walls.map((x) => ({ key: x.guid, a: x.a, b: x.b, t: x.t, bulge: x.bulge }))).values()]);
   const o = loopAt(L.outlines, pd.seed);
   if (!o) return null;
   const M = w.storeyWorld(lv.id);
@@ -321,8 +368,10 @@ export function placeTerrain(spec) {
     const site = siteOf(w);
     if (!site) fail('res.err.nosite');
     let pts = (s.points || []).filter((p) => [p.x, p.y, p.z].every(Number.isFinite));
-    if (pts.length > TERRAIN_LIMITS.points) pts = thinToGrid(pts, Math.sqrt(boundsArea(pts) / TERRAIN_LIMITS.points) * 1.2);
-    const r = buildGround({ points: pts, lines: s.lines || [], boundary: s.boundary || null });
+    // 0.6 DF.24: a TIN that comes with its triangles (LandXML) keeps them, when it is small enough to keep whole
+    const own = Array.isArray(s.faces) && s.faces.length && s.points.length <= TERRAIN_LIMITS.points * 2;
+    if (!own && pts.length > TERRAIN_LIMITS.points) pts = thinToGrid(pts, Math.sqrt(boundsArea(pts) / TERRAIN_LIMITS.points) * 1.2);
+    const r = own ? surfaceFromFaces({ pts: s.points, faces: s.faces }) : buildGround({ points: pts, lines: s.lines || [], boundary: s.boundary || null });
     if (!r.surface) fail(r.report.errors[0] ? 'res.err.surface' : 'res.err.surface');
     const { pts: P, faces } = r.surface.toFaces();
     if (!s.guid) s.guid = val(w.guid());

@@ -92,6 +92,7 @@ function lineHit(p, d, q, e) { const c = cross(d, e); if (Math.abs(c) < 1e-9) re
  * corner studs; the other stops against it. At a T the stem stops against the through wall, which gets two backer studs.
  */
 export function frameWall(wall, ctx) {
+  if (wall.bulge) return { pieces: [], error: 'comforts.err.curvedframe' };   // 0.6 round 2: a curved wall is not framed yet
   const band = studBand(wall);
   if (!band) return { pieces: [], error: 'res.err.nostuds' };
   const size = studSize(band.depth) || '2x4';

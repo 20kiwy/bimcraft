@@ -52,6 +52,9 @@ export function regenAll(w) {
 function settle(w, storeys, force = null) {
   for (const s of new Set(storeys)) { if (s === null || s === undefined) continue; regenWalls(w, s, force); syncDerived(w, s); }
 }
+/** For ops written elsewhere (model-trim.js, 0.6): the same follow-ups as this file's own wall changes. */
+export const afterWallMoveFor = (w, before, ops0, guids) => afterWallMove(w, before, ops0, guids, false);
+export const settleFor = (w, storeys, force = null) => settle(w, storeys, force);
 
 /** Draw walls on a storey: segs [{ a, b }] in its plan axes (mm). One undo step for all of them. */
 export function drawWalls({ storey, segs, typeKey, baseOffset = 0, topLevel = '', topOffset = 0, height = 0, extSide = 'left' }) {
@@ -61,7 +64,7 @@ export function drawWalls({ storey, segs, typeKey, baseOffset = 0, topLevel = ''
     const st = storeyId(w, storey);
     const made = new Map();
     for (const s of list) {
-      const r = addWall(w, { storey: st, a: s.a, b: s.b, typeKey: s.typeKey || typeKey, baseOffset, topLevel, topOffset, height, extSide: s.extSide || extSide, guid: s.guid });
+      const r = addWall(w, { storey: st, a: s.a, b: s.b, typeKey: s.typeKey || typeKey, baseOffset, topLevel, topOffset, height, extSide: s.extSide || extSide, guid: s.guid, bulge: s.bulge || 0, justification: s.justification || 'center' });   // 0.6 round 2: curved walls, the location line
       made.set(r.guid, r.id);
     }
     settle(w, [st]);

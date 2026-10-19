@@ -13,8 +13,11 @@ Get a project saved as `.pln` (project), `.pla` (archive with its library), `.tp
 ## What opens today
 
 - **The project files themselves do not open yet.** Their format is not published, and BimCraft does not read it yet. When you open one, BimCraft says so and points here.
+- **BimCraft checks the file's first bytes.** Archicad projects from version 17 on start with the same short signature, so BimCraft can tell you for certain that a file is an Archicad project. A file with an Archicad name that does not start that way has probably been renamed, is damaged, or comes from an older version. The signature does not tell a project, an archive and a template apart.
 - **An IFC export opens fully**: the model in 3D, storeys, zones as spaces, element data, property sets and classifications, with every BimCraft tool.
 - **A DWG export opens** in the 2D view, with its layers and layouts, and in {{ui:3D}}. To edit it, use {{ui:Edit in CadCraft}}.
+
+Or bring the whole project as one zip, with its views, layouts and property groups: see [Open a project bundle](topic:open-project-bundle).
 
 ## Export IFC (the model)
 
@@ -40,7 +43,8 @@ Check these in the translator's settings before you export:
 
 ## Troubleshooting
 
-- **"… is a project file BimCraft does not read yet."** Export IFC or DWG as above, and open that file.
+- **"… is an Archicad project: its first bytes say so."** Export IFC or DWG as above, and open that file.
+- **"… is named like an Archicad file but does not start like one."** Check where the file came from: it may be another kind of file with a new name (try opening it under its real extension), a copy that did not finish, or a project from a version before 17. Open it in Archicad if you can, then export IFC or DWG.
 - **The model opens without rooms.** Zones were not exported. Turn them on in the IFC translator and export again.
 - **Openings are not cut.** BimCraft says so under **Not drawn yet** in the {{ui:File}} panel. Export again; if it stays, open the model in the program that made it and check the openings there.
 - **Text on the DWG looks different.** The export may keep fonts BimCraft does not have; BimCraft draws text in a plain sans-serif font.

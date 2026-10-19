@@ -32,6 +32,7 @@ Areas are measured inside the wall faces. Rooms are saved as IFC spaces with the
 1. Click {{ui:Ceiling}}.
 2. Choose **This room** or **The whole building**, and its **Height** above the floor.
 3. Point inside and click.
+4. To see it from below, with its grid and the lights on it, switch the plan to its ceiling plan: see [Views, view ranges and your own sheets](topic:views-and-sheets).
 
 ## A roof
 
@@ -44,7 +45,7 @@ The roof sits on top of the walls, on the level above them, and its underside me
 
 ## Change them
 
-Pick a floor, ceiling or roof (in the 3D view, the model tree, or a roof by clicking inside its outline on the level above) and change it in **Properties**: a floor's kind, thickness and how far its top is above the level; a ceiling's height and thickness; a roof's pitch, overhang, ends and thickness. Each change is one undo step.
+Pick a floor, ceiling or roof (in the 3D view, the model tree, or a roof by clicking inside its outline on the level above) and change it in **Properties**: a floor's kind, thickness and how far its top is above the level; a ceiling's height, thickness and **Pattern** (the grid a ceiling plan draws on it: none, 600 × 600, 600 × 1200, 2' × 2' or 2' × 4'); a roof's pitch, overhang, ends and thickness. Each change is one undo step.
 
 ## Good to know
 

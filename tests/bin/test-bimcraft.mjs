@@ -142,6 +142,18 @@ if (args.includes('--rotated')) process.exit(await rotatedMode());
 if (args.includes('--model')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/model-test.mjs'))).modelMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
 // 0.5 part 4 track RC (session bim-residential): the residential tools — tools/bimcraft-test/res-test.mjs
 if (args.includes('--res')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/res-test.mjs'))).resMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
+// 0.6 (session bim-draw): the 0.6 drawing work — tools/bimcraft-test/draw06-test.mjs
+if (args.includes('--draw06')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/draw06-test.mjs'))).draw06Mode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
+// 0.6 DF.29 (session bim-draw): pipes and ducts — tools/bimcraft-test/mep-test.mjs
+if (args.includes('--mep')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/mep-test.mjs'))).mepMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
+// 0.6 DC.114 (session bim-families_PART_2): families on IFC types — tools/bimcraft-test/families-test.mjs
+if (args.includes('--families')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/families-test.mjs'))).familiesMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
+// 0.6 round 2 (session bim-fixes_PART_2): DC.53 / DC.57 — tools/bimcraft-test/fixes2-test.mjs
+if (args.includes('--fixes2')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/fixes2-test.mjs'))).fixes2Mode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
+if (args.includes('--views2')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/views2-test.mjs'))).views2Mode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));   // 0.6 DC.117 (bim-views_PART_2)
+// 0.6 round 2 (session bim-comforts_PART_2): curved walls, justification, moving items, dormers, spiral stairs, interior elevations — tools/bimcraft-test/comforts-test.mjs
+if (args.includes('--comforts')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/comforts-test.mjs'))).comfortsMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));
+if (args.includes('--extra2')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/extra2-test.mjs'))).extra2Mode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));   // 0.6 DC.22 / LC.12 / LC.20 (bim-extra_PART_2)
 if (args.includes('--render')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/render-test.mjs'))).renderMode({ APP, ROOT, WebIFC, IfcModel, quiet, require, args }));   // 0.5 RC.7 / RC.11 (session render)
 // 0.5 part 4 track IP.1: menu styles, keys and mouse — tools/bimcraft-test/input-test.mjs
 if (args.includes('--input')) process.exit(await (await import(path.join(ROOT, 'tools/bimcraft-test/input-test.mjs'))).inputMode({ APP, ROOT }));

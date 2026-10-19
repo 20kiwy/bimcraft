@@ -144,7 +144,7 @@ export function bimScene(viewer, settings, sunDir, paints = null) {
             g.setAttribute('uv', uv);
           }
           geos.push(g);
-          items.push({ geometry: g, matrix: mesh.matrixWorld.elements.slice(), look: g0.look });
+          items.push({ geometry: g, matrix: mesh.matrixWorld.elements.slice(), look: g0.look, mi, storey: mesh.parent?.userData?.storey ?? null });
         }
         continue;
       }
@@ -157,7 +157,7 @@ export function bimScene(viewer, settings, sunDir, paints = null) {
       geos.push(g);
       const key = keyOf(mesh), a = mesh.userData.batch?.color?.[3] ?? 1;
       if (a < 0.98 && !mesh.userData.space) looks[key] = 'glass';
-      items.push({ geometry: g, matrix: mesh.matrixWorld.elements.slice(), look: key });
+      items.push({ geometry: g, matrix: mesh.matrixWorld.elements.slice(), look: key, mi, storey: mesh.parent?.userData?.storey ?? null });   // mi, storey: names in glb-bim.js (0.6 DC.22)
     }
     for (const lines of L.edges) {
       if (!shown(lines)) continue;

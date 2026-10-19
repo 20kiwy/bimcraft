@@ -21,6 +21,8 @@ The menu style (BimCraft's own toolbar, a home-design menu bar, a BIM ribbon or 
 
 The camera a model opens with: {{ui:Fit}} (the start, the whole model from a corner), {{ui:Top}}, {{ui:Front}} or {{ui:Side}}. The buttons above the model change the view any time.
 
+**A building turned in its site**: many models arrive with the building at an angle to the file's axes (on survey or shared coordinates). {{ui:Square to the building}} (the start) shows such a building square: {{ui:Fit}}, {{ui:Top}}, {{ui:Front}}, {{ui:Side}}, the view cube's faces and every new section follow its walls, and the view cube's compass still points to the model's north. {{ui:As placed in the site}} keeps the file's axes. A building whose walls run along the axes looks the same either way.
+
 ## Placing library items
 
 **Start with wall snap on** (off at the start): when placing or pasting a library item starts, its back snaps to the nearest wall, facing the room. {{key:Tab}} or {{ui:Wall snap}} in the placing bar turns it off for the moment. A storey with no walls starts without it.

@@ -4,8 +4,11 @@
  * bin/test-bimcraft.mjs --model runs it in Node. Plan mm throughout.
  *
  *   snapPoint(p, { walls, points }, { tol, from, ortho, step, round })
- *     → { p: [x, y], kind: 'end' | 'mid' | 'on' | 'angle' | 'ortho' | 'align' | 'free', angle?, wall?, guides? }
- *   walls [{ a, b, t }] (centre lines; their faces snap too), points [[x, y]] (the chain being drawn, other free points)
+ *     → { p: [x, y], kind: 'end' | 'mid' | 'grid' | 'cloud' | 'on' | 'angle' | 'ortho' | 'align' | 'free', angle?, wall?, guides? }
+ *   walls [{ a, b, t }] (centre lines; their faces snap too), points [[x, y]] (the chain being drawn, other free points),
+ *   lines [{ a, b }] (grid lines, 0.6 DF.16: on them, and a direction from `from` stops where it crosses one), gridPoints
+ *   [[x, y]] (where grid lines cross: kind 'grid', as strong as a wall's end), nearest(p, tol) → [x, y] | null (a point
+ *   cloud's slice, 0.6 DF.22: kind 'cloud', after ends and middles)
  *   tol: how near counts (mm — the page passes so many screen pixels in mm); from: the last point (angles, lengths);
  *   ortho: only 0 / 90 / 180 / 270° from `from` (Shift); step: angle step when nothing else snaps (15°, held when within
  *   3°); round: length step for a free direction (1/2" or 10 mm), so typed-looking numbers come out of clicks.
@@ -18,7 +21,7 @@ const D2R = Math.PI / 180;
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
 export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, step = 15, round = 0, align = false } = {}) {
-  const walls = ctx.walls || [], extra = ctx.points || [];
+  const walls = ctx.walls || [], extra = ctx.points || [], lines = (ctx.lines || []).map((l) => ({ a: l.a, b: l.b, t: 0, grid: true }));
   let best = null;
   const anchors = [];
   const offer = (q, kind, rank, wall) => { if (align && kind === 'end') anchors.push(q); const d = dist(p, q); if (d <= tol && (!best || rank < best.rank || (rank === best.rank && d < best.d))) best = { p: q, kind, rank, d, wall }; };
@@ -33,6 +36,9 @@ export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, 
     }
   }
   for (const q of extra) offer(q, 'end', 0, null);
+  for (const q of ctx.gridPoints || []) offer(q, 'grid', 0, null);
+  // a point cloud's slice (0.6 DF.22): the scanned point nearest the pointer, after ends and middles
+  if (ctx.nearest) { const q = ctx.nearest(p, tol); if (q) offer(q, 'cloud', 2, null); }
   if (best) return { p: best.p, kind: best.kind, wall: best.wall };
   // Alignment is opt-in: other tools keep their existing snap priorities.
   const alignment = (q, dir = null) => {
@@ -62,8 +68,8 @@ export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, 
         // where this direction crosses a wall (its centre line or a face) near the pointer, stop there
         const dir = [Math.cos(ang * D2R), Math.sin(ang * D2R)];
         let hit = null;
-        for (const w of walls) {
-          for (const off of [0, w.t / 2, -w.t / 2]) {
+        for (const w of [...walls, ...lines]) {
+          for (const off of w.grid ? [0] : [0, w.t / 2, -w.t / 2]) {
             const L = dist(w.a, w.b); if (!L) continue;
             const u = [(w.b[0] - w.a[0]) / L, (w.b[1] - w.a[1]) / L], n = [-u[1], u[0]];
             const a = [w.a[0] + n[0] * off, w.a[1] + n[1] * off];
@@ -73,7 +79,7 @@ export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, 
             if (s > 1 && tt >= -1 && tt <= L + 1 && Math.abs(s - l) <= tol && (!hit || Math.abs(s - l) < Math.abs(hit.s - l))) hit = { s, w };
           }
         }
-        if (hit) return { p: [from[0] + dir[0] * hit.s, from[1] + dir[1] * hit.s], kind: 'on', angle: ang, wall: hit.w };
+        if (hit) return { p: [from[0] + dir[0] * hit.s, from[1] + dir[1] * hit.s], kind: 'on', angle: ang, wall: hit.w.grid ? undefined : hit.w };
         const aligned = align && alignment(p, dir);
         if (aligned) return { ...aligned, angle: ang };
         if (round > 0) l = Math.max(round, Math.round(l / round) * round);
@@ -83,17 +89,17 @@ export function snapPoint(p, ctx = {}, { tol = 150, from = null, ortho = false, 
   }
   // on a wall: its centre line or a face, nearest point
   let on = null;
-  for (const w of walls) {
+  for (const w of [...walls, ...lines]) {
     const L = dist(w.a, w.b); if (!L) continue;
     const u = [(w.b[0] - w.a[0]) / L, (w.b[1] - w.a[1]) / L], n = [-u[1], u[0]];
-    for (const off of [0, w.t / 2, -w.t / 2]) {
+    for (const off of w.grid ? [0] : [0, w.t / 2, -w.t / 2]) {
       const a = [w.a[0] + n[0] * off, w.a[1] + n[1] * off];
       const s = Math.max(0, Math.min(L, (p[0] - a[0]) * u[0] + (p[1] - a[1]) * u[1]));
       const q = [a[0] + u[0] * s, a[1] + u[1] * s], d = dist(p, q);
       if (d <= tol * 0.6 && (!on || d < on.d)) on = { p: q, d, w };
     }
   }
-  if (on) return { p: on.p, kind: 'on', wall: on.w };
+  if (on) return { p: on.p, kind: 'on', wall: on.w.grid ? undefined : on.w };
   const aligned = align && alignment(p);
   if (aligned) return aligned;
   if (from && round > 0) {

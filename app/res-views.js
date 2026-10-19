@@ -12,6 +12,7 @@
  *              cuts is filled (cuts: [{ key, cls, loops }] in view coordinates)
  *        far   for a section: how deep behind the plane to look (mm; 0 = all)
  *        res   the depth buffer's longer side in pixels (1600)
+ *        box   { x0, y0, x1, y1 } (view mm): frame the view on it, everything outside cut off (0.6 round 2: interior elevations)
  *        margin how far past the building the ground (IfcGeographicElement) is drawn: { side 3000, below 1500, above 500 } mm —
  *              the view is framed on everything else, and the ground's lines and fills are cut at that box
  *      View coordinates (mm): x along the view's right ([dir.y, −dir.x]), y = z. lines: [[x1, y1, x2, y2, key]…] — the feature
@@ -60,7 +61,7 @@ function clipTri(t, d0) {
   return res;
 }
 
-export function projectView(elements, { dir, cut = null, far = 0, res = 1600, margin = { side: 3000, below: 1500, above: 500 } } = {}) {
+export function projectView(elements, { dir, cut = null, far = 0, res = 1600, margin = { side: 3000, below: 1500, above: 500 }, box: frame = null } = {}) {
   const right = [dir[1], -dir[0]];
   const d0 = cut ? cut.o[0] * dir[0] + cut.o[1] * dir[1] : -Infinity, d1 = cut && far > 0 ? d0 + far : Infinity;
   // into view coordinates, behind the cut
@@ -106,6 +107,8 @@ export function projectView(elements, { dir, cut = null, far = 0, res = 1600, ma
     for (const cu of cuts) if (!ground(cu.cls)) for (const l of cu.loops) for (const q of l) { a = Math.min(a, q[0]); c = Math.max(c, q[0]); b = Math.min(b, q[1]); d = Math.max(d, q[1]); }
     if (Number.isFinite(a)) { x0 = Math.max(x0, a - margin.side); x1 = Math.min(x1, c + margin.side); y0 = Math.max(y0, b - margin.below); y1 = Math.min(y1, d + margin.above); }
   }
+  // 0.6 round 2 (bim-comforts_PART_2): a view framed on a box of its own (an interior elevation: one room, floor to ceiling)
+  if (frame) { x0 = Math.max(x0, frame.x0); x1 = Math.min(x1, frame.x1); y0 = Math.max(y0, frame.y0); y1 = Math.min(y1, frame.y1); if (!(x1 > x0 && y1 > y0)) return { lines: [], cuts: [], bounds: null, n: 0 }; }
   // the depth buffer
   const W = Math.max(1, x1 - x0), H = Math.max(1, y1 - y0), s = res / Math.max(W, H);
   const nx = Math.ceil(W * s) + 3, ny = Math.ceil(H * s) + 3;

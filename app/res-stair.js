@@ -31,14 +31,23 @@ import { t as tr } from './i18n.js';
 
 const IN = 25.4;
 export const STAIR_PSET = 'CadCraft_Stair', WELL_PSET = 'CadCraft_StairWell';
-export const STAIR_KINDS = ['straight', 'l', 'u', 'winder'];
+export const STAIR_KINDS = ['straight', 'l', 'u', 'winder', 'spiral'];   // spiral: 0.6 round 2 (bim-comforts_PART_2)
 export const STAIR_LIMITS = { riserMax: 7.75 * IN, treadMin: 10 * IN, widthMin: 36 * IN, headroom: 80 * IN, railMin: 34 * IN, railMax: 38 * IN };
 export const STAIR_DEFAULTS = { kind: 'straight', turn: 'left', width: 36 * IN, riserMax: 7.75 * IN, tread: 10 * IN, split: 0.5, gap: 2 * IN, railings: 'both', railHeight: 36 * IN, well: true };
-const IFC_TYPE = { straight: 'STRAIGHT_RUN_STAIR', l: 'QUARTER_TURN_STAIR', u: 'HALF_TURN_STAIR', winder: 'QUARTER_WINDING_STAIR' };
+const IFC_TYPE = { straight: 'STRAIGHT_RUN_STAIR', l: 'QUARTER_TURN_STAIR', u: 'HALF_TURN_STAIR', winder: 'QUARTER_WINDING_STAIR', spiral: 'SPIRAL_STAIR' };
+/**
+ * Spiral stairs (0.6 round 2, session bim-comforts_PART_2): wedge treads round a centre post, turning left (anticlockwise going
+ * up) or right; `start` is the post's centre, `angle` the direction of the bottom tread's front edge, `width` the tread from the
+ * post to the outside, `tread` its depth on the walk line 12" out from the post, `post` the post's diameter. Labelled defaults
+ * after the usual residential rule for spiral stairs: 26" clear width, treads at least 6¾" on the walk line, risers at most 9½",
+ * handrail 34"–38" on the outside. The post runs from the floor to the handrail's height above the top.
+ */
+export const SPIRAL_LIMITS = { riserMax: 9.5 * IN, treadMin: 6.75 * IN, widthMin: 26 * IN, walk: 12 * IN, railMin: 34 * IN, railMax: 38 * IN };
+export const SPIRAL_DEFAULTS = { riserMax: 9.5 * IN, tread: 7.5 * IN, width: 30 * IN, post: 4.5 * IN };
 
 // ------------------------------------------------------------------------------------------------------------ layout
 export function stairLayout(spec0) {
-  const s = { ...STAIR_DEFAULTS, ...spec0 };
+  const s = { ...STAIR_DEFAULTS, ...(spec0.kind === 'spiral' ? SPIRAL_DEFAULTS : {}), ...spec0 };
   const H = s.height, w = s.width, d = s.tread;
   const n = Math.max(2, Math.ceil(H / s.riserMax - 1e-9)), r = H / n, T = n - 1;
   const a0 = (s.angle || 0) * Math.PI / 180, u = [Math.cos(a0), Math.sin(a0)], nl = [-u[1], u[0]];
@@ -53,6 +62,7 @@ export function stairLayout(spec0) {
   const ins = 2 * IN;
   const railL = s.railings === 'both' || s.railings === 'left', railR = s.railings === 'both' || s.railings === 'right';
   const nosingSide = (sA, sB, t, zA, zB) => [[...P(sA, t), zA], [...P(sB, t), zB]];
+  if (s.kind === 'spiral') return spiralLayout(s, { n, r, T, d, w, a0, ins, pieces, sides, walk, flight });
   if (s.kind === 'straight') {
     const treads = [];
     for (let i = 0; i < T; i++) treads.push({ poly: ccw(rect(i * d, (i + 1) * d, -w / 2, w / 2)), z: (i + 1) * r, i });
@@ -136,9 +146,36 @@ export function stairLayout(spec0) {
   return { n, riser: r, tread: d, treads: T, run, pieces, outline, sides, walk, checks, spec: s };
 }
 function area(p) { let s = 0; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a[0] * b[1] - a[1] * b[0]; } return s / 2; }
+/** A spiral stair's treads (wedges round the post), its post, the outside handrail, the walk line, the outline (0.6 round 2). */
+function spiralLayout(s, { n, r, T, d, w, a0, ins, pieces, sides, walk, flight }) {
+  const rp = (s.post > 0 ? s.post : SPIRAL_DEFAULTS.post) / 2, Ro = rp + w, walkR = rp + SPIRAL_LIMITS.walk;
+  const dA = d / walkR, dir = s.turn === 'right' ? -1 : 1, c = s.start;
+  const pt = (rad, a) => [c[0] + rad * Math.cos(a), c[1] + rad * Math.sin(a)];
+  const arc = (rad, from, to) => { const k = Math.max(2, Math.ceil(Math.abs(to - from) / (6 * Math.PI / 180))); const out = []; for (let j = 0; j <= k; j++) out.push(pt(rad, from + (to - from) * j / k)); return out; };
+  const ccw = (poly) => (area(poly) < 0 ? poly.slice().reverse() : poly);
+  const treads = [];
+  for (let i = 0; i < T; i++) {
+    const b0 = a0 + dir * i * dA, b1 = b0 + dir * dA;
+    treads.push({ poly: ccw([...arc(rp, b0, b1), ...arc(Ro, b1, b0)]), z: (i + 1) * r, i });
+  }
+  flight(treads, { risers: n, n: T, spiral: true });
+  pieces.push({ kind: 'post', c, r: rp, z0: 0, z1: s.height + (s.railings === 'none' ? 0 : s.railHeight) });
+  // the handrail on the outside, rising with the nosings (two points a tread, so it reads as a curve)
+  if (s.railings !== 'none') {
+    const side = [];
+    for (let j = 0; j <= 2 * T; j++) side.push([...pt(Ro - ins, a0 + dir * j * dA / 2), r + j * r / 2]);
+    sides.push(side);
+  }
+  for (let j = 0; j <= T; j++) walk.push(pt(walkR, a0 + dir * j * dA));
+  const sweep = T * dA;
+  const circle = (rad) => arc(rad, 0, 2 * Math.PI).slice(0, -1);
+  const outline = [sweep >= 2 * Math.PI - 1e-6 ? ccw(circle(Ro)) : ccw([...arc(rp, a0, a0 + dir * sweep), ...arc(Ro, a0 + dir * sweep, a0)]), ccw(circle(rp))];
+  const checks = { riser: r <= s.riserMax + 1e-6 && r <= SPIRAL_LIMITS.riserMax + 1e-6, tread: d >= SPIRAL_LIMITS.treadMin - 1e-6, width: w >= SPIRAL_LIMITS.widthMin - 1e-6, rail: s.railings === 'none' || (s.railHeight >= SPIRAL_LIMITS.railMin - 1e-6 && s.railHeight <= SPIRAL_LIMITS.railMax + 1e-6) };
+  return { n, riser: r, tread: d, treads: T, run: null, pieces, outline, sides, walk, checks, spec: s, spiral: { post: rp * 2, outer: Ro, walk: walkR, angle: dA * 180 / Math.PI, sweep: sweep * 180 / Math.PI } };
+}
 
 // ------------------------------------------------------------------------------------------------------------ reading
-const NUM = ['StartX', 'StartY', 'Width', 'Height', 'RiserMax', 'Tread', 'Gap', 'RailHeight'];
+const NUM = ['StartX', 'StartY', 'Width', 'Height', 'RiserMax', 'Tread', 'Gap', 'RailHeight', 'Post'];
 export function readStairs(w) {
   const out = [];
   let list = [];
@@ -152,7 +189,7 @@ export function readStairs(w) {
     out.push({
       id, guid: val(l.GlobalId), storey: so.get(id) ?? null, topLevel: ps.TopLevel || '', kind: STAIR_KINDS.includes(ps.Kind) ? ps.Kind : 'straight', turn: ps.Turn === 'right' ? 'right' : 'left',
       start: [num('StartX'), num('StartY')], angle: Number(ps.Angle || 0), width: num('Width'), fixedHeight: num('Height'), riserMax: num('RiserMax'), tread: num('Tread'), split: Number(ps.Split ?? 0.5), gap: num('Gap'),
-      railings: ['both', 'left', 'right', 'none'].includes(ps.Railings) ? ps.Railings : 'both', railHeight: num('RailHeight'), well: ps.Well === true || /^(\.?T\.?|true)$/i.test(String(ps.Well ?? '')), key: ps.ShapeKey || '', parts: partsOf(w, id),
+      railings: ['both', 'left', 'right', 'none'].includes(ps.Railings) ? ps.Railings : 'both', railHeight: num('RailHeight'), post: num('Post') || SPIRAL_DEFAULTS.post, well: ps.Well === true || /^(\.?T\.?|true)$/i.test(String(ps.Well ?? '')), key: ps.ShapeKey || '', parts: partsOf(w, id),
     });
   }
   return out;
@@ -203,7 +240,7 @@ function writeStair(w, st, ctx = {}) {
   const floors = top ? floorsOf(w, top.id) : [];
   const L = stairLayout({ ...st, height });
   if (L.error) return false;
-  const key = shapeKey(st.kind, st.turn, st.start, st.angle, st.width, height, st.riserMax, st.tread, st.split, st.gap, st.railings, st.railHeight, st.well, floors.map((f) => [f.id, f.thickness, f.offset]));
+  const key = shapeKey(st.kind, st.turn, st.start, st.angle, st.width, height, st.riserMax, st.tread, st.split, st.gap, st.railings, st.railHeight, st.well, floors.map((f) => [f.id, f.thickness, f.offset]), ...(st.kind === 'spiral' ? [st.post] : []));
   if (st.key === key && st.parts.length) return false;
   if (st.parts.length) w.dropProduct(st.parts);
   const oldWells = wellsOf(w, st.guid);
@@ -215,6 +252,17 @@ function writeStair(w, st, ctx = {}) {
   const blocks = (treads) => treads.map((t) => { const it = w.extrude(w.profile(t.poly), t.z - L.riser, L.riser); w.styleItem(it, wood); return it; });
   let fi = 0;
   for (const pc of L.pieces) {
+    if (pc.kind === 'post') {
+      // a spiral stair's centre post: a steel tube drawn as a solid round column (IfcMember .POST.)
+      const nm = w.L(tr('comforts.st.post'));
+      const id = w.make('IFCMEMBER', w.guid(), w.ownerHistory(), nm, null, nm, w.H(place()), null, null, ...(w.v4 ? ['POST'] : []));
+      const ring = []; for (let j = 0; j < 24; j++) { const a = j / 24 * 2 * Math.PI; ring.push([pc.c[0] + pc.r * Math.cos(a), pc.c[1] + pc.r * Math.sin(a)]); }
+      const it = w.extrude(w.profile(ring), pc.z0, pc.z1 - pc.z0);
+      w.styleItem(it, w.surfaceStyle(tr('res.style.rail'), [0.95, 0.95, 0.93], 0));
+      w.setShape(id, [w.rep('body', 'Body', 'SweptSolid', [it])]);
+      parts.push(id);
+      continue;
+    }
     if (pc.kind === 'landing') {
       const nm = w.L(tr('res.st.landing'));
       const id = w.make('IFCSLAB', w.guid(), w.ownerHistory(), nm, null, nm, w.H(place()), null, null, ...(w.v4 ? ['LANDING'] : ['LANDING']));
@@ -226,7 +274,7 @@ function writeStair(w, st, ctx = {}) {
     }
     const winder = pc.kind === 'winders', nm = w.L(tr(winder ? 'res.st.winders' : 'res.st.flight', { n: ++fi }));
     const nT = pc.treads.length;
-    const extra = w.v4 ? [nT + 1, nT, round(w.u(L.riser)), round(w.u(L.tread)), winder ? 'WINDER' : 'STRAIGHT'] : [nT + 1, nT, round(w.u(L.riser)), round(w.u(L.tread))];
+    const extra = w.v4 ? [nT + 1, nT, round(w.u(L.riser)), round(w.u(L.tread)), winder ? 'WINDER' : pc.spiral ? 'SPIRAL' : 'STRAIGHT'] : [nT + 1, nT, round(w.u(L.riser)), round(w.u(L.tread))];
     const id = w.make('IFCSTAIRFLIGHT', w.guid(), w.ownerHistory(), nm, null, nm, w.H(place()), null, null, ...extra);
     w.setShape(id, [w.rep('body', 'Body', 'SweptSolid', blocks(pc.treads))]);
     parts.push(id);
@@ -255,7 +303,7 @@ function writeStair(w, st, ctx = {}) {
     const polys = [];
     for (const f of floors) {
       const under = height + f.offset - f.thickness;   // the floor's underside over the bottom level
-      for (const pc of L.pieces) for (const t of (pc.kind === 'landing' ? [{ poly: pc.poly, z: pc.z }] : pc.treads)) if (t.z + STAIR_LIMITS.headroom > under) polys.push(t.poly);
+      for (const pc of L.pieces) for (const t of (pc.kind === 'landing' ? [{ poly: pc.poly, z: pc.z }] : pc.treads || [])) if (t.z + STAIR_LIMITS.headroom > under) polys.push(t.poly);   // a spiral's post: none
     }
     const loops = polys.length ? planLoops(polys, { snap: 0.5 }).outlines : [];
     for (const f of floors) for (const lp of loops) {
@@ -281,16 +329,19 @@ const fail = (key) => { throw Object.assign(new Error(key), { key }); };
 function rowsOf(w, s) {
   const L = (k, v) => [k, 'IFCLENGTHMEASURE', round(w.u(v || 0))];
   return [['Kind', 'IFCLABEL', s.kind], ['Turn', 'IFCLABEL', s.turn], L('StartX', s.start[0]), L('StartY', s.start[1]), ['Angle', 'IFCREAL', round(s.angle || 0, 6)], L('Width', s.width), L('Height', s.fixedHeight || 0),
-    L('RiserMax', s.riserMax), L('Tread', s.tread), ['Split', 'IFCREAL', round(s.split, 4)], L('Gap', s.gap), ['Railings', 'IFCLABEL', s.railings], L('RailHeight', s.railHeight), ['Well', 'IFCBOOLEAN', !!s.well], ['TopLevel', 'IFCIDENTIFIER', s.topLevel || '']];
+    L('RiserMax', s.riserMax), L('Tread', s.tread), ['Split', 'IFCREAL', round(s.split, 4)], L('Gap', s.gap), ['Railings', 'IFCLABEL', s.railings], L('RailHeight', s.railHeight), ['Well', 'IFCBOOLEAN', !!s.well], ['TopLevel', 'IFCIDENTIFIER', s.topLevel || ''],
+    ...(s.kind === 'spiral' ? [L('Post', s.post || SPIRAL_DEFAULTS.post)] : [])];
 }
 function check(s) {
   if (!STAIR_KINDS.includes(s.kind)) fail('res.err.stairkind');
   if (!(s.width >= 500 && s.width <= 5000)) fail('res.err.stairwidth');
   if (!(s.riserMax >= 100 && s.riserMax <= 300) || !(s.tread >= 150 && s.tread <= 600)) fail('res.err.stairsize');
   if (!(s.split > 0 && s.split < 1)) fail('res.err.stairsize');
+  if (s.kind === 'spiral' && !(s.post >= 40 && s.post <= 400 && s.tread >= 100)) fail('comforts.err.spiral');
 }
 export function placeStair(spec) {
-  const s = { ...STAIR_DEFAULTS, angle: 0, fixedHeight: 0, topLevel: '', ...spec, start: [spec.start[0], spec.start[1]] };
+  // a spiral stair takes its own labelled defaults for what the spec leaves out (taller risers, shallower treads, 30" wide)
+  const s = { ...STAIR_DEFAULTS, ...(spec.kind === 'spiral' ? SPIRAL_DEFAULTS : {}), angle: 0, fixedHeight: 0, topLevel: '', ...spec, start: [spec.start[0], spec.start[1]] };
   return op((w) => {
     check(s);
     if (!s.guid) s.guid = val(w.guid());
@@ -316,7 +367,9 @@ export function changeStair(guid, ch) {
     if (!st) fail('model.err.gone');
     const nx = { ...st };
     for (const k of ['kind', 'turn', 'railings']) if (ch[k]) nx[k] = ch[k];
-    for (const k of ['width', 'riserMax', 'tread', 'split', 'gap', 'railHeight', 'angle']) if (Number.isFinite(ch[k])) nx[k] = ch[k];
+    if (ch.kind === 'spiral' && st.kind !== 'spiral') Object.assign(nx, SPIRAL_DEFAULTS);   // 0.6 round 2: a stair turned into a spiral takes its defaults
+    else if (ch.kind && ch.kind !== 'spiral' && st.kind === 'spiral') Object.assign(nx, { riserMax: STAIR_DEFAULTS.riserMax, tread: STAIR_DEFAULTS.tread, width: STAIR_DEFAULTS.width });
+    for (const k of ['width', 'riserMax', 'tread', 'split', 'gap', 'railHeight', 'angle', 'post']) if (Number.isFinite(ch[k])) nx[k] = ch[k];
     if (Array.isArray(ch.start)) nx.start = ch.start.slice();
     if (typeof ch.well === 'boolean') nx.well = ch.well;
     check(nx);

@@ -3,7 +3,7 @@ title: Stairs and railings
 summary: Draw straight, L, U and winder stairs that size their risers and treads from the floor-to-floor height, with handrails and balusters and the stairwell cut in the floor above; draw guardrails along decks and around openings.
 section: tasks
 order: 23
-keywords: stair, stairs, staircase, flight, riser, tread, landing, winder, L stair, U stair, switchback, handrail, guardrail, guard, railing, baluster, spindle, newel, post, stairwell, headroom, deck, balcony
+keywords: spiral, round stair, stair, stairs, staircase, flight, riser, tread, landing, winder, L stair, U stair, switchback, handrail, guardrail, guard, railing, baluster, spindle, newel, post, stairwell, headroom, deck, balcony
 ---
 
 ## What you'll do
@@ -17,6 +17,17 @@ Add stairs between levels and railings where people need them. A stair works out
 3. Click where the stair starts: the middle of the front edge of the bottom step.
 4. Move the pointer the way the stair goes up; the steps follow it, with the number of risers and treads. It snaps to the walls and to 15° steps; hold {{key:Shift}} to keep it square.
 5. Click. {{key:Esc}} starts again.
+
+## Draw a spiral stair
+
+1. Open {{ui:Build}}, choose {{ui:Stair}}, then choose **Spiral** as the kind.
+2. Set **Turn**, which way it winds going up (left is anticlockwise).
+3. Click the center of its post.
+4. Click the way the bottom tread points.
+
+It starts 30" wide (the tread, from the post to the outside), with a 4½" post. The risers are worked out from the floor-to-floor height, at most 9½" by default. Treads are 7½" deep on the walk line, 12" out from the post. The handrail runs on the outside.
+
+In **Properties** a spiral stair adds **Center post**, its diameter. The **Tread** field is measured on the walk line. Its checks are labelled defaults for spiral stairs: 26" clear width, at least 6¾" of tread on the walk line, risers at most 9½" and handrails 34"–38". They are not engineering; the building official decides.
 
 ## How the steps are worked out
 

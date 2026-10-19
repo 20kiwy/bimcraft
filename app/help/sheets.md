@@ -30,6 +30,7 @@ Pick the line to change it in **Properties**: its letter, **Flip the view** to l
 - **Plans** show walls, doors, windows, rooms with their areas, dimensions and section lines, at the largest standard scale that fits: 1/4" = 1'-0" or smaller (1:50 or smaller in millimetres).
 - **Elevations** are drawn from the 3D model with hidden lines removed, two to a sheet, all at the same scale, with a ground line under them. The roof, the foundations and the ground show as they are modeled.
 - **Sections** fill what the cut passes through (walls, floors, the roof) and draw what is seen beyond it.
+- **Elevations and sections carry their notes:** a mark for each level with its name and height on the right, the height between levels on the left, and on an elevation the building's width under it and a tag (D1, W1) on each door and window in a wall facing you. For a room's own walls see [Interior elevations](topic:interior-elevations).
 - **Schedules** are the same tables as {{ui:Schedules}} in the model bar.
 - **Framing** shows each framed wall's studs, plates, headers and sills as seen from its outside, so a crew can lay it out. See [Framing walls, floors and roofs](topic:framing).
 

@@ -275,6 +275,7 @@ mod tests {
             kind: bimcraft_bim::ElementKind::Door,
             name: "Orphan".into(),
             data: bimcraft_bim::ElementData::Opening(bimcraft_bim::Opening { wall: 424242, s: 1.0, width: 0.9, height: 2.1, sill: 0.0 }),
+            paint: None,
         });
         let issues = validate(&m);
         assert!(issues.iter().any(|i| i.contains("host wall")));

@@ -361,6 +361,16 @@ pub struct Element {
     pub kind: ElementKind,
     pub name: String,
     pub data: ElementData,
+    /// Paint override as 0xRRGGBB (the Paint tool). `None` = palette default.
+    #[serde(default)]
+    pub paint: Option<u32>,
+}
+
+impl Element {
+    /// The paint override, if any.
+    pub fn paint(&self) -> Option<u32> {
+        self.paint
+    }
 }
 
 /// The whole building model. Cheap clone enables snapshot undo.
@@ -516,6 +526,7 @@ impl Model {
             kind: ElementKind::Wall,
             name: format!("Wall {id}"),
             data: ElementData::Wall(Wall { level, pts, thickness, height }),
+            paint: None,
         });
         id
     }
@@ -527,7 +538,7 @@ impl Model {
             ElementKind::Window => format!("Window {id}"),
             _ => format!("Opening {id}"),
         };
-        self.elements.push(Element { id, kind, name, data: ElementData::Opening(o) });
+        self.elements.push(Element { id, kind, name, data: ElementData::Opening(o), paint: None });
         id
     }
 
@@ -538,6 +549,7 @@ impl Model {
             kind: ElementKind::Slab,
             name: format!("Floor {id}"),
             data: ElementData::Slab(Slab { level, pts, thickness, elevation }),
+            paint: None,
         });
         id
     }
@@ -549,6 +561,7 @@ impl Model {
             kind: ElementKind::Ceiling,
             name: format!("Ceiling {id}"),
             data: ElementData::Ceiling(Ceiling { level, pts, thickness, elevation }),
+            paint: None,
         });
         id
     }
@@ -560,6 +573,7 @@ impl Model {
             kind: ElementKind::Item,
             name: format!("{} {id}", kind.name()),
             data: ElementData::Item(Item { level, kind, pos, rotation }),
+            paint: None,
         });
         id
     }

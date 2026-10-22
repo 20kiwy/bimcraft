@@ -14,6 +14,8 @@ pub enum ViewMode {
     Plan2D,
     /// Orbiting perspective view.
     Perspective3D,
+    /// First-person walkthrough (WASD + mouse look), eye at walking height.
+    Walk,
     /// Projected section / elevation view of [Session::active_section].
     Section,
 }
@@ -29,6 +31,7 @@ pub enum Tool {
     Item,
     Measure,
     SectionLine,
+    Paint,
 }
 
 impl Tool {
@@ -43,6 +46,7 @@ impl Tool {
             Tool::Item => "Item",
             Tool::Measure => "Measure",
             Tool::SectionLine => "Section",
+            Tool::Paint => "Paint",
         }
     }
 
@@ -55,7 +59,59 @@ impl Tool {
             Tool::Item => "Pick a kind in Library, then click to place · R: rotate",
             Tool::Measure => "Click two points to measure",
             Tool::SectionLine => "Click two points: section line, then open the Section view",
+            Tool::Paint => "Click an element to paint it · pick a color in Properties · Esc: back to Select",
         }
+    }
+}
+
+/// First-person walkthrough camera (Z-up, eye at walking height).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WalkCam {
+    /// Ground position (meters).
+    pub pos: Vec2,
+    /// Look direction azimuth (radians, 0 = +X).
+    pub yaw: f64,
+    /// Look elevation (radians, clamped ±80°).
+    pub pitch: f64,
+    /// Eye height above the level elevation (meters).
+    pub eye_z: f64,
+}
+
+impl Default for WalkCam {
+    fn default() -> Self {
+        Self { pos: Vec2::new(-3.0, 3.0), yaw: 0.0, pitch: -0.05, eye_z: 1.65 }
+    }
+}
+
+impl WalkCam {
+    pub fn eye(&self, level_z: f64) -> Vec3 {
+        Vec3::new(self.pos.x, self.pos.y, level_z + self.eye_z)
+    }
+
+    /// View basis: (right, up, forward).
+    pub fn basis(&self) -> (Vec3, Vec3, Vec3) {
+        let pitch = self.pitch.clamp(-1.4, 1.4);
+        let f = Vec3::new(self.yaw.cos() * pitch.cos(), self.yaw.sin() * pitch.cos(), pitch.sin()).normalize();
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        let mut r = f.cross(up).normalize();
+        if r.length() < 1e-6 {
+            r = Vec3::new(1.0, 0.0, 0.0);
+        }
+        let u = r.cross(f).normalize();
+        (r, u, f)
+    }
+
+    /// Move on the ground plane: `forward` and `strafe` in meters. Strafe
+    /// follows the view basis (right = forward × up, matching the projection).
+    pub fn move_by(&mut self, forward: f64, strafe: f64) {
+        let dir = Vec2::new(self.yaw.cos(), self.yaw.sin());
+        let right = Vec2::new(dir.y, -dir.x);
+        self.pos = self.pos + dir * forward + right * strafe;
+    }
+
+    pub fn look(&mut self, dyaw: f64, dpitch: f64) {
+        self.yaw -= dyaw;
+        self.pitch = (self.pitch + dpitch).clamp(-1.4, 1.4);
     }
 }
 
@@ -176,6 +232,10 @@ pub struct Session {
     pub active_section: Option<Id>,
     /// Element dragged with the Select tool: records drag start.
     pub drag_anchor: Option<Vec2>,
+    /// First-person camera for [ViewMode::Walk].
+    pub walk: WalkCam,
+    /// Current paint color (0xRRGGBB) applied by the Paint tool.
+    pub paint: u32,
     pub status: String,
 }
 
@@ -203,6 +263,8 @@ impl Default for Session {
             measure: None,
             active_section: None,
             drag_anchor: None,
+            walk: WalkCam::default(),
+            paint: 0xc8_724a,
             status: "Sample house loaded — New Model starts empty".into(),
         }
     }
@@ -282,9 +344,63 @@ impl Session {
     }
 
     pub fn set_view(&mut self, view: ViewMode) {
+        // Entering the walkthrough seeds the walk camera from the orbit view
+        // so the transition reads as "step into the scene".
+        if view == ViewMode::Walk && self.view != ViewMode::Walk {
+            let f = self.camera.basis().2;
+            let lvl = self.level_elevation();
+            self.walk = WalkCam {
+                pos: Vec2::new(self.camera.target.x - f.x * 4.0, self.camera.target.y - f.y * 4.0),
+                yaw: f.y.atan2(f.x),
+                pitch: -0.05,
+                eye_z: (self.camera.target.z - lvl).clamp(0.4, 2.2).max(1.2),
+            };
+        }
         self.view = view;
         self.pending.clear();
         self.drag_anchor = None;
+    }
+
+    /// Apply the current paint color to an element (Paint tool click).
+    /// Selects the element so the Properties dock shows it immediately.
+    pub fn apply_paint(&mut self, id: Id) {
+        self.snapshot();
+        if let Some(e) = self.model.elements.iter_mut().find(|e| e.id == id) {
+            e.paint = Some(self.paint);
+            self.status = format!("{} painted", e.name);
+        }
+        self.select(Selection::Element(id));
+    }
+
+    /// Eyedropper: take the paint of the picked element as the active color.
+    pub fn pick_paint(&mut self, id: Id) {
+        if let Some(c) = self.model.elements.iter().find(|e| e.id == id).and_then(|e| e.paint) {
+            self.paint = c;
+            self.status = format!("Paint picked #{c:06x}");
+        } else {
+            self.status = "Element has no paint to pick".into();
+        }
+    }
+
+    /// Remove the paint override from an element (back to palette default).
+    pub fn clear_paint(&mut self, id: Id) {
+        self.snapshot();
+        if let Some(e) = self.model.elements.iter_mut().find(|e| e.id == id) {
+            e.paint = None;
+            self.status = format!("{} paint cleared", e.name);
+        }
+    }
+
+    /// Paint all elements of the same kind as `id` (Paint tool double-click).
+    pub fn apply_paint_to_kind(&mut self, id: Id) {
+        let Some(kind) = self.model.element(id).map(|e| e.kind) else { return };
+        self.snapshot();
+        let mut n = 0;
+        for e in self.model.elements.iter_mut().filter(|e| e.kind == kind) {
+            e.paint = Some(self.paint);
+            n += 1;
+        }
+        self.status = format!("Painted {n} × {}", element_kind_label(kind));
     }
 
     pub fn select(&mut self, sel: Selection) {
@@ -544,6 +660,14 @@ impl Session {
                     self.place_section(a, p);
                 }
             }
+            Tool::Paint => {
+                let hit = self.pick_plan(p);
+                if let Selection::Element(id) = hit {
+                    self.apply_paint(id);
+                } else {
+                    self.status = "Nothing to paint here".into();
+                }
+            }
             Tool::Measure => match self.measure {
                 None => {
                     self.measure = Some(Measure { a: p, b: p });
@@ -561,8 +685,15 @@ impl Session {
         }
     }
 
-    /// Finish the current draft (Enter / double-click): wall chain or polygon.
+    /// Finish the current draft (Enter / double-click): wall chain, polygon,
+    /// or paint-the-whole-kind for the Paint tool.
     pub fn finish_draft(&mut self) {
+        if self.tool == Tool::Paint {
+            if let Some(id) = self.selected_element() {
+                self.apply_paint_to_kind(id);
+            }
+            return;
+        }
         match self.tool {
             Tool::Wall if self.pending.len() >= 2 => {
                 let pts = std::mem::take(&mut self.pending);
@@ -697,6 +828,18 @@ impl Session {
             }
         }
         Selection::None
+    }
+}
+
+/// Human label for an element kind (paint status lines).
+pub fn element_kind_label(kind: ElementKind) -> &'static str {
+    match kind {
+        ElementKind::Wall => "walls",
+        ElementKind::Door => "doors",
+        ElementKind::Window => "windows",
+        ElementKind::Slab => "floors",
+        ElementKind::Ceiling => "ceilings",
+        ElementKind::Item => "items",
     }
 }
 
@@ -853,6 +996,59 @@ mod tests {
         s.select(Selection::Section(sid));
         s.delete_selected();
         assert!(s.model.sections.is_empty());
+    }
+
+    #[test]
+    fn paint_applies_picks_and_clears() {
+        let mut s = Session::default();
+        s.set_tool(Tool::Paint);
+        s.paint = 0xff8800;
+        // Click the south wall of the sample house.
+        s.click_plan(Vec2::new(4.0, 0.0));
+        let id = s.selected_element().expect("wall picked");
+        assert_eq!(s.model.element(id).unwrap().paint, Some(0xff8800));
+        // Eyedropper takes the color back and a clear removes it.
+        s.paint = 0x123456;
+        s.pick_paint(id);
+        assert_eq!(s.paint, 0xff8800);
+        s.clear_paint(id);
+        assert_eq!(s.model.element(id).unwrap().paint, None);
+        // Undo lands on the painted state (clear was one edit).
+        s.undo();
+        assert_eq!(s.model.element(id).unwrap().paint, Some(0xff8800));
+        // Double-click finishes: paint the whole kind.
+        s.finish_draft();
+        let painted = s.model.elements.iter().filter(|e| e.kind == s.model.element(id).unwrap().kind && e.paint == Some(0xff8800)).count();
+        assert!(painted > 1, "paint-to-kind should cover the walls");
+    }
+
+    #[test]
+    fn walk_camera_moves_and_looks() {
+        let mut s = Session::default();
+        s.set_view(ViewMode::Walk);
+        assert_eq!(s.view, ViewMode::Walk);
+        let eye0 = s.walk.eye(s.level_elevation());
+        assert!((eye0.z - s.level_elevation() - 1.65).abs() < 2.0);
+        let p0 = s.walk.pos;
+        s.walk.move_by(1.0, 0.0);
+        assert!((s.walk.pos - p0).length() - 1.0 < 1e-9);
+        let (r, u, f) = s.walk.basis();
+        assert!((f.length() - 1.0).abs() < 1e-6);
+        assert!((r.length() - 1.0).abs() < 1e-6);
+        assert!((u.length() - 1.0).abs() < 1e-6);
+        // Forward follows the yaw/pitch convention; right is forward × up
+        // (Z-up right-handed view basis) and orthogonal to both.
+        assert!((f.x - s.walk.yaw.cos() * s.walk.pitch.cos()).abs() < 1e-6);
+        assert!((f.y - s.walk.yaw.sin() * s.walk.pitch.cos()).abs() < 1e-6);
+        assert!(r.z.abs() < 1e-6);
+        assert!(f.dot(r).abs() < 1e-6 && u.dot(f).abs() < 1e-6 && u.dot(r).abs() < 1e-6);
+        let yaw0 = s.walk.yaw;
+        s.walk.look(0.5, 0.2);
+        assert!((s.walk.yaw - (yaw0 - 0.5)).abs() < 1e-9);
+        // Re-entering 3D then walk again re-seeds from the orbit camera.
+        s.set_view(ViewMode::Perspective3D);
+        s.set_view(ViewMode::Walk);
+        assert!(s.walk.eye_z >= 1.2);
     }
 
     #[test]

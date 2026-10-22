@@ -18,7 +18,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
     let ppp = ui.ctx().pixels_per_point();
     let mode = match app.session.view {
         ViewMode::Plan2D => ViewModeKind::Plan2D,
-        ViewMode::Perspective3D => ViewModeKind::Perspective3D,
+        ViewMode::Perspective3D | ViewMode::Walk => ViewModeKind::Perspective3D,
         ViewMode::Section => ViewModeKind::Section,
     };
 
@@ -26,7 +26,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
     handle_input(ui, app, rect, resp, ppp);
 
     match app.session.view {
-        ViewMode::Plan2D | ViewMode::Perspective3D => {
+        ViewMode::Plan2D | ViewMode::Perspective3D | ViewMode::Walk => {
+            let eye = match app.session.view {
+                ViewMode::Walk => app.session.walk.eye(app.session.level_elevation()),
+                _ => app.session.camera.eye(),
+            };
             let info = ViewInfo {
                 mode,
                 active_level: app.session.active_level_id(),
@@ -38,11 +42,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
                 ground_extent: 40.0,
                 show_ceilings_3d: app.show_ceilings_3d,
                 show_items_2d: app.show_items_2d,
+                eye,
             };
             let dl = build(&app.session.model, &info);
             match app.session.view {
                 ViewMode::Plan2D => draw_plan(ui, app, &painter, rect, &dl),
-                ViewMode::Perspective3D => draw_3d(ui, app, &painter, rect, &dl, ppp),
+                ViewMode::Perspective3D | ViewMode::Walk => draw_3d(ui, app, &painter, rect, &dl),
                 ViewMode::Section => unreachable!(),
             }
         }
@@ -92,6 +97,45 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
         }
     }
 
+    // Walk mode: continuous movement + mouse-look; other tools idle.
+    if app.session.view == ViewMode::Walk {
+        let dt = ui.ctx().input(|i| i.stable_dt).max(1.0 / 240.0) as f64;
+        let (mut fwd, mut side) = (0.0_f64, 0.0_f64);
+        ui.ctx().input(|i| {
+            let shift = i.modifiers.shift;
+            let speed = if shift { 4.4 } else { 2.4 } * dt;
+            if i.key_down(egui::Key::W) {
+                fwd += speed;
+            }
+            if i.key_down(egui::Key::S) && !i.modifiers.ctrl {
+                fwd -= speed;
+            }
+            if i.key_down(egui::Key::D) {
+                side += speed;
+            }
+            if i.key_down(egui::Key::A) {
+                side -= speed;
+            }
+        });
+        if fwd != 0.0 || side != 0.0 {
+            app.session.walk.move_by(fwd, side);
+        }
+        // Wheel: step forward / back.
+        if scroll.abs() > 0.5 && resp.hovered() {
+            app.session.walk.move_by(scroll as f64 * 0.004, 0.0);
+        }
+        let drag = resp.drag_delta();
+        if resp.dragged() && drag != Vec2::ZERO {
+            app.session.walk.look(drag.x as f64 * 0.006, drag.y as f64 * 0.005);
+        }
+        // Status cursor: a probe point a couple meters ahead.
+        let w = &app.session.walk;
+        let ahead = GVec2::new(w.yaw.cos(), w.yaw.sin()) * 2.5;
+        app.session.cursor = Vec3::new(w.pos.x + ahead.x, w.pos.y + ahead.y, w.eye_z);
+        app.session.cursor_plan_snapped = None;
+        return;
+    }
+
     // Wheel zoom.
     if scroll.abs() > 0.5 && resp.hovered() {
         match app.session.view {
@@ -111,6 +155,7 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
             ViewMode::Perspective3D => {
                 app.session.camera.distance = (app.session.camera.distance * if scroll > 0.0 { 0.9 } else { 1.1 }).clamp(3.0, 200.0);
             }
+            ViewMode::Walk => {}
         }
     }
 
@@ -160,6 +205,7 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
                     app.session.camera.pitch = (app.session.camera.pitch + drag.y as f64 * 0.006).clamp(0.05, 1.55);
                 }
             }
+            ViewMode::Walk => {}
         }
     }
     if resp.drag_stopped() {
@@ -188,6 +234,7 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
                         }
                     }
                 }
+                ViewMode::Walk => {}
             }
         }
     }
@@ -203,6 +250,7 @@ fn screen_world(app: &crate::BimcraftApp, p: Pos2, rect: Rect, _ppp: f32) -> Opt
     match app.session.view {
         ViewMode::Plan2D => Some(screen_to_plan(app, p, rect).to3(app.session.level_elevation())),
         ViewMode::Perspective3D => pick_ground_at(app, p, rect),
+        ViewMode::Walk => None,
         ViewMode::Section => {
             let v = screen_to_view2d(app, p, rect);
             Some(Vec3::new(v.x, 0.0, v.y))
@@ -377,11 +425,17 @@ impl Proj {
     }
 }
 
-fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList, _ppp: f32) {
+fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList) {
     let _ = ui;
-    let cam = app.session.camera;
-    let (r, u, f) = cam.basis();
-    let eye = cam.eye();
+    let walking = app.session.view == ViewMode::Walk;
+    // Camera: orbit camera or the first-person walk camera.
+    let (eye, (r, u, f)) = if walking {
+        let w = app.session.walk;
+        (w.eye(app.session.level_elevation()), w.basis())
+    } else {
+        let cam = app.session.camera;
+        (cam.eye(), cam.basis())
+    };
     let ppp = 1.0_f64; // projection runs in logical pixels
     let proj = Proj {
         focal: (rect.height() as f64 * ppp) / (2.0 * (FOV / 2.0).tan()),
@@ -391,8 +445,8 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
         h: rect.height() as f64 * ppp,
     };
 
-    // Depth-sorted triangles.
-    let mut tris: Vec<(f64, [Pos2; 3], Color32)> = Vec::with_capacity(dl.tris.len());
+    // Depth-sorted triangles (keep per-vertex view depth for the z-buffer).
+    let mut tris: Vec<([Pos2; 3], [f64; 3], f64, Color32)> = Vec::with_capacity(dl.tris.len());
     for tri in &dl.tris {
         let mut pts = [Pos2::ZERO; 3];
         let mut zs = [0.0_f64; 3];
@@ -410,38 +464,119 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
             }
         }
         if ok {
-            tris.push(((zs[0] + zs[1] + zs[2]) / 3.0, pts, tri.color));
+            tris.push((pts, zs, (zs[0] + zs[1] + zs[2]) / 3.0, tri.color));
         }
     }
-    tris.sort_by(|a, b| b.0.total_cmp(&a.0));
-    for (_, pts, color) in &tris {
+    tris.sort_by(|a, b| b.2.total_cmp(&a.2));
+    for (pts, _, _, color) in &tris {
         painter.add(egui::Shape::convex_polygon(pts.to_vec(), *color, Stroke::NONE));
     }
 
-    // Lines on top (wireframe pass).
-    for l in &dl.lines {
-        draw_line_clipped(painter, &proj, eye, r, u, f, l.a, l.b, l.color, l.width);
+    // Depth buffer of the projected triangles: helper lines (grid, datums,
+    // axes) are then occluded by the model instead of drawing over it.
+    let mut depth = DepthBuf::new(rect.width().ceil() as usize, rect.height().ceil() as usize);
+    for (pts, zs, _, _) in &tris {
+        depth.rasterize(*pts, *zs);
     }
 
-    // Texts (projected; skip when behind camera).
+    // Lines with occlusion (was: plain wireframe pass on top).
+    for l in &dl.lines {
+        draw_line_occluded(painter, &proj, &depth, eye, r, u, f, l.a, l.b, l.color, l.width);
+    }
+
+    // Texts (projected; skip when behind camera or hidden by the model).
     for tx in &dl.texts {
-        if let Some((sp, _)) = proj.point(tx.pos, eye, r, u, f) {
-            painter.text(sp, egui::Align2::CENTER_CENTER, &tx.text, theme::font_ui(tx.size), tx.color);
+        if let Some((sp, z)) = proj.point(tx.pos, eye, r, u, f) {
+            if depth.visible(sp.x, sp.y, z + 0.25) {
+                painter.text(sp, egui::Align2::CENTER_CENTER, &tx.text, theme::font_ui(tx.size), tx.color);
+            }
         }
     }
 
     // Viewport hint.
-    painter.text(
-        rect.right_top() + Vec2::new(-14.0, 14.0),
-        egui::Align2::RIGHT_TOP,
-        "drag: orbit  ·  shift+drag: pan  ·  wheel: zoom",
-        theme::font_ui(11.0),
-        Color32::from_rgb(0x8a, 0x93, 0xa3),
-    );
+    let hint = if walking {
+        "WASD: move · drag: look · Shift: run · wheel: step · Esc: exit"
+    } else {
+        "drag: orbit · shift+drag: pan · wheel: zoom · V: walk"
+    };
+    painter.text(rect.right_top() + Vec2::new(-14.0, 14.0), egui::Align2::RIGHT_TOP, hint, theme::font_ui(11.0), Color32::from_rgb(0x8a, 0x93, 0xa3));
 }
 
-/// Draw a 3D line with a near-plane clip so long lines don't vanish.
-fn draw_line_clipped(painter: &egui::Painter, proj: &Proj, eye: Vec3, r: Vec3, u: Vec3, f: Vec3, a: Vec3, b: Vec3, color: Color32, width: f32) {
+/// Coarse software depth buffer (logical pixels) built from the projected
+/// triangles; used to occlude helper lines against the model.
+struct DepthBuf {
+    w: usize,
+    h: usize,
+    data: Vec<f32>,
+}
+
+impl DepthBuf {
+    fn new(w: usize, h: usize) -> Self {
+        let w = w.max(1);
+        let h = h.max(1);
+        Self { w, h, data: vec![f32::INFINITY; w * h] }
+    }
+
+    /// Barycentric rasterization with linearly interpolated view depth.
+    fn rasterize(&mut self, pts: [Pos2; 3], zs: [f64; 3]) {
+        let (p0, p1, p2) = (pts[0], pts[1], pts[2]);
+        let area = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
+        if area.abs() < 0.01 {
+            return;
+        }
+        let inv = 1.0_f32 / area;
+        let minx = (p0.x.min(p1.x).min(p2.x).floor().max(0.0) as usize).min(self.w.saturating_sub(1));
+        let maxx = (p0.x.max(p1.x).max(p2.x).ceil().min(self.w as f32 - 1.0).max(0.0) as usize).min(self.w.saturating_sub(1));
+        let miny = (p0.y.min(p1.y).min(p2.y).floor().max(0.0) as usize).min(self.h.saturating_sub(1));
+        let maxy = (p0.y.max(p1.y).max(p2.y).ceil().min(self.h as f32 - 1.0).max(0.0) as usize).min(self.h.saturating_sub(1));
+        if minx > maxx || miny > maxy {
+            return;
+        }
+        for y in miny..=maxy {
+            let row = y * self.w;
+            for x in minx..=maxx {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                // Signed barycentric weights (orientation-agnostic).
+                let w0 = ((p1.y - p2.y) * (px - p2.x) + (p2.x - p1.x) * (py - p2.y)) * inv;
+                let w1 = ((p2.y - p0.y) * (px - p2.x) + (p0.x - p2.x) * (py - p2.y)) * inv;
+                let w2 = 1.0 - w0 - w1;
+                // Inside test in either winding.
+                let inside = (w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4) || (w0 <= 1e-4 && w1 <= 1e-4 && w2 <= 1e-4);
+                if !inside {
+                    continue;
+                }
+                let z = (w0 as f64) * zs[0] + (w1 as f64) * zs[1] + (w2 as f64) * zs[2];
+                let slot = &mut self.data[row + x];
+                if (z as f32) < *slot {
+                    *slot = z as f32;
+                }
+            }
+        }
+    }
+
+    fn visible(&self, x: f32, y: f32, z: f64) -> bool {
+        let xi = (x.max(0.0) as usize).min(self.w - 1);
+        let yi = (y.max(0.0) as usize).min(self.h - 1);
+        z <= self.data[yi * self.w + xi] as f64 + 0.045
+    }
+}
+
+/// Draw a 3D line, clipped at the near plane and occluded where the model's
+/// depth buffer is in front of it (sampled every few screen pixels).
+fn draw_line_occluded(
+    painter: &egui::Painter,
+    proj: &Proj,
+    depth: &DepthBuf,
+    eye: Vec3,
+    r: Vec3,
+    u: Vec3,
+    f: Vec3,
+    a: Vec3,
+    b: Vec3,
+    color: Color32,
+    width: f32,
+) {
     const NEAR: f64 = 0.08;
     let view = |p: Vec3| -> (f64, f64, f64) {
         let d = p - eye;
@@ -463,9 +598,30 @@ fn draw_line_clipped(painter: &egui::Painter, proj: &Proj, eye: Vec3, r: Vec3, u
         by += (ay - by) * t;
         bz = NEAR;
     }
+    // Rebuild clipped 3D endpoints from view-space back to world space.
+    let to_world = |v: (f64, f64, f64)| eye + r * v.0 + u * v.1 + f * v.2;
+    let wa = to_world((ax, ay, az));
+    let wb = to_world((bx, by, bz));
+    // Screen span decides the sample count (about one sample per 3 px).
     let sa = Pos2::new((proj.cx + ax / az * proj.focal) as f32, (proj.cy - ay / az * proj.focal) as f32);
     let sb = Pos2::new((proj.cx + bx / bz * proj.focal) as f32, (proj.cy - by / bz * proj.focal) as f32);
-    painter.line_segment([sa, sb], Stroke::new(width, color));
+    let span = ((sb.x - sa.x).abs().max((sb.y - sa.y).abs()) as usize).clamp(2, 512);
+    let mut prev: Option<(Pos2, bool)> = None;
+    for k in 0..=span {
+        let t = k as f64 / span as f64;
+        let p = wa + (wb - wa) * t;
+        let Some((sp, z)) = proj.point(p, eye, r, u, f) else {
+            prev = None;
+            continue;
+        };
+        let vis = depth.visible(sp.x, sp.y, z);
+        if let Some((last, last_vis)) = prev {
+            if vis && last_vis {
+                painter.line_segment([last, sp], Stroke::new(width, color));
+            }
+        }
+        prev = Some((sp, vis));
+    }
 }
 
 // ------------------------------------------------------------ overlays ---

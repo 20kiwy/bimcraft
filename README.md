@@ -30,7 +30,7 @@ edition and native desktop builds.
 | Language | Plain ES modules, no bundler | Rust 2021 workspace, 6 crates + 3 apps |
 | UI | Hand-rolled DOM canvas | egui 0.36 + `craft-ui` (storytold craft-libs) |
 | Views | Browser-first | Desktop (Windows/macOS/Linux) + browser WASM + CLI |
-| 3D | DOM canvas projection | Painter-based Z-up perspective with depth sort, real opening cuts |
+| 3D | DOM canvas projection | Painter-based Z-up perspective with depth sort, real opening cuts, **software z-buffer line occlusion** |
 | Automation | none | `bimcraft-cli` (validate / schedule / sample) |
 | CI | manual | GitHub Actions: fmt/clippy/test + WASM Pages preview + tagged releases |
 
@@ -67,6 +67,9 @@ Full parity map: [docs/PARITY_ROADMAP.md](docs/PARITY_ROADMAP.md).
 | Roofs, columns, ramps | `model-roof.js`, `model-columns.js`, `model-ramps.js` | — | 📋 Phase 3 |
 | IFC import/export | `ifc/` | — | 📋 Phase 3 |
 | DXF exchange | `dxf-model.js` | `bimcraft-bim::dxf`, `bimcraft-cli` | ✅ clean-room ASCII DXF R12 export (layered 3-D wireframe) + plan-sketch import |
+| Walk mode | — (differentiator) | `bimcraft-engine`, `bimcraft-ui-egui` | ✅ first-person walkthrough: WASD + mouse look, Shift run, wheel step, seeded from the orbit camera |
+| Paint / finishes | `res-colors.js` (partial) | `bimcraft-bim`, `bimcraft-engine`, `bimcraft-render` | ✅ per-element paint override in model + IO + 2D/3D render, 16-swatch palette, eyedropper, paint-to-kind |
+| VectorCraft themes | `theme.rs` (VectorCraft) | `bimcraft-ui-egui::theme` | ✅ 1:1 token table + Dark / Charcoal / Slate / Light switcher in the app bar |
 | MEP systems | `mep/` | — | 📋 Phase 4 |
 | Clash detection | `clash.js`, `clash-worker.js` | — | 📋 Phase 4 |
 | Sheets & layout | `layout/`, `res-sheets.js` | — | 📋 Phase 4 |
@@ -100,8 +103,12 @@ cargo run -p bimcraft-cli -- validate /tmp/house.bimcraft.json
 ```
 
 Shortcuts: `W` wall · `D` door · `N` window · `F` floor · `C` ceiling ·
-`S` select · `Tab` 2D↔3D · `G` grid snap · `R` rotate item · `M` measure ·
-`Enter` finish polyline · `Esc` cancel · `Del` delete · `Ctrl+Z`/`Ctrl+Y` undo/redo.
+`S` select · `P` paint · `V` walk mode · `Tab` 2D↔3D↔Section · `G` grid snap ·
+`R` rotate item · `M` measure · `Enter` finish polyline · `Esc` cancel ·
+`Del` delete · `Ctrl+Z`/`Ctrl+Y` undo/redo.
+
+In **walk mode**: `W`/`A`/`S`/`D` move, drag to look around, `Shift` run,
+wheel steps forward/back, `Esc` returns to the orbit view.
 
 ## Repository layout
 

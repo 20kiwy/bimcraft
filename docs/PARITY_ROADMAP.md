@@ -6,7 +6,7 @@
 > engine**, while keeping BIM semantics: levels, grids, parametric walls,
 > doors, windows, floor slabs, ceilings, items, schedules.
 >
-> **Status: Phase 3 landed** — on top of Phase 2 (polyline walls, shiftable
+> **Status: Phase 3 landed + v0.4.0 UI parity wave (walk mode, paint, VectorCraft themes)** — on top of Phase 2 (polyline walls, shiftable
 > openings, free polygon floors/ceilings, item library, measure, snapping,
 > schedule, native JSON I/O, CLI, craft-libs adoption (`craft-ui`), egui 0.36,
 > Rust-only repo with the JavaScript edition as the `clone/bimcraft-js`
@@ -59,7 +59,7 @@ statements.
 | VectorCraft crate | Role for BIMCraft | Parity action | Phase |
 |---|---|---|---|
 | `ui-egui` | Illustrator-style chrome (theme tokens, app bar, 48 px rail, dock, status bar) | Look & layout landed in P1; icon buttons/tabs/theme palette via `craft-ui` landed in P2 | **P2 ✅ → P3** |
-| `theme.rs` tokens | Design-token system (Brightness/Accent/Scheme) | Token subset ported; add Brightness/Accent switcher | P3 |
+| `theme.rs` tokens | Design-token system (Brightness/Accent/Scheme) | Full 1:1 token table + 4-brightness switcher (Dark/Charcoal/Slate/Light) landed | **P3 ✅ (v0.4.0)** |
 | `tools` | Pointer → Action tool state machines | Refactor BIM tools into the same Action model | P3 |
 | `engine` | Session façade, commands + JSON, history/journal | Adopt command-with-JSON-params seam for automation | P3 |
 | `doc` | Arc<Node> COW document tree | Mirror COW discipline in BIM model | P3 |
@@ -132,7 +132,7 @@ craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb
 
 - **P1 (done):** workspace + core BIM objects + 2D/3D editing + CI + wasm preview + tagged releases.
 - **P2 (done — this release):** polyline walls, shiftable openings, polygon floors/ceilings, items, measure, snapping, schedule, native JSON I/O, CLI, `craft-ui` adoption, egui 0.36 upgrade, Rust-only repo restructure with JS submodule.
-- **P3 (engine & exchange parity):** rooms ✅, sections/elevation views ✅, DXF R12 export/import ✅ (this release). Remaining: COW entity store, tool Action model, JSON command seam, theme Brightness/Accent switcher, walk mode.
+- **P3 (engine & exchange parity):** rooms ✅, sections/elevation views ✅, DXF R12 export/import ✅, walk mode ✅ (first-person WASD + mouse look), paint tool ✅ (per-element color override, eyedropper, paint-to-kind), theme brightness switcher ✅ (VectorCraft Dark/Charcoal/Slate/Light) (v0.4.0). Remaining: COW entity store, tool Action model, JSON command seam, Accent/Scheme switchers.
 - **P4 (pro):** IFC bridge, roofs/stairs, sheets/layout, MEP views, clash, plug-in host, `bimcraft-mcp`, off-thread render pipeline, binary container format.
 
 ## 5. Release scheme

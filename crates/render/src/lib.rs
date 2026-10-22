@@ -134,6 +134,22 @@ fn selected(color: Color32, is_sel: bool) -> Color32 {
     }
 }
 
+/// Element paint override (Paint tool) over a palette fallback (opaque).
+fn paint_or(paint: Option<u32>, fallback: Color32) -> Color32 {
+    match paint {
+        Some(hex) => Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8),
+        None => fallback,
+    }
+}
+
+/// Paint override as a translucent fill over a palette fallback fill.
+fn paint_fill(paint: Option<u32>, fallback: Color32, alpha: u8) -> Color32 {
+    match paint {
+        Some(hex) => with_alpha(Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8), alpha),
+        None => fallback,
+    }
+}
+
 /// Fixed light direction for cheap lambert shading (Z-up).
 fn shade(normal: Vec3, base: Color32) -> Color32 {
     let l = Vec3::new(0.45, -0.5, 0.74).normalize();
@@ -159,6 +175,9 @@ pub struct ViewInfo {
     pub show_ceilings_3d: bool,
     /// Draw items in the plan view.
     pub show_items_2d: bool,
+    /// 3D camera eye (walk or orbit) used for the ground-grid distance fade.
+    /// Plan builds ignore it.
+    pub eye: Vec3,
 }
 
 /// View-mode mirror to avoid an engine dependency in render.
@@ -511,7 +530,10 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
             ElementData::Opening(o) => {
                 if on_active || sel {
                     if let Some(q) = model.opening_rect(o) {
-                        let base = if e.kind == ElementKind::Door { DOOR_2D } else { WINDOW_2D };
+                        let base = match e.kind {
+                            ElementKind::Door => paint_or(e.paint, DOOR_2D),
+                            _ => paint_or(e.paint, WINDOW_2D),
+                        };
                         let col = with_alpha(selected(base, sel), alpha);
                         // Jamb lines + sill lines across the opening.
                         dl.line(q[0], q[3], col, 1.6);
@@ -528,20 +550,20 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
                 }
             }
             ElementData::Slab(s) => {
-                let col = with_alpha(selected(SLAB_2D, sel), alpha);
-                fill_poly_plan(dl, &s.pts, with_alpha(slab_fill(sel), alpha.min(120)));
+                let col = with_alpha(selected(paint_or(e.paint, SLAB_2D), sel), alpha);
+                fill_poly_plan(dl, &s.pts, with_alpha(paint_fill(e.paint, slab_fill(sel), 90), alpha.min(120)));
                 outline_poly_plan(dl, &s.pts, col, false);
             }
             ElementData::Ceiling(c) => {
-                let col = with_alpha(selected(CEIL_2D, sel), alpha);
-                fill_poly_plan(dl, &c.pts, with_alpha(ceil_fill(sel), alpha.min(80)));
+                let col = with_alpha(selected(paint_or(e.paint, CEIL_2D), sel), alpha);
+                fill_poly_plan(dl, &c.pts, with_alpha(paint_fill(e.paint, ceil_fill(sel), 60), alpha.min(80)));
                 outline_poly_plan(dl, &c.pts, col, true);
                 let ctr = bimcraft_bim::poly_center(&c.pts);
                 dl.text(ctr.to3(z_active), format!("CEIL {:.1} m²", c.area()), 10.0, col);
             }
             ElementData::Item(i) => {
                 if (on_active || sel) && info.show_items_2d {
-                    draw_item_plan(dl, i, with_alpha(selected(ITEM_2D, sel), alpha));
+                    draw_item_plan(dl, i, with_alpha(selected(paint_or(e.paint, ITEM_2D), sel), alpha));
                 }
             }
         }
@@ -569,9 +591,10 @@ fn draw_wall_plan(dl: &mut DisplayList, model: &Model, e: &bimcraft_bim::Element
         return;
     }
     let outline = w.outline();
-    // Body fill (left side forward, right side back — one polygon).
+    // Body fill (left side forward, right side back — one polygon); a paint
+    // override colors the fill (Paint tool).
     let pts3: Vec<Vec3> = outline.iter().map(|p| p.to3(0.0)).collect();
-    dl.poly(&pts3, wall_fill(sel));
+    dl.poly(&pts3, paint_fill(e.paint, wall_fill(sel), 120));
     // Outline strokes.
     for i in 0..outline.len() {
         let a = outline[i].to3(0.0);
@@ -660,36 +683,68 @@ fn outline_poly_plan(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], color: C
 fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
     let ext = info.ground_extent.max(10.0);
 
+    // Distance fade: helper geometry dissolves with distance from the eye so
+    // long lines never sweep the screen (they also get occluded by the
+    // canvas z-buffer; this keeps the far field visually quiet).
+    let eye = info.eye;
+    let draw_faded = |dl: &mut DisplayList, a: Vec3, b: Vec3, base: Color32, width: f32| {
+        const STEP: f64 = 4.0;
+        const R0: f64 = 16.0; // full alpha up to this ground radius from the eye
+        const R1: f64 = 36.0; // invisible beyond this
+        let dir = b - a;
+        let len = dir.length();
+        if len < 1e-6 {
+            return;
+        }
+        let n = (len / STEP).ceil() as usize;
+        for k in 0..n {
+            let t0 = k as f64 / n as f64;
+            let t1 = (k + 1) as f64 / n as f64;
+            let p0 = a + dir * t0;
+            let p1 = a + dir * t1;
+            let mid = (p0 + p1) * 0.5;
+            let d = ((mid.x - eye.x) * (mid.x - eye.x) + (mid.y - eye.y) * (mid.y - eye.y)).sqrt();
+            if d > R1 {
+                continue;
+            }
+            let fade = 1.0 - ((d - R0) / (R1 - R0)).clamp(0.0, 1.0);
+            if fade <= 0.02 {
+                continue;
+            }
+            dl.line(p0, p1, with_alpha(base, (fade * 255.0) as u8), width);
+        }
+    };
+
     // Ground grid, 1 m, stronger every 5 m.
     for i in -(ext.ceil() as i64)..=(ext.ceil() as i64) {
         let v = i as f64;
-        let strong = i % 5 == 0;
-        let c = if strong { GRID_STRONG } else { GRID_LINE };
-        dl.line(Vec3::new(v, -ext, 0.0), Vec3::new(v, ext, 0.0), c, 0.7);
-        dl.line(Vec3::new(-ext, v, 0.0), Vec3::new(ext, v, 0.0), c, 0.7);
+        let c = if i % 5 == 0 { GRID_STRONG } else { GRID_LINE };
+        let w = if i % 5 == 0 { 0.9 } else { 0.7 };
+        draw_faded(dl, Vec3::new(v, -ext, 0.0), Vec3::new(v, ext, 0.0), c, w);
+        draw_faded(dl, Vec3::new(-ext, v, 0.0), Vec3::new(ext, v, 0.0), c, w);
     }
 
-    // XYZ axes, Blender-style colors.
-    dl.line(Vec3::ZERO, Vec3::new(12.0, 0.0, 0.0), AXIS_X, 2.2);
-    dl.line(Vec3::ZERO, Vec3::new(0.0, 12.0, 0.0), AXIS_Y, 2.2);
+    // XYZ axes, Blender-style colors (finite, so they never sweep).
+    dl.line(Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0), AXIS_X, 2.2);
+    dl.line(Vec3::ZERO, Vec3::new(0.0, 10.0, 0.0), AXIS_Y, 2.2);
     dl.line(Vec3::ZERO, Vec3::new(0.0, 0.0, 8.0), AXIS_Z, 2.2);
-    dl.text(Vec3::new(12.6, 0.0, 0.0), "X", 14.0, AXIS_X);
-    dl.text(Vec3::new(0.0, 12.6, 0.0), "Y", 14.0, AXIS_Y);
+    dl.text(Vec3::new(10.6, 0.0, 0.0), "X", 14.0, AXIS_X);
+    dl.text(Vec3::new(0.0, 10.6, 0.0), "Y", 14.0, AXIS_Y);
     dl.text(Vec3::new(0.0, 0.0, 8.5), "Z", 14.0, AXIS_Z);
 
-    // Datum grids as short vertical markers + plan lines.
+    // Datum grids as short plan lines + low vertical ticks (parity: grid datums).
     for g in &model.grids {
         let col = Color32::from_rgba_unmultiplied(0x6b, 0x7a, 0x92, 110);
         match g.axis {
             GridAxis::V => {
-                dl.line(Vec3::new(g.position, -ext, 0.02), Vec3::new(g.position, ext, 0.02), col, 0.9);
-                dl.line(Vec3::new(g.position, 0.0, 0.02), Vec3::new(g.position, 0.0, 4.0), col, 1.1);
-                dl.text(Vec3::new(g.position, 0.0, 4.4), g.name.clone(), 12.0, col);
+                draw_faded(dl, Vec3::new(g.position, -ext, 0.02), Vec3::new(g.position, ext, 0.02), col, 0.9);
+                dl.dashed(Vec3::new(g.position, 0.0, 0.02), Vec3::new(g.position, 0.0, 1.4), col, 1.0);
+                dl.text(Vec3::new(g.position, 0.0, 1.7), g.name.clone(), 12.0, col);
             }
             GridAxis::H => {
-                dl.line(Vec3::new(-ext, g.position, 0.02), Vec3::new(ext, g.position, 0.02), col, 0.9);
-                dl.line(Vec3::new(0.0, g.position, 0.02), Vec3::new(0.0, g.position, 4.0), col, 1.1);
-                dl.text(Vec3::new(0.0, g.position, 4.4), g.name.clone(), 12.0, col);
+                draw_faded(dl, Vec3::new(-ext, g.position, 0.02), Vec3::new(ext, g.position, 0.02), col, 0.9);
+                dl.dashed(Vec3::new(0.0, g.position, 0.02), Vec3::new(0.0, g.position, 1.4), col, 1.0);
+                dl.text(Vec3::new(0.0, g.position, 1.7), g.name.clone(), 12.0, col);
             }
         }
     }
@@ -698,7 +753,7 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
     for e in model.walls() {
         let sel = is_selected(info, e.id);
         if let ElementData::Wall(w) = &e.data {
-            draw_wall_3d(dl, model, w, e.id, sel);
+            draw_wall_3d(dl, model, w, e.id, e.paint, sel);
         }
     }
 
@@ -708,26 +763,26 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
         match &e.data {
             ElementData::Slab(s) => {
                 let base = model.level(s.level).map(|l| l.elevation).unwrap_or(0.0);
-                let col = if sel { SELECT } else { PAL3D.slab };
+                let col = selected(paint_or(e.paint, PAL3D.slab), sel);
                 prism(dl, &s.pts, base + s.elevation - s.thickness, base + s.elevation, col, true);
             }
             ElementData::Ceiling(c) => {
                 if info.show_ceilings_3d || sel {
                     let base = model.level(c.level).map(|l| l.elevation).unwrap_or(0.0);
-                    let col = if sel { SELECT } else { PAL3D.ceiling };
+                    let col = selected(paint_or(e.paint, PAL3D.ceiling), sel);
                     prism(dl, &c.pts, base + c.elevation, base + c.elevation + c.thickness, col, false);
                 }
             }
             ElementData::Item(i) => {
                 let z0 = model.level(i.level).map(|l| l.elevation).unwrap_or(0.0);
-                draw_item_3d(dl, i, z0, sel);
+                draw_item_3d(dl, i, e.paint, z0, sel);
             }
             _ => {}
         }
     }
 }
 
-fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wall_id: u64, sel: bool) {
+fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wall_id: u64, paint: Option<u32>, sel: bool) {
     if w.pts.len() < 2 {
         return;
     }
@@ -735,9 +790,9 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
     let z1 = z0 + w.height;
     let half = w.thickness / 2.0;
     let outline = w.outline();
-    let top_col = if sel { SELECT } else { PAL3D.wall_top };
-    let side_a = if sel { SELECT } else { PAL3D.wall_side_a };
-    let side_b = if sel { SELECT } else { PAL3D.wall_side_b };
+    let top_col = selected(paint_or(paint, PAL3D.wall_top), sel);
+    let side_a = selected(paint_or(paint, PAL3D.wall_side_a), sel);
+    let side_b = selected(paint_or(paint, PAL3D.wall_side_b), sel);
 
     // Top face: outline polygon at z1 (ear-clipped so concave works).
     let top_tris = bimcraft_bim::poly_tris_world(&outline, z1);
@@ -817,7 +872,7 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
                 }
                 let c0 = *a + dir * s0.max(0.0);
                 let c1 = *a + dir * s1.min(seg_len);
-                let frame_col = if sel { SELECT } else { Color32::from_rgb(0x5a, 0x60, 0x6c) };
+                let frame_col = if sel { SELECT } else { paint_or(op.paint, Color32::from_rgb(0x5a, 0x60, 0x6c)) };
                 // Jamb + head + sill lines on both sides.
                 for side in 0..2 {
                     let off = if side == 0 { n * (half + 0.01) } else { n * -(half + 0.01) };
@@ -834,7 +889,7 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
                     dl.quad([g0, g1, g1.with_z(zt), g0.with_z(zt)], shade(Vec3::new(0.0, 1.0, 0.0), with_alpha(PAL3D.window_glass, 150)));
                 } else if op.kind == ElementKind::Door {
                     // Door leaf, drawn 90° open from the hinge.
-                    let leaf_col = if sel { SELECT } else { PAL3D.door };
+                    let leaf_col = if sel { SELECT } else { paint_or(op.paint, PAL3D.door) };
                     let leaf_end = c0 + n * (c1 - c0).length();
                     dl.quad(
                         [c0.to3(zb), leaf_end.to3(zb), leaf_end.to3(zt), c0.to3(zt)],
@@ -878,11 +933,11 @@ fn subtract_cuts(seg_len: f64, z0: f64, z1: f64, cuts: &[(f64, f64, f64, f64)]) 
     out
 }
 
-fn draw_item_3d(dl: &mut DisplayList, i: &bimcraft_bim::Item, z0: f64, sel: bool) {
+fn draw_item_3d(dl: &mut DisplayList, i: &bimcraft_bim::Item, paint: Option<u32>, z0: f64, sel: bool) {
     let (w, d, h) = i.kind.preset();
     let hw = w / 2.0;
     let hd = d / 2.0;
-    let col = if sel { SELECT } else { PAL3D.item };
+    let col = if sel { SELECT } else { paint_or(paint, PAL3D.item) };
     let rot = i.rotation;
     let corner = |dx: f64, dy: f64| -> Vec3 {
         let p = Vec2::new(dx, dy).rotate(rot);
@@ -1000,6 +1055,7 @@ mod tests {
             ground_extent: 20.0,
             show_ceilings_3d: true,
             show_items_2d: true,
+            eye: Vec3::ZERO,
         };
         let dl = build(&m, &info);
         assert!(!dl.lines.is_empty());
@@ -1016,9 +1072,44 @@ mod tests {
             ground_extent: 30.0,
             show_ceilings_3d: true,
             show_items_2d: true,
+            eye: Vec3::ZERO,
         };
         let dl = build(&m, &info);
         assert!(!dl.tris.is_empty());
+    }
+
+    #[test]
+    fn paint_override_colors_geometry() {
+        let mut m = sample();
+        let lvl = m.levels[0].id;
+        // Paint the first wall terracotta.
+        let wid = m.walls().next().unwrap().id;
+        let wall = m.element_mut(wid).unwrap();
+        wall.paint = Some(0xcc4a2a);
+        let info = ViewInfo {
+            mode: ViewModeKind::Perspective3D,
+            active_level: lvl,
+            selection: vec![],
+            half_extent: 20.0,
+            ground_extent: 30.0,
+            show_ceilings_3d: false,
+            show_items_2d: true,
+            eye: Vec3::ZERO,
+        };
+        let dl = build(&m, &info);
+        // Some shaded triangle now carries the paint hue (shading scales RGB,
+        // so check the red dominance pattern of #cc4a2a).
+        let warm = |c: Color32| {
+            let (r, g, b) = (c.r() as u32, c.g() as u32, c.b() as u32);
+            r > 60 && g < r * 3 / 5 && b < r * 3 / 5
+        };
+        let painted = dl.tris.iter().any(|t| warm(t.color));
+        assert!(painted, "painted wall should tint the 3D geometry");
+        // Unpainted models keep the neutral palette (no such tri when cleared).
+        m.element_mut(wid).unwrap().paint = None;
+        let dl2 = build(&m, &info);
+        let painted2 = dl2.tris.iter().any(|t| warm(t.color) && t.pts.iter().all(|p| p.z > 0.1));
+        assert!(!painted2, "neutral palette has no terracotta wall faces");
     }
 
     #[test]
@@ -1035,6 +1126,7 @@ mod tests {
             ground_extent: 30.0,
             show_ceilings_3d: false,
             show_items_2d: true,
+            eye: Vec3::ZERO,
         };
         let dl = build(&m, &info);
         // The wall (5 m × 3 m face) minus a 1.2 m gap must produce more than

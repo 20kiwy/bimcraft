@@ -9,6 +9,7 @@ pub mod theme;
 
 use bimcraft_engine::{Session, Tool, ViewMode};
 use bimcraft_geom::{Vec2, Vec3};
+use theme::Theme;
 
 /// Top-level app state. Platform shells implement `eframe::App` and delegate
 /// to [`BimcraftApp::update`]; persistence goes through `bimcraft-io` JSON.
@@ -21,6 +22,8 @@ pub struct BimcraftApp {
     /// View toggles.
     pub show_items_2d: bool,
     pub show_ceilings_3d: bool,
+    /// Active VectorCraft brightness theme.
+    pub theme: Theme,
     /// Dock tab (persisted per session only).
     pub dock_tab: DockTab,
 }
@@ -56,6 +59,7 @@ impl BimcraftApp {
             show_save_dialog: false,
             show_items_2d: true,
             show_ceilings_3d: true,
+            theme: Theme::Charcoal,
             dock_tab: DockTab::Properties,
         }
     }
@@ -90,7 +94,7 @@ impl BimcraftApp {
                         self.session.plan.center = Vec2::new(cx, cy);
                         self.session.plan.zoom = (900.0 / span).clamp(6.0, 400.0);
                     }
-                    ViewMode::Perspective3D => {
+                    ViewMode::Perspective3D | ViewMode::Walk => {
                         self.session.camera.target = Vec3::new(cx, cy, (min.z + max.z) / 2.0);
                         self.session.camera.distance = (span * 1.6).clamp(6.0, 200.0);
                     }
@@ -143,7 +147,7 @@ impl BimcraftApp {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::Key;
-        let (w, d, n, f, c, s, i, m, x, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
+        let (w, d, n, f, c, s, i, m, x, p, v, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
             (
                 i.key_pressed(Key::W),
                 i.key_pressed(Key::D),
@@ -154,6 +158,8 @@ impl BimcraftApp {
                 i.key_pressed(Key::I),
                 i.key_pressed(Key::M),
                 i.key_pressed(Key::X),
+                i.key_pressed(Key::P),
+                i.key_pressed(Key::V),
                 i.key_pressed(Key::Escape),
                 i.key_pressed(Key::Enter),
                 i.key_pressed(Key::Tab),
@@ -171,6 +177,17 @@ impl BimcraftApp {
             self.session.undo();
         } else if ctrl && (y || (z && shift)) {
             self.session.redo();
+        }
+        // Walk mode: V toggles, Esc leaves (back to the orbit view).
+        if v {
+            let next = if self.session.view == ViewMode::Walk { ViewMode::Perspective3D } else { ViewMode::Walk };
+            self.session.set_view(next);
+        }
+        if self.session.view == ViewMode::Walk {
+            if esc {
+                self.session.set_view(ViewMode::Perspective3D);
+            }
+            return;
         }
         if !ctrl {
             if w {
@@ -198,6 +215,10 @@ impl BimcraftApp {
             if x {
                 self.session.set_tool(Tool::SectionLine);
             }
+            if p {
+                self.session.set_tool(Tool::Paint);
+                self.dock_tab = DockTab::Properties;
+            }
             if s {
                 if esc && !self.session.pending.is_empty() {
                     // fall through to Esc handling below
@@ -217,7 +238,9 @@ impl BimcraftApp {
             }
         }
         if esc {
-            if !self.session.pending.is_empty() || self.session.measure.is_some() {
+            if self.session.tool == Tool::Paint {
+                self.session.set_tool(Tool::Select);
+            } else if !self.session.pending.is_empty() || self.session.measure.is_some() {
                 self.session.cancel_pending();
             } else {
                 self.session.select(bimcraft_engine::Selection::None);
@@ -229,8 +252,9 @@ impl BimcraftApp {
         if tab {
             let next = match self.session.view {
                 ViewMode::Plan2D => ViewMode::Perspective3D,
-                ViewMode::Perspective3D => ViewMode::Plan2D,
+                ViewMode::Perspective3D => ViewMode::Section,
                 ViewMode::Section => ViewMode::Plan2D,
+                ViewMode::Walk => ViewMode::Plan2D,
             };
             self.session.set_view(next);
         }
@@ -255,7 +279,7 @@ impl BimcraftApp {
     /// a thin egui layer over the engine session.
     pub fn ui(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
-        theme::apply(&ctx);
+        theme::apply(&ctx, self.theme);
         self.handle_shortcuts(&ctx);
 
         chrome::status_bar(root, self);
@@ -264,12 +288,13 @@ impl BimcraftApp {
         chrome::dock(root, self);
         chrome::file_dialogs(&ctx, self);
 
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::tokens().pasteboard)).show(root, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::tokens_for(self.theme).pasteboard)).show(root, |ui| {
             canvas::show(ui, self);
         });
 
-        // Continuously repaint while a tool has pending input (rubber band).
-        if !self.session.pending.is_empty() || self.session.dragging() || self.session.tool == Tool::Measure {
+        // Continuously repaint while a tool has pending input (rubber band)
+        // or the walkthrough is active (WASD movement).
+        if !self.session.pending.is_empty() || self.session.dragging() || self.session.tool == Tool::Measure || self.session.view == ViewMode::Walk {
             ctx.request_repaint();
         }
     }

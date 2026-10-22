@@ -3,7 +3,7 @@
 //! tool rail, tabbed right dock, 24 px status bar. Icon buttons come from the
 //! adopted `craft-ui` crate (storytold craft-libs, MIT OR Apache-2.0).
 
-use crate::theme::{self, Tokens};
+use crate::theme::{self, Theme, Tokens};
 use bimcraft_bim::{ElementData, ElementKind, GridAxis, ItemKind};
 use bimcraft_engine::{Selection, Tool, ViewMode};
 use egui::{Color32, CornerRadius, Rect, Sense, Stroke, Vec2};
@@ -96,6 +96,8 @@ pub fn app_bar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(10.0);
+                theme_picker(ui, app, &t);
+                ui.separator();
                 mode_switch(ui, app, &t);
                 ui.separator();
                 snap_toggle(ui, app, &t);
@@ -131,7 +133,11 @@ fn brand_mark(ui: &mut egui::Ui, t: &Tokens) {
 fn mode_switch(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
     let style = theme::icon_button_style(t);
     use craft_ui::buttons::IconButton;
-    let modes = [("2D Plan", ViewMode::Plan2D, "Top-down plan view (Tab)"), ("3D View", ViewMode::Perspective3D, "Orbiting 3D view (Tab)")];
+    let modes = [
+        ("2D Plan", ViewMode::Plan2D, "Top-down plan view (Tab)"),
+        ("3D View", ViewMode::Perspective3D, "Orbiting 3D view (Tab)"),
+        ("Walk", ViewMode::Walk, "First-person walkthrough (V)"),
+    ];
     for (label, mode, tip) in modes {
         let active = app.session.view == mode;
         let resp = IconButton::new(tip, Vec2::new(64.0, 22.0), &style).selected(active).show(ui, |ui, rect, color| {
@@ -141,6 +147,34 @@ fn mode_switch(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
         if resp.clicked() {
             app.session.set_view(mode);
         }
+    }
+}
+
+/// VectorCraft brightness levels: Dark, Charcoal (default), Slate, Light.
+fn theme_picker(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
+    let style = theme::icon_button_style(t);
+    use craft_ui::buttons::IconButton;
+    let tip = "UI theme (VectorCraft brightness levels: Dark · Charcoal · Slate · Light)";
+    let resp = IconButton::new(tip, Vec2::new(64.0, 22.0), &style).show(ui, |ui, rect, color| {
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, app.theme.label(), theme::font_ui(11.5), color);
+        // Tiny sun/moon mark: dark themes get a moon, light themes a sun.
+        let mark_c = rect.left_center() + egui::vec2(9.0, 0.0);
+        if app.theme.is_light() {
+            ui.painter().circle_filled(mark_c, 3.0, color);
+            for k in 0..8 {
+                let a = k as f32 / 8.0 * std::f32::consts::TAU;
+                let d = egui::vec2(a.cos(), a.sin()) * 5.0;
+                ui.painter().line_segment([mark_c + d * 0.7, mark_c + d], egui::Stroke::new(1.0, color));
+            }
+        } else {
+            ui.painter().circle_filled(mark_c, 3.2, color);
+            ui.painter().circle_filled(mark_c + egui::vec2(1.8, -1.2), 2.8, t.app_bar);
+        }
+    });
+    let resp = resp.on_hover_text(tip);
+    if resp.clicked() {
+        let idx = Theme::ALL.iter().position(|x| *x == app.theme).unwrap_or(1);
+        app.theme = Theme::ALL[(idx + 1) % Theme::ALL.len()];
     }
 }
 
@@ -168,7 +202,7 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
         ui.add_space(6.0);
         let style = theme::icon_button_style(&t);
         use craft_ui::buttons::IconButton;
-        let tools: [(Tool, &str); 9] = [
+        let tools: [(Tool, &str); 10] = [
             (Tool::Select, "Select / move (S)"),
             (Tool::Wall, "Wall — chain polyline (W)"),
             (Tool::Door, "Place door (D)"),
@@ -178,6 +212,7 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             (Tool::Item, "Place item (I)"),
             (Tool::Measure, "Measure distance (M)"),
             (Tool::SectionLine, "Section line — two clicks (X)"),
+            (Tool::Paint, "Paint elements — pick a color in Properties (P)"),
         ];
         for (tool, tip) in tools {
             let active = app.session.tool == tool;
@@ -261,6 +296,15 @@ pub fn draw_tool_icon(p: &egui::Painter, c: egui::Pos2, tool: Tool, color: Color
             p.line_segment([c + Vec2::new(6.0, 0.0), c + Vec2::new(6.0, 5.0)], fill);
             p.line_segment([c + Vec2::new(6.0, 5.0), c + Vec2::new(3.0, 5.0)], fill);
         }
+        Tool::Paint => {
+            // Paint bucket with a drip.
+            p.line_segment([c + Vec2::new(-5.0, -4.0), c + Vec2::new(5.0, -4.0)], s);
+            p.line_segment([c + Vec2::new(-5.0, -4.0), c + Vec2::new(-3.5, 5.0)], s);
+            p.line_segment([c + Vec2::new(5.0, -4.0), c + Vec2::new(3.5, 5.0)], s);
+            p.line_segment([c + Vec2::new(-3.5, 5.0), c + Vec2::new(3.5, 5.0)], s);
+            p.line_segment([c + Vec2::new(1.5, 1.0), c + Vec2::new(1.5, 6.0)], fill);
+            p.circle_filled(c + Vec2::new(1.5, 7.2), 1.3, color);
+        }
     }
 }
 
@@ -308,6 +352,19 @@ fn drag_f64(ui: &mut egui::Ui, label: &str, value: &mut f64, speed: f64, range: 
 fn properties_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
     match app.session.selection {
         Selection::None => {
+            if app.session.tool == Tool::Paint {
+                section(ui, "Paint");
+                ui.label(
+                    egui::RichText::new("Pick a color, then click elements in the plan or 3D view.").font(theme::font_ui(11.0)).color(t.text_dim),
+                );
+                ui.add_space(4.0);
+                paint_palette(ui, app);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Double-click / Enter: paint every element of the same kind.").font(theme::font_ui(10.5)).color(t.text_dim),
+                );
+                return;
+            }
             ui.label(egui::RichText::new("Nothing selected").font(theme::font_ui(12.0)).color(t.text_dim));
             ui.add_space(6.0);
             ui.label(
@@ -321,6 +378,42 @@ fn properties_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
         Selection::Element(id) => element_editor(ui, app, t, id),
         Selection::Section(id) => section_editor(ui, app, t, id),
     }
+}
+
+/// BIM paint palette for the Paint tool (session.paint is 0xRRGGBB).
+const PAINTS: [u32; 16] = [
+    0xd9472f, 0xe8874a, 0xf0c05a, 0x9fbf6a, 0x45af63, 0x3f8f7a, 0x5bc8d8, 0x4f80ff, 0x7a6ff0, 0xc06ad0, 0xe06a9a, 0xf06a52, 0xc8724a, 0x8a6f52,
+    0xe4e9f1, 0x3d4553,
+];
+
+fn paint_palette(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
+    let t = theme::tokens();
+    egui::Grid::new("paint_palette").num_columns(8).spacing([4.0, 4.0]).show(ui, |ui| {
+        for (i, &c) in PAINTS.iter().enumerate() {
+            let col = Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+            let active = app.session.paint == c;
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(26.0, 22.0), egui::Sense::click());
+            ui.painter().rect_filled(rect, CornerRadius::same(4), col);
+            if active {
+                ui.painter().rect_stroke(rect.expand(2.5), CornerRadius::same(6), Stroke::new(2.0, t.text_strong), egui::StrokeKind::Outside);
+            } else {
+                ui.painter().rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+            }
+            if resp.clicked() {
+                app.session.paint = c;
+                app.session.status = format!("Paint #{c:06x} — click elements to apply");
+            }
+            resp.on_hover_text(format!("#{c:06x}"));
+            if (i + 1) % 8 == 0 {
+                ui.end_row();
+            }
+        }
+    });
+    ui.add_space(2.0);
+    let cur = app.session.paint;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 10.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(3), Color32::from_rgb((cur >> 16) as u8, (cur >> 8) as u8, cur as u8));
+    ui.label(egui::RichText::new(format!("Active paint  #{cur:06x}")).font(theme::font_mono(10.5)).color(t.text_dim));
 }
 
 fn section_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64) {
@@ -439,6 +532,17 @@ fn element_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, i
         return;
     };
     section(ui, &el.name);
+    // Name (full properties: every element is renamable).
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Name").font(theme::font_ui(12.0)));
+        let mut name = el.name.clone();
+        if ui.text_edit_singleline(&mut name).lost_focus() && name != el.name {
+            app.session.begin_edit();
+            if let Some(e) = app.session.model.element_mut(id) {
+                e.name = name;
+            }
+        }
+    });
     let mut changed = false;
     match &el.data {
         ElementData::Wall(w) => {
@@ -469,9 +573,7 @@ fn element_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, i
             let mut sill = o.sill;
             changed |= drag_f64(ui, "Width", &mut width, 0.01, 0.3..=4.0, " m");
             changed |= drag_f64(ui, "Height", &mut height, 0.01, 0.3..=4.0, " m");
-            if el.kind == ElementKind::Window {
-                changed |= drag_f64(ui, "Sill", &mut sill, 0.01, 0.0..=2.5, " m");
-            }
+            changed |= drag_f64(ui, "Sill", &mut sill, 0.01, 0.0..=2.5, " m");
             // Shift along host wall (the "windows to be shifted" feature).
             let mut s = o.s;
             ui.horizontal(|ui| {
@@ -538,6 +640,10 @@ fn element_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, i
                 .font(theme::font_mono(11.0))
                 .color(t.text_dim),
             );
+            // Full placement properties: position on the plan.
+            let (mut px, mut py) = (i.pos.x, i.pos.y);
+            changed |= drag_f64(ui, "Pos X", &mut px, 0.05, -200.0..=200.0, " m");
+            changed |= drag_f64(ui, "Pos Y", &mut py, 0.05, -200.0..=200.0, " m");
             let mut rot_deg = i.rotation.to_degrees();
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Rotate").font(theme::font_ui(12.0)));
@@ -547,12 +653,25 @@ fn element_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, i
             if changed {
                 app.session.begin_edit();
                 if let Some(ElementData::Item(it)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                    it.pos = bimcraft_geom::Vec2::new(px, py);
                     it.rotation = rot_deg.to_radians();
                 }
             }
             ui.label(egui::RichText::new("R rotates 90° · Shift+R rotates 15°").font(theme::font_ui(10.5)).color(t.text_dim));
         }
     }
+    // Paint section (Paint tool + properties: full color control).
+    ui.add_space(4.0);
+    section(ui, "Paint");
+    paint_palette(ui, app);
+    ui.horizontal(|ui| {
+        if ui.button("Eyedropper").on_hover_text("Take this element's paint as the active color").clicked() {
+            app.session.pick_paint(id);
+        }
+        if ui.button("Clear").on_hover_text("Back to the palette default").clicked() {
+            app.session.clear_paint(id);
+        }
+    });
     ui.add_space(4.0);
     if ui.add(egui::Button::new(egui::RichText::new("Delete").color(t.danger))).clicked() {
         app.session.delete_selected();
@@ -714,11 +833,18 @@ pub fn status_bar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             let mode = match app.session.view {
                 ViewMode::Plan2D => "2D Plan",
                 ViewMode::Perspective3D => "3D View",
+                ViewMode::Walk => "Walk (WASD + look)",
                 ViewMode::Section => "Section",
             };
             ui.label(egui::RichText::new(mode).font(theme::font_ui(11.0)).color(t.accent).strong());
             ui.separator();
             ui.label(egui::RichText::new(app.session.tool.label()).font(theme::font_ui(11.0)).color(t.text));
+            ui.separator();
+            // Current paint chip.
+            let pc = app.session.paint;
+            let (prect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
+            ui.painter().rect_filled(prect, CornerRadius::same(3), Color32::from_rgb((pc >> 16) as u8, (pc >> 8) as u8, pc as u8));
+            ui.painter().rect_stroke(prect, CornerRadius::same(3), Stroke::new(1.0, t.input_border), egui::StrokeKind::Inside);
             ui.separator();
             ui.label(egui::RichText::new(app.session.tool.hint()).font(theme::font_ui(11.0)).color(t.text_dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

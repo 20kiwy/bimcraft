@@ -3,6 +3,7 @@ name: wasm-preview
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: pages-${{ github.ref }}
@@ -35,12 +36,6 @@ jobs:
       - name: Build browser edition
         working-directory: apps/bimcraft-web
         run: trunk build --release
-
-      - name: Inject ready flag into dist
-        working-directory: apps/bimcraft-web
-        run: |
-          # Drop the loading overlay once the app boots (script inside index.html listens for the event).
-          sed -i 's|<div id="loading">|<div id="loading" data-boot="1">|' ../../dist/web/index.html || true
 
       - name: Add redirect page for the site root preview list
         run: |

@@ -1,46 +1,43 @@
-# Where BimCraft's code comes from
+# Provenance — BimCraft Rust Edition
 
-BimCraft is our own code, under the Apache License 2.0. We do not copy code from other projects. Where one of our files
-follows another project's published algorithm closely, its SPDX line names both licenses and THIRD_PARTY.md credits
-it. The libraries BimCraft uses are listed, with their licenses, in THIRD_PARTY.md; all of them are permissive.
+This file records where every line of Rust in this repository comes from.
 
-## How copyleft tools are used
+## Rust code
 
-Some programs under the GPL, LGPL or MPL are useful references: they read the same file formats. We use them **only
-as black boxes in our tests**: we run them on files and compare what they report with what our code reads or
-writes. They are never shipped in this repository or in any edition, never linked into the app, and their source
-code is never read or copied. When the specification is wrong or silent, the answer is found by experiment on real
-files and written down in a comment ("Spec gap: …").
+* All Rust sources under `crates/`, `apps/`, and the workspace manifests were
+  written for this project (clean-room) against the public behaviour of the
+  JavaScript BimCraft edition and the public documentation of the referenced
+  Rust projects. No decompilation, no source extraction, no copying of the
+  JavaScript code base.
 
-## Our engines
+## Referenced projects
 
-### DWG (cc-dwg, `dwg/`)
+### getcadcraft/bimcraft (the JavaScript edition)
 
-Our own DWG reader, written clean-room from the Open Design Alliance's published *Open Design Specification for .dwg files*,
-version 5.4.1. The files that decode or encode the format name the chapters they follow. Test oracles, run as programs only: LibreDWG's `dwgread` and
-`dwg2dxf` (GPL-3.0), libdxfrw's `dwg2dxf` (GPL-2.0), the ODA File Converter, and ezdxf (MIT) to read their DXF output. Comments
-that name one of them record what it reported when it read a file, nothing more.
+* URL: https://github.com/getcadcraft/bimcraft
+* License: Apache-2.0
+* Relationship: **behavioural reference only**. Pinned as git submodule
+  `clone/bimcraft-js`. Its module map drives `docs/PARITY_ROADMAP.md`.
+* Code used: none (no shared code; no transpilation).
 
-### DXF
+### storytold/craft-libs (adopted dependency)
 
-Read and written by our own code from Autodesk's published DXF reference (group codes). ezdxf (MIT) checks our
-files in the tests.
+* URL: https://github.com/storytold/craft-libs
+* License: MIT OR Apache-2.0
+* Relationship: **direct dependency**. The `craft-ui` crate (icon buttons,
+  tabs, widget palette) is consumed as a git dependency by
+  `crates/ui-egui` and keeps its license and attribution (see NOTICE).
 
-### Revit files (`rvt-reader.js`)
+### storytold/cadcraft and storytold/vectorcraft (references)
 
-The container is read from Microsoft's published *[MS-CFB] Compound File Binary File Format* specification; the
-few streams shown (file information, project information, preview, links) are read as the files store them. Model
-geometry is not read.
+* URLs: https://github.com/storytold/cadcraft, https://github.com/storytold/vectorcraft
+* License: MIT OR Apache-2.0
+* Relationship: architectural references for workspace shape, crate seams
+  (geom / doc / render / engine / ui-egui / io / cli), and the app chrome.
+  Code used: none (clean-room).
 
-### IFC (cc-ifc, `ifc/`)
+## Verification
 
-Our own IFC engine, written from ISO 10303-21 (STEP physical files) and the buildingSMART IFC2X3, IFC4 and IFC4X3
-schemas. web-ifc (MPL-2.0) is used only as a test oracle (counts, bounding boxes, volumes), never shipped.
-
-### BCF
-
-Written from buildingSMART's BCF 2.1 specification; the tests validate every file against its published XML schemas.
-
-### 3D kernel (`m3d/`)
-
-ModelCraft's own geometry kernel, shared as an identical copy by the apps that have a 3D view.
+`git log` on this repository shows the full history: the Rust workspace was
+authored in this repository; the JavaScript tree was removed from the main
+branch and replaced by the `clone/bimcraft-js` submodule.

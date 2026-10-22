@@ -1,0 +1,3 @@
+[submodule "clone/bimcraft-js"]
+	path = clone/bimcraft-js
+	url = https://github.com/getcadcraft/bimcraft.git

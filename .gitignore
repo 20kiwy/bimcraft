@@ -1,7 +1,12 @@
-.cc-test/
-node_modules/
-dist/
-
-# Rust edition
+# Rust
 /target
 /dist
+**/*.rs.bk
+
+# Test scratch
+.cc-test/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

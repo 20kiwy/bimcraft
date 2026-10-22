@@ -1,13 +1,26 @@
-BimCraft
-Copyright 2026 The Data Design Group, Inc.
+# NOTICE — BimCraft Rust Edition
 
-This product is licensed under the Apache License, Version 2.0 (see LICENSE).
-It uses third-party software under their own permissive licenses: see THIRD_PARTY.md.
+Copyright 2026 the BimCraft Rust edition authors
 
-CadCraft and the names of the apps in the CadCraft family are trademarks of The Data Design Group, Inc.
-The Apache License does not grant permission to use them (section 6); a fork must use another name.
+This product includes software developed as part of the BimCraft project.
 
-Rust edition: the UI look and workspace conventions are modelled on the
-storytold Craft apps (https://github.com/storytold), dual-licensed under
-MIT OR Apache-2.0. BimCraft's Rust crates are clean-room implementations
-of the same seams; adopted upstream code will be listed in THIRD_PARTY.md.
+## JavaScript edition (acknowledged, not copied)
+
+BimCraft originates as a JavaScript application, "BimCraft — the CadCraft
+family" (https://github.com/getcadcraft/bimcraft), licensed under the Apache
+License 2.0. The Rust edition is an independent, clean-room implementation of
+the same product concept. No JavaScript source from the original repository
+is compiled into, vendored by, or copied into the Rust edition. The original
+repository is referenced in this workspace as a git submodule
+(`clone/bimcraft-js`) purely as the behavioural feature reference for the
+parity roadmap.
+
+## Adopted third-party Rust crates
+
+* **craft-ui** — https://github.com/storytold/craft-libs
+  Copyright the storytold contributors. Licensed under
+  MIT OR Apache-2.0. Used for icon buttons, tabs and the widget-palette
+  theme mechanism in `crates/ui-egui`.
+
+All other dependencies are resolved from crates.io and keep their own
+licenses; see `Cargo.lock` for the resolved set.

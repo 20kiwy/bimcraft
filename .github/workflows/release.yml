@@ -30,6 +30,8 @@ jobs:
             artifact: bimcraft-macos-arm64.tar.gz
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,28 +39,28 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build (linux needs X11 dev libs for eframe)
+      - name: Build desktop + CLI (linux needs X11 dev libs for eframe)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libxcursor-dev libxi-dev libgl1-mesa-dev
-          cargo build --release --locked --target ${{ matrix.target }} -p bimcraft
+          cargo build --release --locked --target ${{ matrix.target }} -p bimcraft -p bimcraft-cli
 
-      - name: Build (windows/macos)
+      - name: Build desktop + CLI (windows/macos)
         if: runner.os != 'Linux'
-        run: cargo build --release --locked --target ${{ matrix.target }} -p bimcraft
+        run: cargo build --release --locked --target ${{ matrix.target }} -p bimcraft -p bimcraft-cli
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.artifact }} bimcraft
+          tar czf ../../../${{ matrix.artifact }} bimcraft bimcraft-cli
 
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/bimcraft.exe -DestinationPath ${{ matrix.artifact }}
+          Compress-Archive -Path target/${{ matrix.target }}/release/bimcraft.exe,target/${{ matrix.target }}/release/bimcraft-cli.exe -DestinationPath ${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v4
         with:

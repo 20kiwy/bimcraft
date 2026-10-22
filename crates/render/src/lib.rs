@@ -3,10 +3,10 @@
 //!
 //! Same seam as `cadcraft-render`'s DisplayList (MIT OR Apache-2.0), clean-room
 //! implemented. 3D geometry is shaded with a fixed light and drawn back-to-front
-//! by the UI layer.
+//! by the UI layer; openings cut real holes into wall faces (no overlay quads).
 
-use bimcraft_bim::{ElementData, ElementKind, GridAxis, Model};
-use bimcraft_geom::Vec3;
+use bimcraft_bim::{ElementData, ElementKind, GridAxis, ItemKind, Model};
+use bimcraft_geom::{Vec2, Vec3};
 use egui::{Color32, Stroke};
 
 pub const AXIS_X: Color32 = Color32::from_rgb(0xe8, 0x38, 0x4f);
@@ -61,19 +61,48 @@ impl DisplayList {
         self.tri([q[0], q[2], q[3]], color);
     }
 
+    pub fn poly(&mut self, pts: &[Vec3], color: Color32) {
+        for i in 1..pts.len().saturating_sub(1) {
+            self.tri([pts[0], pts[i], pts[i + 1]], color);
+        }
+    }
+
     pub fn text(&mut self, pos: Vec3, text: impl Into<String>, size: f32, color: Color32) {
         self.texts.push(DText { pos, text: text.into(), size, color });
     }
 }
 
-const SELECT: Color32 = Color32::from_rgb(0x4f, 0x80, 0xff);
+/// Blender-like selection accent (orange) — explicitly user-requested style.
+pub const SELECT: Color32 = Color32::from_rgb(0xf0, 0x8a, 0x2c);
 const WALL_2D: Color32 = Color32::from_rgb(0xd7, 0xde, 0xea);
+fn wall_fill(sel: bool) -> Color32 {
+    if sel {
+        with_alpha(SELECT, 150)
+    } else {
+        Color32::from_rgba_unmultiplied(0xb9, 0xc4, 0xd6, 90)
+    }
+}
 const SLAB_2D: Color32 = Color32::from_rgb(0x9a, 0xb4, 0xc8);
+fn slab_fill(sel: bool) -> Color32 {
+    if sel {
+        with_alpha(SELECT, 90)
+    } else {
+        Color32::from_rgba_unmultiplied(0x9a, 0xb4, 0xc8, 55)
+    }
+}
 const CEIL_2D: Color32 = Color32::from_rgb(0x7f, 0x8f, 0xa8);
+fn ceil_fill(sel: bool) -> Color32 {
+    if sel {
+        with_alpha(SELECT, 60)
+    } else {
+        Color32::from_rgba_unmultiplied(0x7f, 0x8f, 0xa8, 30)
+    }
+}
 const GRID_LINE: Color32 = Color32::from_rgb(0x2c, 0x33, 0x40);
 const GRID_STRONG: Color32 = Color32::from_rgb(0x3a, 0x44, 0x54);
 const DOOR_2D: Color32 = Color32::from_rgb(0xc9, 0x8a, 0x4a);
 const WINDOW_2D: Color32 = Color32::from_rgb(0x5b, 0xc8, 0xd8);
+const ITEM_2D: Color32 = Color32::from_rgb(0x8f, 0xa8, 0x7a);
 
 struct Palette3D {
     wall_top: Color32,
@@ -82,7 +111,8 @@ struct Palette3D {
     slab: Color32,
     ceiling: Color32,
     door: Color32,
-    window: Color32,
+    window_glass: Color32,
+    item: Color32,
 }
 
 const PAL3D: Palette3D = Palette3D {
@@ -92,7 +122,8 @@ const PAL3D: Palette3D = Palette3D {
     slab: Color32::from_rgb(0x8f, 0xa6, 0xb8),
     ceiling: Color32::from_rgb(0xc2, 0xc9, 0xd6),
     door: Color32::from_rgb(0x9a, 0x62, 0x2e),
-    window: Color32::from_rgb(0x6f, 0xc4, 0xd4),
+    window_glass: Color32::from_rgb(0x9f, 0xd8, 0xe4),
+    item: Color32::from_rgb(0xa8, 0x94, 0x74),
 };
 
 fn selected(color: Color32, is_sel: bool) -> Color32 {
@@ -117,16 +148,20 @@ fn shade(normal: Vec3, base: Color32) -> Color32 {
 
 /// What the renderer needs to know about the view.
 pub struct ViewInfo {
-    pub mode: crate::ViewModeKind,
+    pub mode: ViewModeKind,
     pub active_level: u64,
     pub selection: Vec<u64>,
     /// 2D: half-extent of the visible world rect (meters).
     pub half_extent: f64,
     /// 3D ground grid half-extent.
     pub ground_extent: f64,
+    /// Draw ceilings in the 3D view (they can hide the interior otherwise).
+    pub show_ceilings_3d: bool,
+    /// Draw items in the plan view.
+    pub show_items_2d: bool,
 }
 
-/// View-mode mirror to avoid engine dependency in render.
+/// View-mode mirror to avoid an engine dependency in render.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewModeKind {
     Plan2D,
@@ -177,106 +212,163 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
         dl.text(bpos, g.name.clone(), 13.0, col);
     }
 
+    // XYZ axes on the plan too (short, Blender-style).
+    dl.line(Vec3::new(-he, 0.0, z_active), Vec3::new(he, 0.0, z_active), with_alpha(AXIS_X, 90), 1.2);
+    dl.line(Vec3::new(0.0, -he, z_active), Vec3::new(0.0, he, z_active), with_alpha(AXIS_Y, 90), 1.2);
+    dl.text(Vec3::new(he - 1.0, 0.35, z_active), "X", 12.0, with_alpha(AXIS_X, 160));
+    dl.text(Vec3::new(0.35, he - 1.0, z_active), "Y", 12.0, with_alpha(AXIS_Y, 160));
+
     // Elements of every level (dim others, active level normal).
     for e in &model.elements {
         let sel = is_selected(info, e.id);
-        let lvl_z = match &e.data {
-            ElementData::Wall(w) => model.level(w.level).map(|l| l.elevation),
-            ElementData::Slab(_) | ElementData::Ceiling(_) => e.data.plan_poly().and_then(|(lvl, _, _)| model.level(lvl).map(|l| l.elevation)),
-            ElementData::Opening(_) => None,
-        };
-        let on_active = lvl_z.map(|z| (z - z_active).abs() < 1e-6).unwrap_or(false);
-        let alpha = if on_active || sel { 255 } else { 90 };
+        let elem_z = element_level_elevation(model, e);
+        let on_active = elem_z.map(|z| (z - z_active).abs() < 1e-6).unwrap_or(false);
+        let alpha = if on_active || sel { 255 } else { 70 };
         match &e.data {
-            ElementData::Wall(w) => {
-                let n = (w.b - w.a).normalize().perp() * (w.thickness / 2.0);
-                let z = z_active;
-                let ca = Color32::from_rgba_unmultiplied(selected(WALL_2D, sel).r(), selected(WALL_2D, sel).g(), selected(WALL_2D, sel).b(), alpha);
-                // Openings carve visual gaps: draw segments split at openings.
-                let mut t_prev = 0.0_f64;
-                let mut cuts: Vec<(f64, f64)> = Vec::new();
-                for op in model.openings_for_wall(e.id) {
-                    if let ElementData::Opening(o) = &op.data {
-                        let len = (w.b - w.a).length().max(1e-9);
-                        let half = (o.width / 2.0) / len;
-                        cuts.push(((o.t - half).clamp(0.0, 1.0), (o.t + half).clamp(0.0, 1.0)));
-                    }
-                }
-                cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
-                let dir = w.b - w.a;
-                for (t0, t1) in cuts {
-                    let s0 = (w.a + dir * t_prev).to3(z);
-                    let s1 = (w.a + dir * t0).to3(z);
-                    if t1 > t0 {
-                        dl.line((s0.xy() - n).to3(z), (s1.xy() - n).to3(z), ca, 1.8);
-                        dl.line((s0.xy() + n).to3(z), (s1.xy() + n).to3(z), ca, 1.8);
-                    }
-                    t_prev = t1;
-                }
-                let s0 = (w.a + dir * t_prev).to3(z);
-                let s1 = w.b.to3(z);
-                dl.line((s0.xy() - n).to3(z), (s1.xy() - n).to3(z), ca, 1.8);
-                dl.line((s0.xy() + n).to3(z), (s1.xy() + n).to3(z), ca, 1.8);
-                dl.line((w.a - n).to3(z), (w.a + n).to3(z), ca, 1.8);
-                dl.line((w.b - n).to3(z), (w.b + n).to3(z), ca, 1.8);
-            }
+            ElementData::Wall(w) => draw_wall_plan(dl, model, e, w, info, alpha),
             ElementData::Opening(o) => {
                 if on_active || sel {
-                    if let Some((q, sill)) = model.opening_quad(o) {
-                        let col = if e.kind == ElementKind::Door { DOOR_2D } else { WINDOW_2D };
-                        let col = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
-                        let inner = selected(col, sel);
-                        // Sill line + jamb lines + leaf (door) or mullion (window).
-                        dl.line(q[0], q[1], inner, 1.6);
-                        dl.line(q[0], q[3], inner, 1.2);
-                        dl.line(q[1], q[2], inner, 1.2);
+                    if let Some(q) = model.opening_rect(o) {
+                        let base = if e.kind == ElementKind::Door { DOOR_2D } else { WINDOW_2D };
+                        let col = with_alpha(selected(base, sel), alpha);
+                        // Jamb lines + sill lines across the opening.
+                        dl.line(q[0], q[3], col, 1.6);
+                        dl.line(q[1], q[2], col, 1.6);
                         if e.kind == ElementKind::Door {
-                            let z0 = q[0].z;
-                            let mid = (q[0] + q[1]) * 0.5;
-                            let leaf_to = Vec3::new(mid.x, mid.y, z0) + (q[1] - q[0]).normalize() * 0.0;
-                            let _ = leaf_to;
-                            let r = (q[1] - q[0]).length();
-                            let hinge = q[0];
-                            let mut prev = hinge + Vec3::new(0.0, r, 0.0);
-                            for k in 1..=8 {
-                                let ang = std::f64::consts::FRAC_PI_2 * (k as f64 / 8.0);
-                                let pnt = hinge + Vec3::new(r * (1.0 - ang.cos()), r * ang.sin(), 0.0);
-                                dl.line(prev, pnt, inner, 1.0);
-                                prev = pnt;
-                            }
-                            dl.line(hinge, hinge + Vec3::new(0.0, r, 0.0), inner, 1.2);
-                            let _ = sill;
+                            draw_door_swing(dl, q, col);
                         } else {
-                            let mid0 = (q[0] + q[3]) * 0.5;
-                            let mid1 = (q[1] + q[2]) * 0.5;
-                            dl.line(mid0, mid1, inner, 1.0);
+                            let m0 = (q[0] + q[3]) * 0.5;
+                            let m1 = (q[1] + q[2]) * 0.5;
+                            dl.line(q[0], q[1], col, 1.2);
+                            dl.line(m0, m1, col, 1.0);
                         }
                     }
                 }
             }
             ElementData::Slab(s) => {
-                draw_poly_plan(dl, &s.pts, lvl_z.unwrap_or(0.0), selected(SLAB_2D, sel), alpha, false);
+                let col = with_alpha(selected(SLAB_2D, sel), alpha);
+                fill_poly_plan(dl, &s.pts, with_alpha(slab_fill(sel), alpha.min(120)));
+                outline_poly_plan(dl, &s.pts, col, false);
             }
-            ElementData::Ceiling(s) => {
-                draw_poly_plan(dl, &s.pts, lvl_z.unwrap_or(0.0), selected(CEIL_2D, sel), alpha, true);
+            ElementData::Ceiling(c) => {
+                let col = with_alpha(selected(CEIL_2D, sel), alpha);
+                fill_poly_plan(dl, &c.pts, with_alpha(ceil_fill(sel), alpha.min(80)));
+                outline_poly_plan(dl, &c.pts, col, true);
+                let ctr = bimcraft_bim::poly_center(&c.pts);
+                dl.text(ctr.to3(z_active), format!("CEIL {:.1} m²", c.area()), 10.0, col);
+            }
+            ElementData::Item(i) => {
+                if (on_active || sel) && info.show_items_2d {
+                    draw_item_plan(dl, i, with_alpha(selected(ITEM_2D, sel), alpha));
+                }
             }
         }
     }
 }
 
-fn draw_poly_plan(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], z: f64, color: Color32, alpha: u8, dashed: bool) {
-    let col = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha);
+fn element_level_elevation(model: &Model, e: &bimcraft_bim::Element) -> Option<f64> {
+    match &e.data {
+        ElementData::Wall(w) => model.level(w.level).map(|l| l.elevation),
+        ElementData::Slab(s) => model.level(s.level).map(|l| l.elevation),
+        ElementData::Ceiling(c) => model.level(c.level).map(|l| l.elevation),
+        ElementData::Item(i) => model.level(i.level).map(|l| l.elevation),
+        ElementData::Opening(o) => model.wall(o.wall).and_then(|w| model.level(w.level)).map(|l| l.elevation),
+    }
+}
+
+fn with_alpha(c: Color32, a: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
+fn draw_wall_plan(dl: &mut DisplayList, model: &Model, e: &bimcraft_bim::Element, w: &bimcraft_bim::Wall, info: &ViewInfo, alpha: u8) {
+    let sel = is_selected(info, e.id);
+    let stroke_col = with_alpha(selected(WALL_2D, sel), alpha);
+    if w.pts.len() < 2 {
+        return;
+    }
+    let outline = w.outline();
+    // Body fill (left side forward, right side back — one polygon).
+    let pts3: Vec<Vec3> = outline.iter().map(|p| p.to3(0.0)).collect();
+    dl.poly(&pts3, wall_fill(sel));
+    // Outline strokes.
+    for i in 0..outline.len() {
+        let a = outline[i].to3(0.0);
+        let b = outline[(i + 1) % outline.len()].to3(0.0);
+        dl.line(a, b, stroke_col, if sel { 2.2 } else { 1.6 });
+    }
+    // Openings: carve gaps by covering with jamb-to-jamb background quads is
+    // left to the canvas (it paints symbols on top); here we add jamb ticks.
+    for op in model.openings_for_wall(e.id) {
+        if let ElementData::Opening(o) = &op.data {
+            if let Some(q) = model.opening_rect(o) {
+                let tick = with_alpha(Color32::from_rgb(0x2a, 0x30, 0x3a), alpha);
+                dl.line(q[0], q[3], tick, 1.2);
+                dl.line(q[1], q[2], tick, 1.2);
+            }
+        }
+    }
+}
+
+fn draw_door_swing(dl: &mut DisplayList, q: [Vec3; 4], col: Color32) {
+    // Hinge at q[0]; leaf line to the swing side; quarter arc.
+    let r = (q[1] - q[0]).length();
+    let hinge = q[0];
+    let dir_out = (q[3] - q[0]).xy().normalize();
+    // Leaf open 90° from the wall direction.
+    let leaf_end = hinge.xy() + dir_out * r;
+    dl.line(hinge, leaf_end.to3(hinge.z), col, 1.4);
+    let mut prev = hinge;
+    for k in 1..=10 {
+        let ang = std::f64::consts::FRAC_PI_2 * (k as f64 / 10.0);
+        let d = (q[1] - q[0]).xy().normalize().rotate(-ang) * r;
+        let pnt = (hinge.xy() + d).to3(hinge.z);
+        dl.line(prev, pnt, with_alpha(col, 140), 1.0);
+        prev = pnt;
+    }
+}
+
+fn draw_item_plan(dl: &mut DisplayList, i: &bimcraft_bim::Item, col: Color32) {
+    let (w, d, _) = i.kind.preset();
+    let hw = w / 2.0;
+    let hd = d / 2.0;
+    let corners = [
+        i.pos + Vec2::new(-hw, -hd).rotate(i.rotation),
+        i.pos + Vec2::new(hw, -hd).rotate(i.rotation),
+        i.pos + Vec2::new(hw, hd).rotate(i.rotation),
+        i.pos + Vec2::new(-hw, hd).rotate(i.rotation),
+    ];
+    let pts3: Vec<Vec3> = corners.iter().map(|p| p.to3(0.0)).collect();
+    dl.poly(&pts3, with_alpha(col, 50));
+    for k in 0..4 {
+        dl.line(pts3[k], pts3[(k + 1) % 4], col, 1.4);
+    }
+    // Facing tick (front of the item).
+    let front = i.pos + Vec2::new(0.0, -hd).rotate(i.rotation);
+    let back = i.pos + Vec2::new(0.0, hd * 0.35).rotate(i.rotation);
+    dl.line(back.to3(0.0), front.to3(0.0), col, 1.0);
+    dl.text(i.pos.to3(0.0), i.kind.name(), 9.0, with_alpha(col, 180));
+}
+
+fn fill_poly_plan(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], color: Color32) {
+    if pts.len() < 3 {
+        return;
+    }
+    let pts3: Vec<Vec3> = pts.iter().map(|p| p.to3(0.0)).collect();
+    dl.poly(&pts3, color);
+}
+
+fn outline_poly_plan(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], color: Color32, dashed: bool) {
     let n = pts.len();
     if n < 3 {
         return;
     }
     for i in 0..n {
-        let a = pts[i].to3(z);
-        let b = pts[(i + 1) % n].to3(z);
+        let a = pts[i].to3(0.0);
+        let b = pts[(i + 1) % n].to3(0.0);
         if dashed {
-            dl.dashed(a, b, col, 1.2);
+            dl.dashed(a, b, color, 1.2);
         } else {
-            dl.line(a, b, col, 1.2);
+            dl.line(a, b, color, 1.2);
         }
     }
 }
@@ -303,59 +395,28 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
     dl.text(Vec3::new(0.0, 12.6, 0.0), "Y", 14.0, AXIS_Y);
     dl.text(Vec3::new(0.0, 0.0, 8.5), "Z", 14.0, AXIS_Z);
 
-    // Walls as extruded prisms.
+    // Datum grids as short vertical markers + plan lines.
+    for g in &model.grids {
+        let col = Color32::from_rgba_unmultiplied(0x6b, 0x7a, 0x92, 110);
+        match g.axis {
+            GridAxis::V => {
+                dl.line(Vec3::new(g.position, -ext, 0.02), Vec3::new(g.position, ext, 0.02), col, 0.9);
+                dl.line(Vec3::new(g.position, 0.0, 0.02), Vec3::new(g.position, 0.0, 4.0), col, 1.1);
+                dl.text(Vec3::new(g.position, 0.0, 4.4), g.name.clone(), 12.0, col);
+            }
+            GridAxis::H => {
+                dl.line(Vec3::new(-ext, g.position, 0.02), Vec3::new(ext, g.position, 0.02), col, 0.9);
+                dl.line(Vec3::new(0.0, g.position, 0.02), Vec3::new(0.0, g.position, 4.0), col, 1.1);
+                dl.text(Vec3::new(0.0, g.position, 4.4), g.name.clone(), 12.0, col);
+            }
+        }
+    }
+
+    // Walls as extruded prisms with real opening cuts.
     for e in model.walls() {
         let sel = is_selected(info, e.id);
         if let ElementData::Wall(w) = &e.data {
-            let z0 = model.level(w.level).map(|l| l.elevation).unwrap_or(0.0);
-            let z1 = z0 + w.height;
-            let c = model.wall_corners(w);
-            let body = if sel { SELECT } else { Color32::WHITE };
-            let top = if sel { SELECT } else { PAL3D.wall_top };
-            let side_a = if sel { SELECT } else { PAL3D.wall_side_a };
-            let side_b = if sel { SELECT } else { PAL3D.wall_side_b };
-            // Top face.
-            dl.quad([c[0].with_z(z1), c[1].with_z(z1), c[2].with_z(z1), c[3].with_z(z1)], shade(Vec3::new(0.0, 0.0, 1.0), top));
-            // Two long faces.
-            dl.quad(
-                [c[0].with_z(z0), c[1].with_z(z0), c[1].with_z(z1), c[0].with_z(z1)],
-                shade(face_normal(c[0].with_z(z0), c[1].with_z(z0), c[1].with_z(z1)), side_a),
-            );
-            dl.quad(
-                [c[2].with_z(z0), c[3].with_z(z0), c[3].with_z(z1), c[2].with_z(z1)],
-                shade(face_normal(c[2].with_z(z0), c[3].with_z(z0), c[3].with_z(z1)), side_a),
-            );
-            // End caps.
-            dl.quad(
-                [c[0].with_z(z0), c[3].with_z(z0), c[3].with_z(z1), c[0].with_z(z1)],
-                shade(face_normal(c[0].with_z(z0), c[3].with_z(z0), c[3].with_z(z1)), side_b),
-            );
-            dl.quad(
-                [c[1].with_z(z0), c[2].with_z(z0), c[2].with_z(z1), c[1].with_z(z1)],
-                shade(face_normal(c[1].with_z(z0), c[2].with_z(z0), c[2].with_z(z1)), side_b),
-            );
-            // Wireframe edges on top for crispness.
-            for (p, q) in [
-                (c[0].with_z(z1), c[1].with_z(z1)),
-                (c[1].with_z(z1), c[2].with_z(z1)),
-                (c[2].with_z(z1), c[3].with_z(z1)),
-                (c[3].with_z(z1), c[0].with_z(z1)),
-            ] {
-                dl.line(p, q, body, 1.0);
-            }
-            // Openings as colored quads on both faces.
-            for op in model.openings_for_wall(e.id) {
-                if let ElementData::Opening(o) = &op.data {
-                    let col = if op.kind == ElementKind::Door { PAL3D.door } else { PAL3D.window };
-                    let col = if sel { SELECT } else { col };
-                    if let Some((q, _)) = model.opening_quad(o) {
-                        dl.quad(q, shade(Vec3::new(0.0, -1.0, 0.0), col));
-                        let q2 = q.map(|p| mirror_over_wall(p, w.a, w.b));
-                        dl.quad(q2, shade(Vec3::new(0.0, 1.0, 0.0), col));
-                    }
-                }
-            }
-            let _ = z1;
+            draw_wall_3d(dl, model, w, e.id, sel);
         }
     }
 
@@ -366,15 +427,220 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
             ElementData::Slab(s) => {
                 let base = model.level(s.level).map(|l| l.elevation).unwrap_or(0.0);
                 let col = if sel { SELECT } else { PAL3D.slab };
-                prism(dl, &s.pts, base - s.thickness, base, col);
+                prism(dl, &s.pts, base + s.elevation - s.thickness, base + s.elevation, col, true);
             }
-            ElementData::Ceiling(s) => {
-                let top = model.level(s.level).map(|l| l.elevation + l.height).unwrap_or(0.0);
-                let col = if sel { SELECT } else { PAL3D.ceiling };
-                prism(dl, &s.pts, top - s.thickness, top, col);
+            ElementData::Ceiling(c) => {
+                if info.show_ceilings_3d || sel {
+                    let base = model.level(c.level).map(|l| l.elevation).unwrap_or(0.0);
+                    let col = if sel { SELECT } else { PAL3D.ceiling };
+                    prism(dl, &c.pts, base + c.elevation, base + c.elevation + c.thickness, col, false);
+                }
+            }
+            ElementData::Item(i) => {
+                let z0 = model.level(i.level).map(|l| l.elevation).unwrap_or(0.0);
+                draw_item_3d(dl, i, z0, sel);
             }
             _ => {}
         }
+    }
+}
+
+fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wall_id: u64, sel: bool) {
+    if w.pts.len() < 2 {
+        return;
+    }
+    let z0 = model.level(w.level).map(|l| l.elevation).unwrap_or(0.0);
+    let z1 = z0 + w.height;
+    let half = w.thickness / 2.0;
+    let outline = w.outline();
+    let top_col = if sel { SELECT } else { PAL3D.wall_top };
+    let side_a = if sel { SELECT } else { PAL3D.wall_side_a };
+    let side_b = if sel { SELECT } else { PAL3D.wall_side_b };
+
+    // Top face: outline polygon at z1 (ear-clipped so concave works).
+    let top_tris = bimcraft_bim::poly_tris_world(&outline, z1);
+    for t in top_tris {
+        dl.tri(t, shade(Vec3::new(0.0, 0.0, 1.0), top_col));
+    }
+
+    // Side faces per segment, with openings subtracted (real cuts).
+    let segs: Vec<(Vec2, Vec2)> = w.segments().collect();
+    for (i, (a, b)) in segs.iter().enumerate() {
+        let dir = (*b - *a).normalize();
+        let n = dir.perp();
+        let seg_len = (*b - *a).length();
+        if seg_len < 1e-6 {
+            continue;
+        }
+        // Miter-aware start/end offsets for this segment: use the outline
+        // vertex positions (they carry the miter) projected on the normal.
+        // For simplicity recompute per-segment quads; corner gaps are covered
+        // by the top face and the shared outline.
+        let a_l = *a + n * half;
+        let a_r = *a - n * half;
+        let b_l = *b + n * half;
+        let b_r = *b - n * half;
+
+        // Openings that live on this segment.
+        let mut cuts: Vec<(f64, f64, f64, f64)> = Vec::new(); // (s0, s1, zb, zt)
+        for op in model.openings_for_wall(wall_id) {
+            if let ElementData::Opening(o) = &op.data {
+                // Locate this opening's segment.
+                let (seg_idx, local) = w.locate(o.s);
+                if seg_idx != i {
+                    continue;
+                }
+                let half_w = o.width / 2.0;
+                let s0 = (local - half_w).clamp(0.0, seg_len);
+                let s1 = (local + half_w).clamp(0.0, seg_len);
+                if s1 > s0 + 1e-6 {
+                    cuts.push((s0, s1, z0 + o.sill, (z0 + o.sill + o.height).min(z1)));
+                }
+            }
+        }
+        cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
+
+        for side in 0..2 {
+            let (p0, p1) = if side == 0 { (a_l, b_l) } else { (a_r, b_r) };
+            let nrm = face_normal(p0.to3(z0), p1.to3(z0), p1.to3(z1));
+            let base_col = if sel {
+                SELECT
+            } else if side == 0 {
+                side_a
+            } else {
+                side_b
+            };
+            let pieces = subtract_cuts(seg_len, z0, z1, &cuts);
+            for (s0, s1, pz0, pz1) in pieces {
+                let w0 = p0 + dir * s0;
+                let w1 = p0 + dir * s1;
+                dl.quad([w0.to3(pz0), w1.to3(pz0), w1.to3(pz1), w0.to3(pz1)], shade(nrm, base_col));
+            }
+        }
+
+        // Opening frames: jamb/head edges + glass for windows.
+        for op in model.openings_for_wall(wall_id) {
+            if let ElementData::Opening(o) = &op.data {
+                let (seg_idx, local) = w.locate(o.s);
+                if seg_idx != i {
+                    continue;
+                }
+                let half_w = o.width / 2.0;
+                let s0 = local - half_w;
+                let s1 = local + half_w;
+                let zb = z0 + o.sill;
+                let zt = (zb + o.height).min(z1);
+                if s1 <= s0 + 1e-6 {
+                    continue;
+                }
+                let c0 = *a + dir * s0.max(0.0);
+                let c1 = *a + dir * s1.min(seg_len);
+                let frame_col = if sel { SELECT } else { Color32::from_rgb(0x5a, 0x60, 0x6c) };
+                // Jamb + head + sill lines on both sides.
+                for side in 0..2 {
+                    let off = if side == 0 { n * (half + 0.01) } else { n * -(half + 0.01) };
+                    let f0 = (c0 + off).to3(z0);
+                    let f1 = (c1 + off).to3(z0);
+                    dl.line(f0.with_z(zb), f1.with_z(zb), frame_col, 1.2);
+                    dl.line(f0.with_z(z0), f0.with_z(zt), frame_col, 1.2);
+                    dl.line(f1.with_z(z0), f1.with_z(zt), frame_col, 1.2);
+                    dl.line(f0.with_z(zt), f1.with_z(zt), frame_col, 1.2);
+                }
+                if op.kind == ElementKind::Window {
+                    let g0 = (c0 - n * (half * 0.4)).to3(zb);
+                    let g1 = (c1 + n * (half * 0.4)).to3(zb);
+                    dl.quad([g0, g1, g1.with_z(zt), g0.with_z(zt)], shade(Vec3::new(0.0, 1.0, 0.0), with_alpha(PAL3D.window_glass, 150)));
+                } else if op.kind == ElementKind::Door {
+                    // Door leaf, drawn 90° open from the hinge.
+                    let leaf_col = if sel { SELECT } else { PAL3D.door };
+                    let leaf_end = c0 + n * (c1 - c0).length();
+                    dl.quad(
+                        [c0.to3(zb), leaf_end.to3(zb), leaf_end.to3(zt), c0.to3(zt)],
+                        shade(face_normal(c0.to3(zb), leaf_end.to3(zb), leaf_end.to3(zt)), leaf_col),
+                    );
+                    dl.line(leaf_end.to3(zt), c0.to3(zt), leaf_col, 1.0);
+                }
+            }
+        }
+        let _ = side_b;
+    }
+}
+
+/// Subtract opening cuts from a wall face rectangle: returns (s0, s1, z0, z1)
+/// pieces that remain.
+fn subtract_cuts(seg_len: f64, z0: f64, z1: f64, cuts: &[(f64, f64, f64, f64)]) -> Vec<(f64, f64, f64, f64)> {
+    let mut out = Vec::new();
+    let mut cur = 0.0_f64;
+    for &(cs0, cs1, cz0, cz1) in cuts {
+        if cs0 > cur + 1e-6 {
+            out.push((cur, cs0.min(seg_len), z0, z1));
+        }
+        let s0 = cs0.max(cur);
+        let s1 = cs1.min(seg_len);
+        if s1 > s0 + 1e-6 {
+            if cz0 > z0 + 1e-6 {
+                out.push((s0, s1, z0, cz0.min(z1)));
+            }
+            if cz1 < z1 - 1e-6 {
+                out.push((s0, s1, cz1.max(z0), z1));
+            }
+            cur = s1;
+        }
+        if cur >= seg_len {
+            break;
+        }
+    }
+    if cur < seg_len - 1e-6 {
+        out.push((cur, seg_len, z0, z1));
+    }
+    out
+}
+
+fn draw_item_3d(dl: &mut DisplayList, i: &bimcraft_bim::Item, z0: f64, sel: bool) {
+    let (w, d, h) = i.kind.preset();
+    let hw = w / 2.0;
+    let hd = d / 2.0;
+    let col = if sel { SELECT } else { PAL3D.item };
+    let rot = i.rotation;
+    let corner = |dx: f64, dy: f64| -> Vec3 {
+        let p = Vec2::new(dx, dy).rotate(rot);
+        (i.pos + p).to3(z0)
+    };
+    let b0 = corner(-hw, -hd);
+    let b1 = corner(hw, -hd);
+    let b2 = corner(hw, hd);
+    let b3 = corner(-hw, hd);
+    // Box sides.
+    for (p, q) in [(b0, b1), (b1, b2), (b2, b3), (b3, b0)] {
+        let nrm = face_normal(p, q, q.with_z(z0 + h));
+        dl.quad([p, q, q.with_z(z0 + h), p.with_z(z0 + h)], shade(nrm, col));
+    }
+    // Top.
+    let top_col = shade(Vec3::new(0.0, 0.0, 1.0), col);
+    dl.quad([b0.with_z(z0 + h), b1.with_z(z0 + h), b2.with_z(z0 + h), b3.with_z(z0 + h)], top_col);
+    // Backrest for seating/bed/wardrobe kinds: a thin second box at the back.
+    let back_h = match i.kind {
+        ItemKind::Chair | ItemKind::Sofa => h * 0.5,
+        ItemKind::Bed => h * 0.8,
+        ItemKind::Wardrobe => h * 0.35,
+        _ => 0.0,
+    };
+    if back_h > 0.0 {
+        let t = 0.08;
+        let c0 = corner(-hw, hd - t);
+        let c1 = corner(hw, hd - t);
+        let c2 = corner(hw, hd);
+        let c3 = corner(-hw, hd);
+        let zt = z0 + h * 0.55 + back_h * 0.45;
+        for (p, q) in [(c0, c1), (c1, c2), (c2, c3), (c3, c0)] {
+            let nrm = face_normal(p, q, q.with_z(zt));
+            dl.quad([p, q, q.with_z(zt), p.with_z(zt)], shade(nrm, col));
+        }
+        dl.quad([c0.with_z(zt), c1.with_z(zt), c2.with_z(zt), c3.with_z(zt)], top_col);
+    }
+    // Wireframe edges.
+    for (p, q) in [(b0, b1), (b1, b2), (b2, b3), (b3, b0)] {
+        dl.line(p.with_z(z0 + h), q.with_z(z0 + h), col, 0.8);
     }
 }
 
@@ -382,27 +648,7 @@ fn face_normal(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     (b - a).cross(c - a).normalize()
 }
 
-trait WithZ {
-    fn with_z(self, z: f64) -> Vec3;
-}
-
-impl WithZ for Vec3 {
-    fn with_z(mut self, z: f64) -> Vec3 {
-        self.z = z;
-        self
-    }
-}
-
-/// Mirror point `p` across the wall centerline (a-b) in the XY plane.
-fn mirror_over_wall(p: Vec3, a: bimcraft_geom::Vec2, b: bimcraft_geom::Vec2) -> Vec3 {
-    let dir = (b - a).normalize();
-    let n = dir.perp();
-    let d = (p.xy() - a).dot(n);
-    let mirrored = p.xy() - n * (2.0 * d);
-    mirrored.to3(p.z)
-}
-
-fn prism(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], z0: f64, z1: f64, color: Color32) {
+fn prism(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], z0: f64, z1: f64, color: Color32, top_face: bool) {
     let n = pts.len();
     if n < 3 {
         return;
@@ -413,17 +659,9 @@ fn prism(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], z0: f64, z1: f64, co
         let nrm = face_normal(p0, p1, p1.with_z(z1));
         dl.quad([p0, p1, p1.with_z(z1), p0.with_z(z1)], shade(nrm, color));
     }
-    let top: Vec<Vec3> = pts.iter().map(|p| p.to3(z1)).collect();
-    fan(dl, &top, shade(Vec3::new(0.0, 0.0, 1.0), color));
-}
-
-/// Triangulate a convex polygon as a fan (v0.1 assumption; CSG later).
-fn fan(dl: &mut DisplayList, pts: &[Vec3], color: Color32) {
-    if pts.len() < 3 {
-        return;
-    }
-    for i in 1..pts.len() - 1 {
-        dl.tri([pts[0], pts[i], pts[i + 1]], color);
+    if top_face {
+        let top: Vec<Vec3> = pts.iter().map(|p| p.to3(z1)).collect();
+        dl.poly(&top, shade(Vec3::new(0.0, 0.0, 1.0), color));
     }
 }
 
@@ -435,24 +673,70 @@ pub fn stroke_for_width(w: f32) -> Stroke {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bimcraft_bim::Model;
+    use bimcraft_bim::{sample, Model, Opening};
+    use bimcraft_geom::Vec2;
 
     #[test]
     fn plan_build_runs() {
-        let m = Model::new();
-        let info = ViewInfo { mode: ViewModeKind::Plan2D, active_level: m.levels[0].id, selection: vec![], half_extent: 20.0, ground_extent: 20.0 };
+        let m = sample();
+        let info = ViewInfo {
+            mode: ViewModeKind::Plan2D,
+            active_level: m.levels[0].id,
+            selection: vec![],
+            half_extent: 20.0,
+            ground_extent: 20.0,
+            show_ceilings_3d: true,
+            show_items_2d: true,
+        };
         let dl = build(&m, &info);
         assert!(!dl.lines.is_empty());
     }
 
     #[test]
     fn three_d_build_runs() {
-        let mut m = Model::new();
-        let lvl = m.levels[0].id;
-        let w = m.add_wall(lvl, bimcraft_geom::Vec2::ZERO, bimcraft_geom::Vec2::new(5.0, 0.0), 0.2, 3.0);
-        m.add_opening(ElementKind::Door, bimcraft_bim::Opening { wall: w, t: 0.5, width: 0.9, height: 2.1, sill: 0.0 });
-        let info = ViewInfo { mode: ViewModeKind::Perspective3D, active_level: lvl, selection: vec![w], half_extent: 20.0, ground_extent: 30.0 };
+        let m = sample();
+        let info = ViewInfo {
+            mode: ViewModeKind::Perspective3D,
+            active_level: m.levels[0].id,
+            selection: vec![],
+            half_extent: 20.0,
+            ground_extent: 30.0,
+            show_ceilings_3d: true,
+            show_items_2d: true,
+        };
         let dl = build(&m, &info);
         assert!(!dl.tris.is_empty());
+    }
+
+    #[test]
+    fn opening_cuts_leave_glass_only_where_cut() {
+        let mut m = Model::new();
+        let lvl = m.levels[0].id;
+        let w = m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
+        m.add_opening(ElementKind::Window, Opening { wall: w, s: 2.5, width: 1.2, height: 1.4, sill: 0.9 });
+        let info = ViewInfo {
+            mode: ViewModeKind::Perspective3D,
+            active_level: lvl,
+            selection: vec![],
+            half_extent: 20.0,
+            ground_extent: 30.0,
+            show_ceilings_3d: false,
+            show_items_2d: true,
+        };
+        let dl = build(&m, &info);
+        // The wall (5 m × 3 m face) minus a 1.2 m gap must produce more than
+        // two side pieces: full pieces + below/above sill pieces.
+        let side_pieces = dl.tris.iter().filter(|t| (t.pts[0].z - t.pts[1].z).abs() < 3.2).count();
+        assert!(side_pieces > 8);
+    }
+
+    #[test]
+    fn subtract_cuts_math() {
+        let cuts = vec![(2.0, 3.0, 0.9, 2.3)];
+        let pieces = subtract_cuts(5.0, 0.0, 3.0, &cuts);
+        // [0..2 full] [2..3 below] [2..3 above] [3..5 full]
+        assert_eq!(pieces.len(), 4);
+        let full: f64 = pieces.iter().map(|(s0, s1, z0, z1)| (s1 - s0) * (z1 - z0)).sum();
+        assert!((full - (15.0 - 1.0 * 1.4)).abs() < 1e-6);
     }
 }

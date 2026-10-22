@@ -1,5 +1,7 @@
 //! BimCraft egui frontend: a thin shell over the engine Session, following the
-//! Craft-app architecture (chrome + central canvas + dock, JSON-free v0.1).
+//! Craft-app architecture (app bar + 48 px tool rail + central canvas + right
+//! dock + status bar). Icon buttons and theming use the adopted `craft-ui`
+//! crate from storytold craft-libs (MIT OR Apache-2.0).
 
 mod canvas;
 mod chrome;
@@ -8,19 +10,73 @@ pub mod theme;
 use bimcraft_engine::{Session, Tool, ViewMode};
 use bimcraft_geom::{Vec2, Vec3};
 
-/// Top-level app state. Implements `eframe::App` in the platform crates.
+/// Top-level app state. Platform shells implement `eframe::App` and delegate
+/// to [`BimcraftApp::update`]; persistence goes through `bimcraft-io` JSON.
 pub struct BimcraftApp {
     pub session: Session,
+    /// Path text used by the desktop Open/Save dialogs.
+    pub save_path: String,
+    pub show_open_dialog: bool,
+    pub show_save_dialog: bool,
+    /// View toggles.
+    pub show_items_2d: bool,
+    pub show_ceilings_3d: bool,
+    /// Dock tab (persisted per session only).
+    pub dock_tab: DockTab,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DockTab {
+    Properties,
+    Levels,
+    Library,
+    Schedule,
+    Model,
+}
+
+impl DockTab {
+    pub const ALL: [DockTab; 5] = [DockTab::Properties, DockTab::Levels, DockTab::Library, DockTab::Schedule, DockTab::Model];
+    pub fn label(self) -> &'static str {
+        match self {
+            DockTab::Properties => "Properties",
+            DockTab::Levels => "Levels",
+            DockTab::Library => "Library",
+            DockTab::Schedule => "Schedule",
+            DockTab::Model => "Model",
+        }
+    }
 }
 
 impl BimcraftApp {
     pub fn new() -> Self {
-        Self { session: Session::default() }
+        Self {
+            session: Session::default(),
+            save_path: "model.bimcraft.json".into(),
+            show_open_dialog: false,
+            show_save_dialog: false,
+            show_items_2d: true,
+            show_ceilings_3d: true,
+            dock_tab: DockTab::Properties,
+        }
+    }
+
+    pub fn with_model(model: bimcraft_bim::Model) -> Self {
+        let mut app = Self::new();
+        let active = model.levels.first().map(|l| l.id);
+        app.session.model = model;
+        app.session.active_level = active;
+        app.session.status = "Model loaded".into();
+        app
     }
 
     pub fn session_reset(&mut self) {
+        self.session = Session::with_model(bimcraft_bim::Model::new());
+        self.session.status = "New empty model".into();
+    }
+
+    pub fn session_sample(&mut self) {
         self.session = Session::default();
-        self.session.status = "New model".into();
+        self.session.status = "Sample house loaded".into();
     }
 
     pub fn zoom_to_fit(&mut self) {
@@ -45,9 +101,37 @@ impl BimcraftApp {
         }
     }
 
+    /// Open a native file by path (desktop; the web edition autosaves to
+    /// localStorage via eframe storage instead).
+    pub fn open_file(&mut self, path: &str) {
+        match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|text| bimcraft_io::load_json(&text).map_err(|e| e.0)) {
+            Ok(model) => {
+                self.show_open_dialog = false;
+                let active = model.levels.first().map(|l| l.id);
+                self.session.model = model;
+                self.session.active_level = active;
+                self.save_path = path.to_string();
+                self.session.status = format!("Opened {path}");
+            }
+            Err(e) => self.session.status = format!("Open failed: {e}"),
+        }
+    }
+
+    pub fn save_file(&mut self, path: &str) {
+        let json = bimcraft_io::save_json(&self.session.model);
+        match std::fs::write(path, json) {
+            Ok(()) => {
+                self.show_save_dialog = false;
+                self.save_path = path.to_string();
+                self.session.status = format!("Saved {path}");
+            }
+            Err(e) => self.session.status = format!("Save failed: {e}"),
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::Key;
-        let (w, d, n, f, c, s, esc, tab, z, y, del, ctrl) = ctx.input(|i| {
+        let (w, d, n, f, c, s, i, m, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
             (
                 i.key_pressed(Key::W),
                 i.key_pressed(Key::D),
@@ -55,40 +139,76 @@ impl BimcraftApp {
                 i.key_pressed(Key::F),
                 i.key_pressed(Key::C),
                 i.key_pressed(Key::S),
+                i.key_pressed(Key::I),
+                i.key_pressed(Key::M),
                 i.key_pressed(Key::Escape),
+                i.key_pressed(Key::Enter),
                 i.key_pressed(Key::Tab),
+                i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
                 i.key_pressed(Key::Z),
                 i.key_pressed(Key::Y),
-                i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
+                i.key_pressed(Key::R),
+                i.key_pressed(Key::G),
+                i.key_pressed(Key::Home),
                 i.modifiers.ctrl,
+                i.modifiers.shift,
             )
         });
         if ctrl && z {
             self.session.undo();
-        } else if ctrl && (y || (z && ctx.input(|i| i.modifiers.shift))) {
+        } else if ctrl && (y || (z && shift)) {
             self.session.redo();
         }
-        if w {
-            self.session.set_tool(Tool::Wall);
+        if !ctrl {
+            if w {
+                self.session.set_tool(Tool::Wall);
+            }
+            if d {
+                self.session.set_tool(Tool::Door);
+            }
+            if n {
+                self.session.set_tool(Tool::Window);
+            }
+            if f {
+                self.session.set_tool(Tool::Floor);
+            }
+            if c {
+                self.session.set_tool(Tool::Ceiling);
+            }
+            if i {
+                self.session.set_tool(Tool::Item);
+                self.dock_tab = DockTab::Library;
+            }
+            if m {
+                self.session.set_tool(Tool::Measure);
+            }
+            if s {
+                if esc && !self.session.pending.is_empty() {
+                    // fall through to Esc handling below
+                } else {
+                    self.session.set_tool(Tool::Select);
+                }
+            }
+            if r {
+                // Rotate selected item 90° (Shift: 15°).
+                if let Some(id) = self.session.selected_element() {
+                    self.session.rotate_item(id, if shift { 15.0_f64.to_radians() } else { std::f64::consts::FRAC_PI_2 });
+                }
+            }
+            if g {
+                self.session.snap_grid = !self.session.snap_grid;
+                self.session.status = format!("Grid snap {}", if self.session.snap_grid { "on" } else { "off" });
+            }
         }
-        if d {
-            self.session.set_tool(Tool::Door);
-        }
-        if n {
-            self.session.set_tool(Tool::Window);
-        }
-        if f {
-            self.session.set_tool(Tool::Slab);
-        }
-        if c {
-            self.session.set_tool(Tool::Ceiling);
-        }
-        if s || esc {
-            if esc && !self.session.pending.is_empty() {
+        if esc {
+            if !self.session.pending.is_empty() || self.session.measure.is_some() {
                 self.session.cancel_pending();
             } else {
-                self.session.set_tool(Tool::Select);
+                self.session.select(bimcraft_engine::Selection::None);
             }
+        }
+        if enter {
+            self.session.finish_draft();
         }
         if tab {
             let next = match self.session.view {
@@ -99,6 +219,9 @@ impl BimcraftApp {
         }
         if del && !ctrl {
             self.session.delete_selected();
+        }
+        if home {
+            self.zoom_to_fit();
         }
     }
 }
@@ -111,22 +234,25 @@ impl Default for BimcraftApp {
 
 impl BimcraftApp {
     /// Draw one frame. Platform shells (apps/bimcraft, apps/bimcraft-web)
-    /// implement `eframe::App` and delegate here, keeping this crate pure egui.
-    pub fn update(&mut self, ctx: &egui::Context) {
-        theme::apply(ctx);
-        self.handle_shortcuts(ctx);
+    /// implement `eframe::App::ui` and delegate here, keeping this crate
+    /// a thin egui layer over the engine session.
+    pub fn ui(&mut self, root: &mut egui::Ui) {
+        let ctx = root.ctx().clone();
+        theme::apply(&ctx);
+        self.handle_shortcuts(&ctx);
 
-        chrome::status_bar(ctx, self);
-        chrome::dock(ctx, self);
-        chrome::toolbar(ctx, self);
-        chrome::app_bar(ctx, self);
+        chrome::status_bar(root, self);
+        chrome::app_bar(root, self);
+        chrome::toolbar(root, self);
+        chrome::dock(root, self);
+        chrome::file_dialogs(&ctx, self);
 
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(theme::tokens().pasteboard)).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::tokens().pasteboard)).show(root, |ui| {
             canvas::show(ui, self);
         });
 
         // Continuously repaint while a tool has pending input (rubber band).
-        if !self.session.pending.is_empty() {
+        if !self.session.pending.is_empty() || self.session.dragging() || self.session.tool == Tool::Measure {
             ctx.request_repaint();
         }
     }

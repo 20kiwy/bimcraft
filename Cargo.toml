@@ -3,19 +3,32 @@ resolver = "2"
 members = ["crates/*", "apps/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/getcadcraft/bimcraft"
+repository = "https://github.com/20kiwy/bimcraft"
 
 [workspace.dependencies]
 bimcraft-geom = { path = "crates/geom" }
 bimcraft-bim = { path = "crates/bim" }
 bimcraft-engine = { path = "crates/engine" }
 bimcraft-render = { path = "crates/render" }
+bimcraft-io = { path = "crates/io" }
 bimcraft-ui-egui = { path = "crates/ui-egui" }
-eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }
-egui = "0.29"
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "persistence",
+    "wayland",
+    "x11",
+] }
+egui = "0.36"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+# Native crate from the storytold Craft suite (MIT OR Apache-2.0): icon
+# buttons, tab widgets and the widget-palette theming mechanism.
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675" }
 
 [profile.dev.package."*"]
 opt-level = 2

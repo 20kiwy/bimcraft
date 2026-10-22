@@ -1,10 +1,13 @@
 //! BimCraft browser edition entry point (eframe web runner on wasm32).
+//!
+//! The model autosaves into eframe web storage (localStorage), so a refresh
+//! keeps your work; use the CLI to exchange native `.bimcraft.json` files.
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     // The browser edition only builds for wasm32; desktop users run the
     // `bimcraft` app instead. This stub keeps `cargo check` happy on native.
-    eprintln!("bimcraft-web is the wasm browser edition; build with: trunk build (see BUILDING.md)");
+    eprintln!("bimcraft-web is the wasm browser edition; build with: trunk build (see README.md)");
     eprintln!("For the desktop app run: cargo run -p bimcraft");
 }
 
@@ -18,15 +21,22 @@ struct Shell {
 }
 
 #[cfg(target_arch = "wasm32")]
+const STORAGE_KEY: &str = "bimcraft_model_v2";
+
+#[cfg(target_arch = "wasm32")]
 impl eframe::App for Shell {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.inner.update(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.inner.ui(ui);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, STORAGE_KEY, &bimcraft_io::save_json(&self.inner.session.model));
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
-    console_error_panic_hook::once();
+    console_error_panic_hook::set_once();
     use wasm_bindgen::JsCast;
     let web_options = eframe::WebOptions::default();
     wasm_bindgen_futures::spawn_local(async move {
@@ -34,10 +44,15 @@ fn main() {
         let canvas = document
             .get_element_by_id("bimcraft_canvas")
             .expect("missing #bimcraft_canvas")
-            .dyn_into::<web_sys::HtmlElement>()
-            .expect("canvas is not an HtmlElement");
-        let app_creator = Box::new(|_cc: &eframe::CreationContext<'_>| {
-            let inner = BimcraftApp::new();
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("canvas is not a HtmlCanvasElement");
+        let app_creator = Box::new(|cc: &eframe::CreationContext<'_>| {
+            let inner = cc
+                .storage
+                .and_then(|s| eframe::get_value::<String>(s, STORAGE_KEY))
+                .and_then(|json| bimcraft_io::load_json(&json).ok())
+                .map(BimcraftApp::with_model)
+                .unwrap_or_default();
             Ok(Box::new(Shell { inner }) as Box<dyn eframe::App>)
         });
         if let Err(e) = eframe::WebRunner::new().start(canvas, web_options, app_creator).await {

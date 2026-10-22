@@ -3,17 +3,17 @@
 //! egui painter with hand-rolled projection math (no extra 3D deps).
 
 use crate::theme;
-use bimcraft_engine::{Tool, ViewMode};
+use bimcraft_engine::{Selection, Tool, ViewMode};
 use bimcraft_geom::Vec2 as GVec2;
 use bimcraft_geom::Vec3;
 use bimcraft_render::{build, ViewInfo, ViewModeKind};
-use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
 pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
     let t = theme::tokens();
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, t.viewport_bg);
+    painter.rect_filled(rect, CornerRadius::same(0), t.viewport_bg);
 
     let ppp = ui.ctx().pixels_per_point();
     let mode = match app.session.view {
@@ -27,14 +27,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
     let info = ViewInfo {
         mode,
         active_level: app.session.active_level_id(),
-        selection: app.session.selection.clone(),
+        selection: match app.session.selection {
+            Selection::Element(id) => vec![id],
+            _ => vec![],
+        },
         half_extent: plan_half_extent(app.session.plan.zoom, rect.width()),
         ground_extent: 40.0,
+        show_ceilings_3d: app.show_ceilings_3d,
+        show_items_2d: app.show_items_2d,
     };
     let dl = build(&app.session.model, &info);
 
     match app.session.view {
-        ViewMode::Plan2D => draw_plan(ui, app, &painter, rect, &dl, ppp),
+        ViewMode::Plan2D => draw_plan(ui, app, &painter, rect, &dl),
         ViewMode::Perspective3D => draw_3d(ui, app, &painter, rect, &dl, ppp),
     }
 
@@ -49,24 +54,20 @@ fn plan_half_extent(zoom: f64, width_px: f32) -> f64 {
 // -------------------------------------------------------------- input -----
 
 fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, resp: egui::Response, ppp: f32) {
-    let t = theme::tokens();
-    let scroll = ui.ctx().input(|i| i.raw_scroll_delta.y);
+    let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
     let pos = resp.hovered().then(|| ui.ctx().input(|i| i.pointer.latest_pos())).flatten();
 
-    // World cursor (for the status bar + tool preview).
+    // World cursor (for the status bar + tool preview). Plan tools work from
+    // the snapped position; camera moves use the raw position.
     if let Some(p) = pos {
-        let world = match app.session.view {
-            ViewMode::Plan2D => Some(screen_to_plan(app, p, rect).to3(app.session.level_elevation())),
-            ViewMode::Perspective3D => app.session.camera.pick_ground(
-                p.x as f64 * ppp as f64,
-                p.y as f64 * ppp as f64,
-                rect.width() as f64 * ppp as f64,
-                rect.height() as f64 * ppp as f64,
-                FOV,
-            ),
-        };
-        if let Some(w) = world {
+        let world_raw = screen_world(app, p, rect, ppp);
+        if let Some(w) = world_raw {
             app.session.cursor = w;
+            if app.session.view == ViewMode::Plan2D {
+                app.session.cursor_plan_snapped = Some(app.session.snap(w.xy()));
+            } else {
+                app.session.cursor_plan_snapped = None;
+            }
         }
     }
 
@@ -94,13 +95,34 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
 
     // Drag interactions.
     let drag = resp.drag_delta();
+    if resp.drag_started() {
+        // Select tool: start moving / shifting the selected element when the
+        // drag begins over it; otherwise pan.
+        if app.session.view == ViewMode::Plan2D && app.session.tool == Tool::Select {
+            if let Some(p) = pos {
+                let world = screen_to_plan(app, p, rect);
+                let hit = app.session.pick_plan(world);
+                let hovering_selection = !matches!(hit, Selection::None)
+                    && match (hit, app.session.selection) {
+                        (Selection::Element(a), Selection::Element(b)) => a == b,
+                        (Selection::Grid(a), Selection::Grid(b)) => a == b,
+                        _ => false,
+                    };
+                if hovering_selection && app.session.begin_drag(world) {
+                    // drag started on the selection
+                }
+            }
+        }
+    }
     if resp.dragged() && drag != Vec2::ZERO {
         match app.session.view {
             ViewMode::Plan2D => {
-                let pan = ui.ctx().input(|i| i.modifiers.shift)
-                    || resp.dragged_by(egui::PointerButton::Secondary)
-                    || (app.session.tool == Tool::Select && app.session.pending.is_empty());
-                if pan {
+                if app.session.dragging() {
+                    if let Some(p) = pos {
+                        let world = screen_to_plan(app, p, rect);
+                        app.session.drag_to(world);
+                    }
+                } else {
                     let delta = GVec2::new(drag.x as f64, -drag.y as f64) * (1.0 / app.session.plan.zoom);
                     app.session.plan.center = app.session.plan.center - delta;
                 }
@@ -115,37 +137,45 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
             }
         }
     }
+    if resp.drag_stopped() {
+        app.session.end_drag();
+    }
 
     // Clicks.
     if resp.clicked() {
         if let Some(p) = pos {
             match app.session.view {
                 ViewMode::Plan2D => {
-                    let world = screen_to_plan(app, p, rect);
+                    let world = app.session.snap(screen_to_plan(app, p, rect));
                     app.session.click_plan(world);
                 }
                 ViewMode::Perspective3D => {
-                    if matches!(app.session.tool, Tool::Select) {
-                        app.session.select(None);
-                        app.session.status = "3D picking arrives with ray-cast selection (see roadmap)".into();
-                    } else if let Some(g) = app.session.camera.pick_ground(
-                        p.x as f64 * ppp as f64,
-                        p.y as f64 * ppp as f64,
-                        rect.width() as f64 * ppp as f64,
-                        rect.height() as f64 * ppp as f64,
-                        FOV,
-                    ) {
-                        app.session.click_plan(g.xy());
+                    if let Some(g) = pick_ground_at(app, p, rect) {
+                        let world = app.session.snap(g.xy());
+                        app.session.click_plan(world);
                     }
                 }
             }
         }
     }
+    if resp.double_clicked() {
+        app.session.finish_draft();
+    }
     if resp.secondary_clicked() {
         app.session.cancel_pending();
     }
+}
 
-    let _ = t;
+fn screen_world(app: &crate::BimcraftApp, p: Pos2, rect: Rect, _ppp: f32) -> Option<Vec3> {
+    match app.session.view {
+        ViewMode::Plan2D => Some(screen_to_plan(app, p, rect).to3(app.session.level_elevation())),
+        ViewMode::Perspective3D => pick_ground_at(app, p, rect),
+    }
+}
+
+fn pick_ground_at(app: &crate::BimcraftApp, p: Pos2, rect: Rect) -> Option<Vec3> {
+    // Logical pixels: matches the logical-unit projection in draw_3d.
+    app.session.camera.pick_ground(p.x as f64, p.y as f64, rect.width() as f64, rect.height() as f64, FOV)
 }
 
 fn pan_target(app: &mut crate::BimcraftApp, drag: Vec2, rect: Rect, ppp: f32) {
@@ -175,7 +205,7 @@ fn plan_to_screen(app: &crate::BimcraftApp, w: Vec3, rect: Rect) -> Pos2 {
 
 // --------------------------------------------------------------- 2D ------
 
-fn draw_plan(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList, _ppp: f32) {
+fn draw_plan(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList) {
     let _ = ui;
     for l in &dl.lines {
         let a = plan_to_screen(app, l.a, rect);
@@ -251,12 +281,12 @@ impl Proj {
     }
 }
 
-fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList, ppp: f32) {
+fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList, _ppp: f32) {
     let _ = ui;
     let cam = app.session.camera;
     let (r, u, f) = cam.basis();
     let eye = cam.eye();
-    let ppp = ppp as f64;
+    let ppp = 1.0_f64; // projection runs in logical pixels
     let proj = Proj {
         focal: (rect.height() as f64 * ppp) / (2.0 * (FOV / 2.0).tan()),
         cx: rect.center().x as f64 * ppp,
@@ -304,7 +334,7 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
         }
     }
 
-    // Compass overlay: N indicator + axis legend.
+    // Viewport hint.
     painter.text(
         rect.right_top() + Vec2::new(-14.0, 14.0),
         egui::Align2::RIGHT_TOP,
@@ -347,25 +377,115 @@ fn draw_line_clipped(painter: &egui::Painter, proj: &Proj, eye: Vec3, r: Vec3, u
 fn draw_overlays(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect) {
     let _ = ui;
     let t = theme::tokens();
-    // Rubber band for in-progress wall / rectangle plate.
-    if app.session.pending.len() == 1 && app.session.view == ViewMode::Plan2D {
-        let a = plan_to_screen(app, app.session.pending[0].to3(0.0), rect);
-        let b = Pos2::new(
-            ((app.session.cursor.x - app.session.plan.center.x) * app.session.plan.zoom + rect.center().x as f64) as f32,
-            (rect.center().y as f64 - (app.session.cursor.y - app.session.plan.center.y) * app.session.plan.zoom) as f32,
-        );
-        painter.line_segment([a, b], Stroke::new(1.6_f32, t.accent));
-        painter.circle_filled(a, 3.0, t.accent);
-        let len = app.session.cursor.xy().dist(app.session.pending[0]);
-        painter.text(b + Vec2::new(10.0, -10.0), egui::Align2::LEFT_BOTTOM, format!("{len:.2} m"), theme::font_mono(11.0), t.accent);
+    if app.session.view != ViewMode::Plan2D {
+        return;
     }
-    // Origin marker.
-    if app.session.view == ViewMode::Plan2D {
-        let o = plan_to_screen(app, Vec3::ZERO, rect);
-        if rect.contains(o) {
-            painter.circle_stroke(o, 4.0, Stroke::new(1.2_f32, bimcraft_render::AXIS_X));
-            painter.line_segment([o - Vec2::new(7.0, 0.0), o + Vec2::new(7.0, 0.0)], Stroke::new(1.0_f32, bimcraft_render::AXIS_X));
-            painter.line_segment([o - Vec2::new(0.0, 7.0), o + Vec2::new(0.0, 7.0)], Stroke::new(1.0_f32, bimcraft_render::AXIS_Y));
+
+    // Snapped cursor world position for previews.
+    let cursor = app.session.cursor_plan_snapped.unwrap_or_else(|| app.session.cursor.xy());
+
+    // Snap indicator dot.
+    if app.session.snap_grid || app.session.snap_endpoints {
+        let sp = plan_to_screen(app, cursor.to3(app.session.level_elevation()), rect);
+        if rect.contains(sp) {
+            painter.circle_filled(sp, 2.5, t.accent.gamma_multiply(0.7));
         }
     }
+
+    // Wall chain preview.
+    if app.session.tool == Tool::Wall && !app.session.pending.is_empty() {
+        let mut prev = app.session.pending[0];
+        for &pt in &app.session.pending[1..] {
+            draw_preview_segment(app, painter, rect, prev, pt, t.accent);
+            prev = pt;
+        }
+        draw_preview_segment(app, painter, rect, prev, cursor, t.accent);
+        let total: f64 = app.session.pending.windows(2).map(|w| (w[1] - w[0]).length()).sum::<f64>() + prev.dist(cursor);
+        let b = plan_to_screen(app, cursor.to3(0.0), rect);
+        painter.text(b + Vec2::new(10.0, -10.0), egui::Align2::LEFT_BOTTOM, format!("Σ {total:.2} m"), theme::font_mono(11.0), t.accent);
+        for &pt in &app.session.pending {
+            painter.circle_filled(plan_to_screen(app, pt.to3(0.0), rect), 3.0, t.accent);
+        }
+    }
+
+    // Polygon plate preview (floor / ceiling).
+    if matches!(app.session.tool, Tool::Floor | Tool::Ceiling) && !app.session.pending.is_empty() {
+        let mut pts: Vec<Pos2> = app.session.pending.iter().map(|p| plan_to_screen(app, p.to3(0.0), rect)).collect();
+        pts.push(plan_to_screen(app, cursor.to3(0.0), rect));
+        if pts.len() >= 3 {
+            painter.add(egui::Shape::convex_polygon(pts.clone(), t.accent.gamma_multiply(0.12), Stroke::NONE));
+        }
+        for i in 0..pts.len() {
+            draw_dashed(painter, pts[i], pts[(i + 1) % pts.len()], t.accent, 1.4);
+        }
+        for p in &pts {
+            painter.circle_filled(*p, 3.0, t.accent);
+        }
+        let poly: Vec<GVec2> = app.session.pending.iter().copied().chain(std::iter::once(cursor)).collect();
+        let area = bimcraft_geom::poly_area(&poly).abs();
+        painter.text(
+            pts[pts.len() - 1] + Vec2::new(10.0, -10.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("A {area:.2} m²"),
+            theme::font_mono(11.0),
+            t.accent,
+        );
+    }
+
+    // Item placement ghost.
+    if app.session.tool == Tool::Item {
+        let (w, d, _) = app.session.item_kind.preset();
+        let rot = app.session.item_rotation;
+        let corners = [
+            cursor + GVec2::new(-w / 2.0, -d / 2.0).rotate(rot),
+            cursor + GVec2::new(w / 2.0, -d / 2.0).rotate(rot),
+            cursor + GVec2::new(w / 2.0, d / 2.0).rotate(rot),
+            cursor + GVec2::new(-w / 2.0, d / 2.0).rotate(rot),
+        ];
+        let pts: Vec<Pos2> = corners.iter().map(|p| plan_to_screen(app, p.to3(0.0), rect)).collect();
+        painter.add(egui::Shape::convex_polygon(pts.clone(), t.accent.gamma_multiply(0.15), Stroke::NONE));
+        for i in 0..4 {
+            painter.line_segment([pts[i], pts[(i + 1) % 4]], Stroke::new(1.4, t.accent));
+        }
+        painter.text(pts[0] + Vec2::new(4.0, -4.0), egui::Align2::LEFT_BOTTOM, app.session.item_kind.name(), theme::font_ui(10.0), t.accent);
+    }
+
+    // Measure overlay.
+    if let Some(m) = app.session.measure {
+        let a = plan_to_screen(app, m.a.to3(0.0), rect);
+        let b = plan_to_screen(app, (if m.a == m.b { cursor } else { m.b }).to3(0.0), rect);
+        painter.line_segment([a, b], Stroke::new(1.8, Color32::from_rgb(0x5b, 0xc8, 0xd8)));
+        painter.circle_filled(a, 3.0, Color32::from_rgb(0x5b, 0xc8, 0xd8));
+        painter.circle_filled(b, 3.0, Color32::from_rgb(0x5b, 0xc8, 0xd8));
+        let len = m.a.dist(if m.a == m.b { cursor } else { m.b });
+        painter.text(
+            Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5) + Vec2::new(0.0, -12.0),
+            egui::Align2::CENTER_BOTTOM,
+            format!("{len:.2} m"),
+            theme::font_mono(12.0),
+            Color32::from_rgb(0x5b, 0xc8, 0xd8),
+        );
+    }
+
+    // Origin marker.
+    let o = plan_to_screen(app, Vec3::ZERO, rect);
+    if rect.contains(o) {
+        painter.circle_stroke(o, 4.0, Stroke::new(1.2, bimcraft_render::AXIS_X));
+        painter.line_segment([o - Vec2::new(7.0, 0.0), o + Vec2::new(7.0, 0.0)], Stroke::new(1.0, bimcraft_render::AXIS_X));
+        painter.line_segment([o - Vec2::new(0.0, 7.0), o + Vec2::new(0.0, 7.0)], Stroke::new(1.0, bimcraft_render::AXIS_Y));
+    }
+}
+
+fn draw_preview_segment(app: &crate::BimcraftApp, painter: &egui::Painter, rect: Rect, a: GVec2, b: GVec2, color: Color32) {
+    let sa = plan_to_screen(app, a.to3(0.0), rect);
+    let sb = plan_to_screen(app, b.to3(0.0), rect);
+    painter.line_segment([sa, sb], Stroke::new(1.6, color));
+    let len = a.dist(b);
+    painter.text(
+        Pos2::new((sa.x + sb.x) * 0.5, (sa.y + sb.y) * 0.5) + Vec2::new(8.0, -8.0),
+        egui::Align2::LEFT_BOTTOM,
+        format!("{len:.2}"),
+        theme::font_mono(10.0),
+        color,
+    );
 }

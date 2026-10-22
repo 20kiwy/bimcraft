@@ -9,7 +9,9 @@ bimcraft-geom = { workspace = true }
 bimcraft-bim = { workspace = true }
 bimcraft-engine = { workspace = true }
 bimcraft-render = { workspace = true }
+bimcraft-io = { workspace = true }
 egui = { workspace = true }
+craft-ui = { workspace = true }
 
 [lints]
 workspace = true

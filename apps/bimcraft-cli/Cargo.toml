@@ -1,0 +1,18 @@
+[package]
+name = "bimcraft-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless automation CLI for BimCraft native files"
+
+[[bin]]
+name = "bimcraft-cli"
+path = "src/main.rs"
+
+[dependencies]
+bimcraft-geom = { workspace = true }
+bimcraft-bim = { workspace = true }
+bimcraft-io = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,8 +1,11 @@
-//! Design-token theme for BimCraft, following the Craft-app look
-//! (charcoal chrome, single accent, flat cards). Values are our own subset,
-//! inspired by the MIT OR Apache-2.0 licensed storytold theme system.
+//! Design-token theme for BimCraft, following the VectorCraft look
+//! (charcoal chrome, single coral accent, flat cards).
+//!
+//! Widget state fills are applied through the adopted `craft-ui` widget
+//! palette mechanism (storytold craft-libs, MIT OR Apache-2.0).
 
-use egui::{Color32, FontId, Style, Visuals};
+use craft_ui::theme::WidgetPalette;
+use egui::{Color32, CornerRadius, FontId, Stroke, Style, Visuals};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Tokens {
@@ -44,14 +47,14 @@ pub const fn tokens() -> Tokens {
         accent_strong: Color32::from_rgb(0xe8, 0x57, 0x3f),
         pasteboard: Color32::from_rgb(0x1e, 0x22, 0x2a),
         viewport_bg: Color32::from_rgb(0x22, 0x27, 0x30),
-        selection: Color32::from_rgb(0x4f, 0x80, 0xff),
+        selection: Color32::from_rgb(0xf0, 0x8a, 0x2c),
         danger: Color32::from_rgb(0xe0, 0x4f, 0x4f),
         radius: 4.0,
         font_size: 13.0,
     }
 }
 
-pub const CARD_RADIUS: f32 = 8.0;
+pub const CARD_RADIUS: u8 = 8;
 
 pub fn font_ui(size: f32) -> FontId {
     FontId::proportional(size)
@@ -59,6 +62,19 @@ pub fn font_ui(size: f32) -> FontId {
 
 pub fn font_mono(size: f32) -> FontId {
     FontId::monospace(size)
+}
+
+/// Icon-button style shared by the app bar and the tool rail.
+pub fn icon_button_style(t: &Tokens) -> craft_ui::buttons::IconButtonStyle {
+    use craft_ui::buttons::{ButtonVisuals, IconButtonStyle};
+    IconButtonStyle {
+        normal: ButtonVisuals { fill: t.app_bar, stroke: Stroke::NONE, icon: t.icon },
+        hovered: ButtonVisuals { fill: t.hover, stroke: Stroke::NONE, icon: Color32::WHITE },
+        pressed: Some(ButtonVisuals { fill: t.tool_active, stroke: Stroke::NONE, icon: Color32::WHITE }),
+        selected: ButtonVisuals { fill: t.tool_active, stroke: Stroke::new(1.0, t.accent), icon: Color32::WHITE },
+        corner_radius: CornerRadius::same(6),
+        focus_stroke: Stroke::NONE,
+    }
 }
 
 /// Apply the Craft look to the egui style. Call once per frame start.
@@ -74,8 +90,7 @@ pub fn apply(ctx: &egui::Context) {
     style.text_styles.insert(egui::TextStyle::Heading, FontId::proportional(15.0));
     style.text_styles.insert(egui::TextStyle::Monospace, font_mono(11.5));
     style.animation_time = 0.08;
-    ctx.set_style(style);
-    ctx.set_visuals(visuals(&t));
+    ctx.all_styles_mut(move |s| *s = style.clone());
 }
 
 fn visuals(t: &Tokens) -> Visuals {
@@ -84,19 +99,23 @@ fn visuals(t: &Tokens) -> Visuals {
     v.window_fill = t.panel;
     v.extreme_bg_color = t.input;
     v.faint_bg_color = t.panel_darker;
-    v.window_rounding = egui::Rounding::same(10.0);
-    v.menu_rounding = egui::Rounding::same(8.0);
     v.widgets.noninteractive.bg_fill = t.panel_darker;
-    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, t.text_dim);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, t.text_dim);
     v.widgets.inactive.bg_fill = t.input;
-    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, t.text);
-    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, t.input_border);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, t.text);
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.input_border);
     v.widgets.hovered.bg_fill = t.hover;
-    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, t.text);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, t.text);
     v.widgets.active.bg_fill = t.tool_active;
-    v.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, t.accent);
+    v.widgets.active.fg_stroke = Stroke::new(1.0, t.accent);
     v.selection.bg_fill = t.selection.gamma_multiply(0.55);
-    v.selection.stroke = egui::Stroke::new(1.0_f32, t.selection);
+    v.selection.stroke = Stroke::new(1.0, t.selection);
     v.override_text_color = Some(t.text);
+    // Adopted craft-ui mechanism: one palette drives all five widget states.
+    WidgetPalette { noninteractive: t.panel_darker, inactive: t.input, hovered: t.hover, active: t.tool_active, open: t.panel }.apply_to(
+        &mut v.widgets,
+        CornerRadius::same(4),
+        Stroke::new(1.0, t.text),
+    );
     v
 }

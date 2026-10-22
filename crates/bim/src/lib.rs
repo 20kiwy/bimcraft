@@ -1,14 +1,20 @@
 //! BimCraft building information model: levels, grids, parametric walls,
-//! hosted openings (doors + windows), floor slabs, ceilings, items, schedule.
+//! hosted openings (doors + windows), floor slabs, ceilings, items, rooms,
+//! section/elevation views, schedule.
 //!
 //! Clean-room BIM data model for the BIMCraft Rust edition, mapped to the
 //! JavaScript edition's modules in docs/PARITY_ROADMAP.md:
 //! `model-levels` → [Level], `model-grids` → [Grid], `model-walls` → [Wall],
 //! `model-openings`/`opening-types` → [Opening], `model-floors`/`model-slabs`
 //! → [Slab], ceilings → [Ceiling], `libitem`/`assets-bim` → [Item],
+//! `model-rooms` → [rooms] + [Room], section/elevation views → [Section],
 //! `model-schedule` → [Model::schedule].
 
+pub mod dxf;
+pub mod rooms;
+
 use bimcraft_geom::{dist_point_segment_xy, poly_area, poly_centroid, triangulate, Aabb2, Vec2, Vec3};
+pub use rooms::{plan_loops, PlanLoops, RoomLoop};
 use serde::{Deserialize, Serialize};
 
 pub type Id = u64;
@@ -48,6 +54,65 @@ pub enum ElementKind {
     Slab,
     Ceiling,
     Item,
+}
+
+/// A section / elevation view: a line on the plan of one level with a view
+/// depth band. The projected view is built by `bimcraft-render::build_section`
+/// (parity: the JS edition's section/elevation views, `res-views.js` /
+/// `section-volume.js`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Section {
+    pub id: Id,
+    pub level: Id,
+    pub name: String,
+    /// Section line start point on the plan (meters).
+    pub a: Vec2,
+    /// Section line end point on the plan (meters).
+    pub b: Vec2,
+    /// Half-depth of the view band on each side of the line (meters).
+    pub depth: f64,
+}
+
+impl Section {
+    /// Plan-space direction along the section line (normalized).
+    pub fn dir(&self) -> Vec2 {
+        (self.b - self.a).normalize()
+    }
+
+    pub fn length(&self) -> f64 {
+        (self.b - self.a).length()
+    }
+
+    /// Signed perpendicular distance of a plan point from the section line.
+    pub fn signed_dist(&self, p: Vec2) -> f64 {
+        let d = self.dir();
+        (p - self.a).x * d.y - (p - self.a).y * d.x
+    }
+
+    /// Projection parameter `u` (meters along the line) of a plan point.
+    pub fn along(&self, p: Vec2) -> f64 {
+        (p - self.a).dot(self.dir())
+    }
+
+    /// Convert (u, z) section-space coordinates back to plan (XY) space:
+    /// the point on the section line at distance `u` from [Section::a].
+    pub fn plan_point(&self, u: f64) -> Vec2 {
+        self.a + self.dir() * u
+    }
+}
+
+/// A named room annotation. Geometry is *derived* from the walls on the level
+/// ([rooms::plan_loops]); the annotation attaches a name and finishes to the
+/// loop containing [Room::label] (parity: `model-rooms.js` rooms + names).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Room {
+    pub id: Id,
+    pub level: Id,
+    pub name: String,
+    pub floor_finish: String,
+    pub ceiling_finish: String,
+    /// Plan point inside the room this annotation names.
+    pub label: Vec2,
 }
 
 /// Parametric wall: polyline centerline on a level, constant thickness/height.
@@ -304,6 +369,10 @@ pub struct Model {
     pub levels: Vec<Level>,
     pub grids: Vec<Grid>,
     pub elements: Vec<Element>,
+    #[serde(default)]
+    pub rooms: Vec<Room>,
+    #[serde(default)]
+    pub sections: Vec<Section>,
     next_id: Id,
 }
 
@@ -375,6 +444,57 @@ impl Model {
 
     pub fn items(&self) -> impl Iterator<Item = &Element> {
         self.elements.iter().filter(|e| e.kind == ElementKind::Item)
+    }
+
+    pub fn section(&self, id: Id) -> Option<&Section> {
+        self.sections.iter().find(|s| s.id == id)
+    }
+
+    pub fn section_mut(&mut self, id: Id) -> Option<&mut Section> {
+        self.sections.iter_mut().find(|s| s.id == id)
+    }
+
+    pub fn add_section(&mut self, level: Id, name: &str, a: Vec2, b: Vec2, depth: f64) -> Id {
+        let id = self.alloc();
+        self.sections.push(Section { id, level, name: name.into(), a, b, depth });
+        id
+    }
+
+    /// Detected room loops for one level (derived from the wall outlines).
+    pub fn detect_rooms(&self, level: Id) -> PlanLoops {
+        let walls: Vec<&Wall> = self
+            .elements
+            .iter()
+            .filter_map(|e| match &e.data {
+                ElementData::Wall(w) if w.level == level => Some(w),
+                _ => None,
+            })
+            .collect();
+        rooms::plan_loops(&rooms::wall_joined_outlines(walls))
+    }
+
+    /// The room annotation whose label sits inside a detected loop.
+    pub fn room_annotation_at(&self, level: Id, p: Vec2) -> Option<&Room> {
+        let loops = self.detect_rooms(level);
+        let hit = rooms::room_at(&loops.rooms, p)?;
+        self.rooms
+            .iter()
+            .filter(|r| r.level == level && rooms::in_poly(r.label.x, r.label.y, &hit.poly))
+            .min_by(|a, b| (a.label - p).length().total_cmp(&(b.label - p).length()))
+            .or_else(|| self.rooms.iter().filter(|r| r.level == level).min_by(|a, b| (a.label - p).length().total_cmp(&(b.label - p).length())))
+    }
+
+    pub fn add_room(&mut self, level: Id, name: &str, label: Vec2) -> Id {
+        let id = self.alloc();
+        self.rooms.push(Room { id, level, name: name.into(), floor_finish: "—".into(), ceiling_finish: "—".into(), label });
+        id
+    }
+
+    pub fn delete_level(&mut self, id: Id) {
+        self.levels.retain(|l| l.id != id);
+        self.elements.retain(|e| e.level_id() != Some(id));
+        self.rooms.retain(|r| r.level != id);
+        self.sections.retain(|s| s.level != id);
     }
 
     pub fn add_level(&mut self, name: &str, elevation: f64, height: f64) -> Id {
@@ -451,6 +571,15 @@ impl Model {
             ElementData::Opening(o) => o.wall != id,
             _ => true,
         });
+        // Sections keep working; nothing cascades from plain elements.
+    }
+
+    pub fn delete_section(&mut self, id: Id) {
+        self.sections.retain(|s| s.id != id);
+    }
+
+    pub fn delete_room(&mut self, id: Id) {
+        self.rooms.retain(|r| r.id != id);
     }
 
     /// Move an element by `delta` in plan space (walls, plates, items).
@@ -569,6 +698,17 @@ impl Model {
             if n > 0 {
                 rows.push(ScheduleRow { group: "Items".into(), name: kind.name().into(), count: n, unit: "pcs".into(), quantity: n as f64 });
             }
+        }
+        // Rooms: detected loops carry the areas; annotations carry the names.
+        let mut room_area = 0.0;
+        let mut room_count = 0usize;
+        for l in &self.levels {
+            let loops = self.detect_rooms(l.id);
+            room_count += loops.rooms.len();
+            room_area += loops.rooms.iter().map(|r| r.area).sum::<f64>();
+        }
+        if room_count > 0 {
+            rows.push(ScheduleRow { group: "Rooms".into(), name: "Rooms (net)".into(), count: room_count, unit: "m²".into(), quantity: room_area });
         }
         rows
     }

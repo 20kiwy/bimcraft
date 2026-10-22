@@ -166,6 +166,7 @@ pub struct ViewInfo {
 pub enum ViewModeKind {
     Plan2D,
     Perspective3D,
+    Section,
 }
 
 pub fn build(model: &Model, info: &ViewInfo) -> DisplayList {
@@ -173,8 +174,242 @@ pub fn build(model: &Model, info: &ViewInfo) -> DisplayList {
     match info.mode {
         ViewModeKind::Plan2D => build_plan(model, info, &mut dl),
         ViewModeKind::Perspective3D => build_3d(model, info, &mut dl),
+        ViewModeKind::Section => {}
     }
     dl
+}
+
+/// Build the projected section / elevation view of `section`.
+///
+/// The returned display list lives in **section space**: x = meters along the
+/// section line (u), y = 0, z = height. The canvas draws it with its plan
+/// transform (u on the horizontal axis, z on the vertical axis).
+pub fn build_section(model: &Model, section: &bimcraft_bim::Section) -> DisplayList {
+    let mut dl = DisplayList::default();
+    build_section_dl(model, section, &mut dl);
+    dl
+}
+
+// Section palette.
+const SEC_CUT: Color32 = Color32::from_rgb(0xe4, 0xe9, 0xf1); // cut masonry
+const SEC_CUT_LINE: Color32 = Color32::from_rgb(0x30, 0x36, 0x42);
+const SEC_PROJECTED: Color32 = Color32::from_rgb(0x6b, 0x7a, 0x92); // behind the cut
+const SEC_SLAB: Color32 = Color32::from_rgb(0x9a, 0xb4, 0xc8);
+const SEC_GLASS: Color32 = Color32::from_rgb(0x5b, 0xc8, 0xd8);
+const SEC_DOOR: Color32 = Color32::from_rgb(0xc9, 0x8a, 0x4a);
+const SEC_ITEM: Color32 = Color32::from_rgb(0x8f, 0xa8, 0x7a);
+const SEC_DATUM: Color32 = Color32::from_rgb(0x8a, 0x93, 0xa3);
+
+fn build_section_dl(model: &Model, sec: &bimcraft_bim::Section, dl: &mut DisplayList) {
+    use bimcraft_bim::{ElementData, ElementKind};
+    let Some(level) = model.level(sec.level) else { return };
+    let z0 = level.elevation;
+    let z1 = z0 + level.height.max(0.5);
+    let depth = sec.depth.max(0.5);
+
+    // Viewport frame: ground line, head line and the level caption.
+    let u0 = -1.0;
+    let u1 = sec.length() + 1.0;
+    dl.line(Vec3::new(u0, 0.0, z0), Vec3::new(u1, 0.0, z0), SEC_CUT_LINE, 1.6);
+    dl.line(Vec3::new(u0, 0.0, z1), Vec3::new(u1, 0.0, z1), SEC_DATUM, 0.8);
+    dl.dashed(Vec3::new(u0, 0.0, z1), Vec3::new(u1, 0.0, z1), SEC_DATUM, 0.8);
+    dl.text(Vec3::new(0.15, 0.0, z1 + 0.25), format!("{} · elev {:.2} m", sec.name, z0), 12.0, SEC_DATUM);
+
+    // Datum grids crossing the section band, projected as vertical lines.
+    for g in &model.grids {
+        // A grid line crosses the section line at one plan point.
+        let cross = match g.axis {
+            bimcraft_bim::GridAxis::V => {
+                // Grid runs along Y at x = g.position: find u where AB has that x.
+                let dx = sec.b.x - sec.a.x;
+                if dx.abs() < 1e-9 {
+                    if (sec.a.x - g.position).abs() < 1e-9 {
+                        Some(0.0)
+                    } else {
+                        None
+                    }
+                } else {
+                    let t = (g.position - sec.a.x) / dx;
+                    (0.0..=1.0).contains(&t).then(|| t * sec.length())
+                }
+            }
+            bimcraft_bim::GridAxis::H => {
+                let dy = sec.b.y - sec.a.y;
+                if dy.abs() < 1e-9 {
+                    if (sec.a.y - g.position).abs() < 1e-9 {
+                        Some(0.0)
+                    } else {
+                        None
+                    }
+                } else {
+                    let t = (g.position - sec.a.y) / dy;
+                    (0.0..=1.0).contains(&t).then(|| t * sec.length())
+                }
+            }
+        };
+        if let Some(u) = cross {
+            dl.dashed(Vec3::new(u, 0.0, z0), Vec3::new(u, 0.0, z1 + 0.6), with_alpha(SEC_DATUM, 140), 1.0);
+            dl.text(Vec3::new(u, 0.0, z1 + 0.75), g.name.clone(), 12.0, with_alpha(SEC_DATUM, 200));
+        }
+    }
+
+    // Helper: signed band distance + u of a plan point.
+    let band = |p: Vec2| -> Option<f64> {
+        let sd = sec.signed_dist(p);
+        let u = sec.along(p);
+        (sd.abs() <= depth && u >= -0.2 && u <= sec.length() + 0.2).then_some(u)
+    };
+
+    // Cut walls + projected walls behind the cut.
+    for e in &model.elements {
+        let ElementData::Wall(w) = &e.data else { continue };
+        if w.level != sec.level {
+            continue;
+        }
+        let sel = false;
+        for (a, b) in w.segments() {
+            let da = sec.signed_dist(a);
+            let db = sec.signed_dist(b);
+            let ua = sec.along(a);
+            let ub = sec.along(b);
+            // Cut pass: the segment crosses the section plane.
+            if da.signum() != db.signum() || da.abs() < 1e-9 || db.abs() < 1e-9 {
+                let denom = (db - da).abs();
+                let t = if denom < 1e-9 { 0.5 } else { da.abs() / denom };
+                let t = t.clamp(0.0, 1.0);
+                let u = ua + (ub - ua) * t;
+                // Cut width along the plane: thickness / |sin(angle)|.
+                let dir = (b - a).normalize();
+                let sin = dir.x * sec.dir().y - dir.y * sec.dir().x;
+                let half = (w.thickness / 2.0) / sin.abs().max(0.25);
+                let zt = z0 + w.height;
+                let cut = selected(SEC_CUT, sel);
+                dl.quad(
+                    [Vec3::new(u - half, 0.0, z0), Vec3::new(u + half, 0.0, z0), Vec3::new(u + half, 0.0, zt), Vec3::new(u - half, 0.0, zt)],
+                    cut,
+                );
+                dl.line(Vec3::new(u - half, 0.0, z0), Vec3::new(u - half, 0.0, zt), SEC_CUT_LINE, 1.4);
+                dl.line(Vec3::new(u + half, 0.0, z0), Vec3::new(u + half, 0.0, zt), SEC_CUT_LINE, 1.4);
+                dl.line(Vec3::new(u - half, 0.0, zt), Vec3::new(u + half, 0.0, zt), SEC_CUT_LINE, 1.4);
+            }
+            // Projection pass: parts inside the band but behind the plane.
+            let (pa, pb) = if da.abs() <= db.abs() { (a, b) } else { (b, a) };
+            let (dfar, dnear) = if da.abs() <= db.abs() { (db, da) } else { (da, db) };
+            if dfar.abs() <= depth && dnear.abs() > 1e-9 && dfar.signum() == dnear.signum() {
+                // Whole segment on one side of the plane: project both ends.
+                for p in [pa, pb] {
+                    if let Some(u) = band(p) {
+                        dl.line(Vec3::new(u, 0.0, z0), Vec3::new(u, 0.0, z0 + w.height), with_alpha(SEC_PROJECTED, 110), 1.0);
+                    }
+                }
+                if let (Some(ua2), Some(ub2)) = (band(pa), band(pb)) {
+                    dl.line(Vec3::new(ua2, 0.0, z0 + w.height), Vec3::new(ub2, 0.0, z0 + w.height), with_alpha(SEC_PROJECTED, 110), 1.0);
+                }
+            }
+        }
+    }
+
+    // Openings: cut openings punch white holes in cut walls; projected ones
+    // draw as light outlines.
+    for e in &model.elements {
+        if !matches!(e.kind, ElementKind::Door | ElementKind::Window) {
+            continue;
+        }
+        let ElementData::Opening(o) = &e.data else { continue };
+        let Some(host) = model.wall(o.wall) else { continue };
+        if host.level != sec.level {
+            continue;
+        }
+        let Some(q) = model.opening_rect(o) else { continue };
+        let (pa, pb) = (q[0].xy(), q[1].xy());
+        let da = sec.signed_dist(pa);
+        let db = sec.signed_dist(pb);
+        let (ua, ub) = (sec.along(pa), sec.along(pb));
+        let col = if e.kind == ElementKind::Door { SEC_DOOR } else { SEC_GLASS };
+        if da.signum() != db.signum() || da.abs() < 1e-9 || db.abs() < 1e-9 {
+            // Opening sits on the cut plane: punch the hole + draw frame.
+            let denom = (db - da).abs();
+            let t = if denom < 1e-9 { 0.5 } else { da.abs() / denom };
+            let u = ua + (ub - ua) * t.clamp(0.0, 1.0);
+            let half = o.width / 2.0;
+            let zb = z0 + o.sill;
+            let zt = zb + o.height;
+            // Background-coloured quad reads as a hole in the cut wall.
+            dl.quad(
+                [Vec3::new(u - half, 0.0, zb), Vec3::new(u + half, 0.0, zb), Vec3::new(u + half, 0.0, zt), Vec3::new(u - half, 0.0, zt)],
+                Color32::from_rgba_unmultiplied(0x22, 0x27, 0x30, 255),
+            );
+            dl.line(Vec3::new(u - half, 0.0, zb), Vec3::new(u - half, 0.0, zt), col, 1.4);
+            dl.line(Vec3::new(u + half, 0.0, zb), Vec3::new(u + half, 0.0, zt), col, 1.4);
+            dl.line(Vec3::new(u - half, 0.0, zt), Vec3::new(u + half, 0.0, zt), col, 1.4);
+            if e.kind == ElementKind::Window {
+                dl.line(Vec3::new(u - half, 0.0, zb + o.height * 0.5), Vec3::new(u + half, 0.0, zb + o.height * 0.5), with_alpha(col, 160), 1.0);
+            }
+        } else if da.abs() <= depth {
+            // Projected opening outline behind the cut.
+            let (u0, u1) = (ua.min(ub), ua.max(ub));
+            let zb = z0 + o.sill;
+            let zt = zb + o.height;
+            dl.line(Vec3::new(u0, 0.0, zb), Vec3::new(u1, 0.0, zb), with_alpha(col, 120), 1.0);
+            dl.line(Vec3::new(u0, 0.0, zt), Vec3::new(u1, 0.0, zt), with_alpha(col, 120), 1.0);
+            dl.line(Vec3::new(u0, 0.0, zb), Vec3::new(u0, 0.0, zt), with_alpha(col, 120), 1.0);
+            dl.line(Vec3::new(u1, 0.0, zb), Vec3::new(u1, 0.0, zt), with_alpha(col, 120), 1.0);
+        }
+    }
+
+    // Slabs + ceilings: horizontal bands across the polygon ∩ band.
+    for e in &model.elements {
+        let Some((lvl, pts, thk, elev)) = e.data.plan_poly() else { continue };
+        if lvl != sec.level {
+            continue;
+        }
+        let mut us: Vec<f64> = Vec::new();
+        for p in pts {
+            if let Some(u) = band(*p) {
+                us.push(u);
+            }
+        }
+        // Also sample the polygon edges against the plane so wide slabs register.
+        for i in 0..pts.len() {
+            let a = pts[i];
+            let b = pts[(i + 1) % pts.len()];
+            let da = sec.signed_dist(a);
+            let db = sec.signed_dist(b);
+            if da.signum() != db.signum() {
+                let t = (da / (da - db)).clamp(0.0, 1.0);
+                let p = a + (b - a) * t;
+                if sec.along(p) >= 0.0 && sec.along(p) <= sec.length() {
+                    us.push(sec.along(p));
+                }
+            }
+        }
+        if us.is_empty() {
+            continue;
+        }
+        let (u0, u1) = (us.iter().cloned().fold(f64::INFINITY, f64::min), us.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+        let (layer_col, zb, zt) = if e.kind == ElementKind::Slab {
+            (SEC_SLAB, z0 + elev - thk, z0 + elev)
+        } else {
+            (with_alpha(SEC_SLAB, 140), z0 + elev, z0 + elev + thk)
+        };
+        dl.quad([Vec3::new(u0, 0.0, zb), Vec3::new(u1, 0.0, zb), Vec3::new(u1, 0.0, zt), Vec3::new(u0, 0.0, zt)], with_alpha(layer_col, 150));
+        dl.line(Vec3::new(u0, 0.0, zt), Vec3::new(u1, 0.0, zt), SEC_CUT_LINE, 1.3);
+        dl.line(Vec3::new(u0, 0.0, zb), Vec3::new(u1, 0.0, zb), with_alpha(SEC_CUT_LINE, 140), 1.0);
+    }
+
+    // Items: simple outlines standing on the floor.
+    for e in model.items() {
+        let ElementData::Item(i) = &e.data else { continue };
+        if i.level != sec.level {
+            continue;
+        }
+        if let Some(u) = band(i.pos) {
+            let h = i.kind.preset().2;
+            dl.line(Vec3::new(u - 0.2, 0.0, z0), Vec3::new(u - 0.2, 0.0, z0 + h), with_alpha(SEC_ITEM, 150), 1.0);
+            dl.line(Vec3::new(u + 0.2, 0.0, z0), Vec3::new(u + 0.2, 0.0, z0 + h), with_alpha(SEC_ITEM, 150), 1.0);
+            dl.line(Vec3::new(u - 0.2, 0.0, z0 + h), Vec3::new(u + 0.2, 0.0, z0 + h), with_alpha(SEC_ITEM, 150), 1.0);
+        }
+    }
 }
 
 fn is_selected(info: &ViewInfo, id: u64) -> bool {
@@ -217,6 +452,53 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
     dl.line(Vec3::new(0.0, -he, z_active), Vec3::new(0.0, he, z_active), with_alpha(AXIS_Y, 90), 1.2);
     dl.text(Vec3::new(he - 1.0, 0.35, z_active), "X", 12.0, with_alpha(AXIS_X, 160));
     dl.text(Vec3::new(0.35, he - 1.0, z_active), "Y", 12.0, with_alpha(AXIS_Y, 160));
+
+    // Detected rooms of the active level: soft floor fill + name / area label
+    // (parity: the JS edition's `model-rooms.js` rooms).
+    {
+        let walls: Vec<&bimcraft_bim::Wall> = model
+            .elements
+            .iter()
+            .filter_map(|e| match &e.data {
+                ElementData::Wall(w) if w.level == info.active_level => Some(w),
+                _ => None,
+            })
+            .collect();
+        let loops = bimcraft_bim::plan_loops(&bimcraft_bim::rooms::wall_joined_outlines(walls));
+        for r in &loops.rooms {
+            fill_poly_plan(dl, &r.poly, Color32::from_rgba_unmultiplied(0x9a, 0xb4, 0xc8, 26));
+            let name = model
+                .rooms
+                .iter()
+                .find(|a| a.level == info.active_level && bimcraft_bim::rooms::in_poly(a.label.x, a.label.y, &r.poly))
+                .map(|a| a.name.clone());
+            let label = match name {
+                Some(n) => format!("{n} · {:.1} m²", r.area),
+                None => format!("{:.1} m²", r.area),
+            };
+            dl.text(Vec3::new(r.label.x, r.label.y, z_active), label, 11.0, with_alpha(Color32::from_rgb(0x99, 0xa2, 0xb2), 220));
+        }
+    }
+
+    // Section markers: cut line with end flags + name (parity: sections).
+    for sec in &model.sections {
+        if sec.level != info.active_level {
+            continue;
+        }
+        let sel = is_selected(info, sec.id);
+        let col = if sel { SELECT } else { Color32::from_rgb(0x8a, 0x93, 0xa3) };
+        dl.line(sec.a.to3(z_active), sec.b.to3(z_active), col, 2.0);
+        let d = sec.dir();
+        let n = Vec2::new(-d.y, d.x);
+        for (end, sign) in [(sec.a, -1.0), (sec.b, 1.0)] {
+            let tip = end + d * sign * 0.55;
+            dl.line(end.to3(z_active), tip.to3(z_active), col, 2.0);
+            // Flag: short perpendicular tick.
+            dl.line(tip.to3(z_active), (tip + n * 0.3).to3(z_active), col, 1.6);
+            let bubble = tip + n * 0.55;
+            dl.text(bubble.to3(z_active), sec.name.clone(), 11.0, col);
+        }
+    }
 
     // Elements of every level (dim others, active level normal).
     for e in &model.elements {
@@ -675,6 +957,37 @@ mod tests {
     use super::*;
     use bimcraft_bim::{sample, Model, Opening};
     use bimcraft_geom::Vec2;
+
+    #[test]
+    fn section_build_cuts_walls() {
+        let mut m = sample();
+        let lvl = m.levels[0].id;
+        let sid = m.add_section(lvl, "Section 1", Vec2::new(-1.0, 3.5), Vec2::new(10.0, 3.5), 4.0);
+        let sec = m.section(sid).unwrap().clone();
+        let dl = build_section(&m, &sec);
+        // Cut walls produce filled cut quads; the north/east walls within the
+        // band project verticals.
+        assert!(!dl.tris.is_empty(), "cut geometry expected");
+        assert!(!dl.lines.is_empty(), "projected lines expected");
+        // The section caption + the level name appear.
+        assert!(dl.texts.iter().any(|t| t.text.contains("Section 1")));
+        // Grid A (x=0) crosses the section line: its bubble text appears.
+        assert!(dl.texts.iter().any(|t| t.text == "A"));
+    }
+
+    #[test]
+    fn section_opening_punches_hole() {
+        let mut m = Model::new();
+        let lvl = m.levels[0].id;
+        let w = m.add_wall(lvl, vec![Vec2::new(0.0, 0.0), Vec2::new(6.0, 0.0)], 0.2, 3.0);
+        m.add_opening(bimcraft_bim::ElementKind::Window, Opening { wall: w, s: 3.0, width: 1.2, height: 1.4, sill: 0.9 });
+        let sid = m.add_section(lvl, "S", Vec2::new(-1.0, 0.0), Vec2::new(7.0, 0.0), 3.0);
+        let sec = m.section(sid).unwrap().clone();
+        let dl = build_section(&m, &sec);
+        // Cut wall fill + hole punch + window frame lines.
+        assert!(dl.tris.iter().any(|t| t.pts[0].z < 3.0));
+        assert!(dl.lines.iter().any(|l| (l.a.z - 2.3).abs() < 1e-6), "window head line expected");
+    }
 
     #[test]
     fn plan_build_runs() {

@@ -168,7 +168,7 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
         ui.add_space(6.0);
         let style = theme::icon_button_style(&t);
         use craft_ui::buttons::IconButton;
-        let tools: [(Tool, &str); 8] = [
+        let tools: [(Tool, &str); 9] = [
             (Tool::Select, "Select / move (S)"),
             (Tool::Wall, "Wall — chain polyline (W)"),
             (Tool::Door, "Place door (D)"),
@@ -177,6 +177,7 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             (Tool::Ceiling, "Ceiling polygon (C)"),
             (Tool::Item, "Place item (I)"),
             (Tool::Measure, "Measure distance (M)"),
+            (Tool::SectionLine, "Section line — two clicks (X)"),
         ];
         for (tool, tip) in tools {
             let active = app.session.tool == tool;
@@ -252,6 +253,14 @@ pub fn draw_tool_icon(p: &egui::Painter, c: egui::Pos2, tool: Tool, color: Color
             p.line_segment([c + Vec2::new(2.0, 0.0), c + Vec2::new(3.5, 1.0)], fill);
             p.line_segment([c + Vec2::new(6.0, -4.0), c + Vec2::new(4.5, -5.0)], fill);
         }
+        Tool::SectionLine => {
+            // Section marker: cut line with end flags.
+            p.line_segment([c + Vec2::new(-6.0, 0.0), c + Vec2::new(6.0, 0.0)], s);
+            p.line_segment([c + Vec2::new(-6.0, 0.0), c + Vec2::new(-6.0, -5.0)], fill);
+            p.line_segment([c + Vec2::new(-6.0, -5.0), c + Vec2::new(-3.0, -5.0)], fill);
+            p.line_segment([c + Vec2::new(6.0, 0.0), c + Vec2::new(6.0, 5.0)], fill);
+            p.line_segment([c + Vec2::new(6.0, 5.0), c + Vec2::new(3.0, 5.0)], fill);
+        }
     }
 }
 
@@ -310,7 +319,51 @@ fn properties_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
         Selection::Level(id) => level_editor(ui, app, t, id),
         Selection::Grid(id) => grid_editor(ui, app, t, id),
         Selection::Element(id) => element_editor(ui, app, t, id),
+        Selection::Section(id) => section_editor(ui, app, t, id),
     }
+}
+
+fn section_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64) {
+    let Some(sec) = app.session.model.section(id).cloned() else {
+        ui.label("Section not found");
+        return;
+    };
+    let _ = t;
+    section(ui, "Section");
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        let mut name = sec.name.clone();
+        if ui.text_edit_singleline(&mut name).lost_focus() && name != sec.name {
+            app.session.begin_edit();
+            if let Some(s) = app.session.model.section_mut(id) {
+                s.name = name;
+            }
+        }
+    });
+    let mut depth = sec.depth;
+    let ch_depth = drag_f64(ui, "View depth", &mut depth, 0.25, 0.5..=30.0, " m");
+    if ch_depth {
+        app.session.begin_edit();
+        if let Some(s) = app.session.model.section_mut(id) {
+            s.depth = depth;
+        }
+    }
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(format!(
+            "Length {:.2} m · level {}",
+            sec.length(),
+            app.session.model.level(sec.level).map(|l| l.name.as_str()).unwrap_or("?")
+        ))
+        .font(theme::font_ui(11.0))
+        .color(t.text_dim),
+    );
+    ui.add_space(4.0);
+    if ui.button("Open section view").clicked() {
+        app.session.active_section = Some(id);
+        app.session.set_view(ViewMode::Section);
+    }
+    ui.label(egui::RichText::new("Del: delete section").font(theme::font_ui(11.0)).color(t.text_dim));
 }
 
 fn level_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64) {
@@ -661,6 +714,7 @@ pub fn status_bar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             let mode = match app.session.view {
                 ViewMode::Plan2D => "2D Plan",
                 ViewMode::Perspective3D => "3D View",
+                ViewMode::Section => "Section",
             };
             ui.label(egui::RichText::new(mode).font(theme::font_ui(11.0)).color(t.accent).strong());
             ui.separator();

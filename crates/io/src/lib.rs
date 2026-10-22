@@ -1,18 +1,22 @@
-//! BimCraft file I/O: the versioned native JSON format and schedule CSV.
+//! BimCraft file I/O: the versioned native JSON format, schedule CSV and
+//! DXF exchange.
 //!
 //! Native format (parity: `model-write.js` / `app-autosave.js` semantics):
 //!
 //! ```json
-//! { "format": "bimcraft.model/v2", "app": "bimcraft-rs 0.2.0", "model": { … } }
+//! { "format": "bimcraft.model/v3", "app": "bimcraft-rs 0.3.0", "model": { … } }
 //! ```
 //!
-//! Deserialization is tolerant: unknown fields are ignored and missing
-//! optional fields fall back to defaults, so older files open in newer apps.
+//! v3 adds rooms and sections. Deserialization is tolerant: unknown fields
+//! are ignored and missing optional fields fall back to defaults, so v2 files
+//! (and bare models) open in newer apps.
 
 use bimcraft_bim::{Model, ScheduleRow};
 use serde::{Deserialize, Serialize};
 
-pub const FORMAT: &str = "bimcraft.model/v2";
+pub const FORMAT: &str = "bimcraft.model/v3";
+/// Formats this build can open (newest first).
+pub const ACCEPTED: [&str; 2] = ["bimcraft.model/v3", "bimcraft.model/v2"];
 pub const APP_TAG: &str = concat!("bimcraft-rs ", env!("CARGO_PKG_VERSION"));
 
 #[derive(Serialize, Deserialize)]
@@ -39,11 +43,12 @@ pub fn save_json(model: &Model) -> String {
     serde_json::to_string_pretty(&file).unwrap_or_else(|_| "{}".into())
 }
 
-/// Parse the native JSON format. Accepts bare models (without the envelope)
-/// as a convenience for hand-written files.
+/// Parse the native JSON format. Accepts v2 and v3 envelopes as well as bare
+/// models (without the envelope) as a convenience for hand-written files.
 pub fn load_json(text: &str) -> Result<Model, LoadError> {
     let v: serde_json::Value = serde_json::from_str(text).map_err(|e| LoadError(format!("not valid JSON: {e}")))?;
-    if v.get("format").and_then(|f| f.as_str()) == Some(FORMAT) {
+    let format = v.get("format").and_then(|f| f.as_str()).unwrap_or("");
+    if ACCEPTED.contains(&format) {
         let file: NativeFile = serde_json::from_value(v).map_err(|e| LoadError(format!("bad native file: {e}")))?;
         return Ok(file.model);
     }
@@ -75,6 +80,8 @@ pub fn summary_text(model: &Model) -> String {
     s.push_str(&format!("floors  : {}\n", model.elements.iter().filter(|e| e.kind == bimcraft_bim::ElementKind::Slab).count()));
     s.push_str(&format!("ceilings: {}\n", model.elements.iter().filter(|e| e.kind == bimcraft_bim::ElementKind::Ceiling).count()));
     s.push_str(&format!("items   : {}\n", model.items().count()));
+    s.push_str(&format!("rooms   : {}\n", model.rooms.len()));
+    s.push_str(&format!("sections: {}\n", model.sections.len()));
     if let Some((min, max)) = model.bounds() {
         s.push_str(&format!("bounds  : X {:.2}..{:.2}  Y {:.2}..{:.2}  Z {:.2}..{:.2}\n", min.x, max.x, min.y, max.y, min.z, max.z));
     }
@@ -163,6 +170,17 @@ pub fn schedule_table(model: &Model) -> String {
     out
 }
 
+/// Serialize the model to an ASCII DXF R12 file (see `bimcraft_bim::dxf`).
+pub fn export_dxf(model: &Model) -> String {
+    bimcraft_bim::dxf::export_dxf(model)
+}
+
+/// Import an ASCII DXF plan sketch into the model (see `bimcraft_bim::dxf`).
+/// Returns the import report plus (walls, slabs) counts.
+pub fn import_dxf_into(model: &mut Model, text: &str, scale: f64) -> Result<(bimcraft_bim::dxf::DxfImport, usize, usize), String> {
+    bimcraft_bim::dxf::import_dxf_into(model, text, scale)
+}
+
 fn csv_escape(s: &str) -> String {
     if s.contains(',') || s.contains('"') {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -198,6 +216,39 @@ mod tests {
     fn rejects_garbage() {
         assert!(load_json("nope").is_err());
         assert!(load_json("{\"format\": \"bimcraft.model/v9\"}").is_err());
+    }
+
+    #[test]
+    fn v2_file_still_loads() {
+        let m = sample();
+        let file = serde_json::json!({ "format": "bimcraft.model/v2", "app": "bimcraft-rs 0.2.0", "model": m });
+        let back = load_json(&file.to_string()).unwrap();
+        assert_eq!(back.elements.len(), m.elements.len());
+    }
+
+    #[test]
+    fn v3_roundtrip_keeps_rooms_and_sections() {
+        let mut m = sample();
+        let lvl = m.levels[0].id;
+        m.add_room(lvl, "Living", bimcraft_geom::Vec2::new(2.0, 2.0));
+        m.add_section(lvl, "Section 1", bimcraft_geom::Vec2::ZERO, bimcraft_geom::Vec2::new(10.0, 0.0), 4.0);
+        let json = save_json(&m);
+        assert!(json.contains("bimcraft.model/v3"));
+        let back = load_json(&json).unwrap();
+        assert_eq!(back.rooms.len(), 1);
+        assert_eq!(back.sections.len(), 1);
+        assert_eq!(back.rooms[0].name, "Living");
+    }
+
+    #[test]
+    fn dxf_export_import_cli_helpers() {
+        let m = sample();
+        let dxf = export_dxf(&m);
+        assert!(dxf.contains("AC1009"));
+        let mut back = Model::new();
+        let (imp, w, s) = import_dxf_into(&mut back, &dxf, 1.0).unwrap();
+        assert!(imp.entity_count > 0);
+        assert!(w + s > 0, "some elements map back");
     }
 
     #[test]

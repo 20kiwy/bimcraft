@@ -59,14 +59,14 @@ Full parity map: [docs/PARITY_ROADMAP.md](docs/PARITY_ROADMAP.md).
 | Undo / history | `model-ops.js` | `bimcraft-engine` | ✅ snapshot undo/redo (Ctrl+Z / Ctrl+Y) |
 | Native file format | `app-autosave.js`, `model-write.js` | `bimcraft-io` | ✅ versioned JSON (`.bimcraft.json`), autosave on web & desktop |
 | Sample model | `new-model.js` | `bimcraft-bim` | ✅ two-storey sample house on first run |
-| CLI | — (differentiator) | `bimcraft-cli` | ✅ info / validate / schedule / sample |
+| CLI | — (differentiator) | `bimcraft-cli` | ✅ info / validate / schedule / rooms / export-dxf / import-dxf / sample |
 | Browser edition | `web/` | `apps/bimcraft-web` | ✅ trunk → WASM, GitHub Pages preview |
 | Release automation | manual | `.github/workflows` | ✅ tag `bimcraft-rs-v*` → desktop bundles + browser zip |
-| Sections / elevations | `views-bim.js` | — | 📋 Phase 3 |
-| Rooms & finishes | `model-rooms.js` | — | 📋 Phase 3 |
+| Sections / elevations | `views-bim.js` | `bimcraft-bim`, `bimcraft-render` | ✅ section-line tool, projected section view (cut walls, punched openings, projected band, datum bubbles) |
+| Rooms & finishes | `model-rooms.js` | `bimcraft-bim`, `bimcraft-render` | ✅ plan-loop room detection (rooms + holes), area/perimeter labels, named room annotations, schedule |
 | Roofs, columns, ramps | `model-roof.js`, `model-columns.js`, `model-ramps.js` | — | 📋 Phase 3 |
 | IFC import/export | `ifc/` | — | 📋 Phase 3 |
-| DWG/DXF exchange | `dwg/`, `dxf-model.js` | — | 📋 Phase 4 (via `cadcraft-dxf/dwg`) |
+| DXF exchange | `dxf-model.js` | `bimcraft-bim::dxf`, `bimcraft-cli` | ✅ clean-room ASCII DXF R12 export (layered 3-D wireframe) + plan-sketch import |
 | MEP systems | `mep/` | — | 📋 Phase 4 |
 | Clash detection | `clash.js`, `clash-worker.js` | — | 📋 Phase 4 |
 | Sheets & layout | `layout/`, `res-sheets.js` | — | 📋 Phase 4 |
@@ -149,8 +149,8 @@ desktop bundles (Linux `.tar.gz`, Windows `.zip`, macOS `.tar.gz`) and the
 browser edition `.zip` to the GitHub release:
 
 ```sh
-git tag -a bimcraft-rs-v0.2.0 -m "BimCraft Rust edition v0.2.0 — full Phase 2 parity"
-git push origin bimcraft-rs-v0.2.0
+git tag -a bimcraft-rs-v0.3.0 -m "BimCraft Rust edition v0.3.0 — rooms, section views, DXF exchange"
+git push origin bimcraft-rs-v0.3.0
 ```
 
 ## License

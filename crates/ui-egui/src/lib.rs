@@ -94,6 +94,18 @@ impl BimcraftApp {
                         self.session.camera.target = Vec3::new(cx, cy, (min.z + max.z) / 2.0);
                         self.session.camera.distance = (span * 1.6).clamp(6.0, 200.0);
                     }
+                    ViewMode::Section => {
+                        // Fit the u range of the active section (fallback: model span).
+                        let len = self
+                            .session
+                            .active_or_first_section()
+                            .and_then(|sid| self.session.model.section(sid))
+                            .map(|s| s.length())
+                            .unwrap_or(span)
+                            .max(2.0);
+                        self.session.plan.center = Vec2::new(len / 2.0, 1.5);
+                        self.session.plan.zoom = (900.0 / len).clamp(6.0, 400.0);
+                    }
                 }
                 self.session.status = "Zoom to fit".into();
             }
@@ -131,7 +143,7 @@ impl BimcraftApp {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::Key;
-        let (w, d, n, f, c, s, i, m, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
+        let (w, d, n, f, c, s, i, m, x, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
             (
                 i.key_pressed(Key::W),
                 i.key_pressed(Key::D),
@@ -141,6 +153,7 @@ impl BimcraftApp {
                 i.key_pressed(Key::S),
                 i.key_pressed(Key::I),
                 i.key_pressed(Key::M),
+                i.key_pressed(Key::X),
                 i.key_pressed(Key::Escape),
                 i.key_pressed(Key::Enter),
                 i.key_pressed(Key::Tab),
@@ -182,6 +195,9 @@ impl BimcraftApp {
             if m {
                 self.session.set_tool(Tool::Measure);
             }
+            if x {
+                self.session.set_tool(Tool::SectionLine);
+            }
             if s {
                 if esc && !self.session.pending.is_empty() {
                     // fall through to Esc handling below
@@ -214,6 +230,7 @@ impl BimcraftApp {
             let next = match self.session.view {
                 ViewMode::Plan2D => ViewMode::Perspective3D,
                 ViewMode::Perspective3D => ViewMode::Plan2D,
+                ViewMode::Section => ViewMode::Plan2D,
             };
             self.session.set_view(next);
         }

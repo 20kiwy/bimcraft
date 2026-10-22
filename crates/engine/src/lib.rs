@@ -14,6 +14,8 @@ pub enum ViewMode {
     Plan2D,
     /// Orbiting perspective view.
     Perspective3D,
+    /// Projected section / elevation view of [Session::active_section].
+    Section,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +28,7 @@ pub enum Tool {
     Ceiling,
     Item,
     Measure,
+    SectionLine,
 }
 
 impl Tool {
@@ -39,6 +42,7 @@ impl Tool {
             Tool::Ceiling => "Ceiling",
             Tool::Item => "Item",
             Tool::Measure => "Measure",
+            Tool::SectionLine => "Section",
         }
     }
 
@@ -50,6 +54,7 @@ impl Tool {
             Tool::Floor | Tool::Ceiling => "Click polygon points · Enter / double-click: close",
             Tool::Item => "Pick a kind in Library, then click to place · R: rotate",
             Tool::Measure => "Click two points to measure",
+            Tool::SectionLine => "Click two points: section line, then open the Section view",
         }
     }
 }
@@ -124,6 +129,7 @@ pub enum Selection {
     Element(Id),
     Grid(Id),
     Level(Id),
+    Section(Id),
     None,
 }
 
@@ -166,6 +172,8 @@ pub struct Session {
     pub item_rotation: f64,
     /// Finished measurement (measure tool).
     pub measure: Option<Measure>,
+    /// Section shown in the Section view (falls back to the first section).
+    pub active_section: Option<Id>,
     /// Element dragged with the Select tool: records drag start.
     pub drag_anchor: Option<Vec2>,
     pub status: String,
@@ -193,6 +201,7 @@ impl Default for Session {
             item_kind: ItemKind::Table,
             item_rotation: 0.0,
             measure: None,
+            active_section: None,
             drag_anchor: None,
             status: "Sample house loaded — New Model starts empty".into(),
         }
@@ -237,10 +246,28 @@ impl Session {
     }
 
     fn prune_selection(&mut self) {
-        if let Selection::Element(id) = self.selection {
-            if self.model.element(id).is_none() {
-                self.selection = Selection::None;
+        match self.selection {
+            Selection::Element(id) => {
+                if self.model.element(id).is_none() {
+                    self.selection = Selection::None;
+                }
             }
+            Selection::Section(id) => {
+                if self.model.section(id).is_none() {
+                    self.selection = Selection::None;
+                }
+            }
+            Selection::Grid(id) => {
+                if !self.model.grids.iter().any(|g| g.id == id) {
+                    self.selection = Selection::None;
+                }
+            }
+            Selection::Level(id) => {
+                if self.model.level(id).is_none() {
+                    self.selection = Selection::None;
+                }
+            }
+            Selection::None => {}
         }
     }
 
@@ -401,6 +428,19 @@ impl Session {
                 self.status = "Grid deleted".into();
                 return;
             }
+            Selection::Section(id) => {
+                self.snapshot();
+                self.model.delete_section(id);
+                if self.active_section == Some(id) {
+                    self.active_section = None;
+                }
+                if self.view == ViewMode::Section {
+                    self.view = ViewMode::Plan2D;
+                }
+                self.selection = Selection::None;
+                self.status = "Section deleted".into();
+                return;
+            }
             _ => return,
         };
         self.snapshot();
@@ -441,6 +481,28 @@ impl Session {
         self.status = format!("Grid {name} added");
     }
 
+    /// Place a section line (parity: the JS edition's section views) and open
+    /// its projected view.
+    pub fn place_section(&mut self, a: Vec2, b: Vec2) {
+        if a.dist(b) < 0.5 {
+            self.status = "Section line too short".into();
+            return;
+        }
+        self.snapshot();
+        let lvl = self.active_level_id();
+        let name = bimcraft_bim::dxf::section_name(&self.model);
+        let id = self.model.add_section(lvl, &name, a, b, 4.0);
+        self.selection = Selection::Section(id);
+        self.active_section = Some(id);
+        self.view = ViewMode::Section;
+        self.status = format!("{name} created — projecting view");
+    }
+
+    /// The section the Section view should show.
+    pub fn active_or_first_section(&self) -> Option<Id> {
+        self.active_section.filter(|id| self.model.section(*id).is_some()).or_else(|| self.model.sections.first().map(|s| s.id))
+    }
+
     /// Feed a plan-space click into the active tool. `p` is in world XY meters
     /// (already snapped by the canvas).
     pub fn click_plan(&mut self, p: Vec2) {
@@ -454,6 +516,9 @@ impl Session {
                         format!("Selected grid {}", self.model.grids.iter().find(|g| g.id == id).map(|g| g.name.clone()).unwrap_or_default())
                     }
                     Selection::Level(id) => format!("Selected level {}", self.model.level(id).map(|l| l.name.clone()).unwrap_or_default()),
+                    Selection::Section(id) => {
+                        format!("Selected {}", self.model.section(id).map(|s| s.name.clone()).unwrap_or_else(|| "section".into()))
+                    }
                     Selection::None => "Nothing selected".into(),
                 };
             }
@@ -469,6 +534,16 @@ impl Session {
                     format!("{}: {} points — Enter to close", if self.tool == Tool::Floor { "Floor" } else { "Ceiling" }, self.pending.len());
             }
             Tool::Item => self.place_item(p),
+            Tool::SectionLine => {
+                if self.pending.is_empty() {
+                    self.pending.push(p);
+                    self.status = "Section: pick the end of the section line".into();
+                } else {
+                    let a = self.pending[0];
+                    self.pending.clear();
+                    self.place_section(a, p);
+                }
+            }
             Tool::Measure => match self.measure {
                 None => {
                     self.measure = Some(Measure { a: p, b: p });
@@ -555,6 +630,14 @@ impl Session {
     /// Nearest plan element at `p` (walls, openings, plates, items, grids).
     pub fn pick_plan(&self, p: Vec2) -> Selection {
         let tol = 0.35;
+        // Section lines first: they are top-level plan annotations and the cut
+        // line must stay pickable even where it crosses walls or slabs. The
+        // tight 0.3 m band keeps them from shadowing general picking.
+        for s in &self.model.sections {
+            if dist_point_segment_xy(p, s.a, s.b) < 0.3 {
+                return Selection::Section(s.id);
+            }
+        }
         let mut best: Option<(Id, f64)> = None;
         for e in &self.model.elements {
             let d = match &e.data {
@@ -749,5 +832,39 @@ mod tests {
         assert_eq!(p, Vec2::ZERO);
         let q = s.snap(Vec2::new(1.13, 1.87));
         assert_eq!(q, Vec2::new(1.0, 2.0));
+    }
+
+    #[test]
+    fn section_tool_two_clicks_and_view() {
+        let mut s = Session::default();
+        s.set_tool(Tool::SectionLine);
+        s.click_plan(Vec2::new(-1.0, 3.5));
+        assert!(s.pending.len() == 1);
+        s.click_plan(Vec2::new(10.0, 3.5));
+        assert_eq!(s.model.sections.len(), 1);
+        assert_eq!(s.view, ViewMode::Section);
+        let sid = s.active_or_first_section().unwrap();
+        assert!(s.model.section(sid).is_some());
+        // Picking near the line selects the section.
+        s.set_tool(Tool::Select);
+        s.set_view(ViewMode::Plan2D);
+        assert_eq!(s.pick_plan(Vec2::new(4.0, 3.5)), Selection::Section(sid));
+        // Delete removes it and leaves the section view.
+        s.select(Selection::Section(sid));
+        s.delete_selected();
+        assert!(s.model.sections.is_empty());
+    }
+
+    #[test]
+    fn rooms_detected_on_sample() {
+        let s = Session::default();
+        let lvl = s.active_level_id();
+        let loops = s.model.detect_rooms(lvl);
+        assert!(loops.rooms.len() >= 2, "sample house rooms: {}", loops.rooms.len());
+        // Annotation lookup lands inside a loop.
+        let mut m = s.model.clone();
+        m.add_room(lvl, "Living", Vec2::new(2.0, 2.0));
+        let ann = m.room_annotation_at(lvl, Vec2::new(2.5, 2.5));
+        assert_eq!(ann.map(|r| r.name.as_str()), Some("Living"));
     }
 }

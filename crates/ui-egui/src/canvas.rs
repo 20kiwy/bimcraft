@@ -19,28 +19,49 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
     let mode = match app.session.view {
         ViewMode::Plan2D => ViewModeKind::Plan2D,
         ViewMode::Perspective3D => ViewModeKind::Perspective3D,
+        ViewMode::Section => ViewModeKind::Section,
     };
 
     // Handle input first (mutates session/camera), then render.
     handle_input(ui, app, rect, resp, ppp);
 
-    let info = ViewInfo {
-        mode,
-        active_level: app.session.active_level_id(),
-        selection: match app.session.selection {
-            Selection::Element(id) => vec![id],
-            _ => vec![],
-        },
-        half_extent: plan_half_extent(app.session.plan.zoom, rect.width()),
-        ground_extent: 40.0,
-        show_ceilings_3d: app.show_ceilings_3d,
-        show_items_2d: app.show_items_2d,
-    };
-    let dl = build(&app.session.model, &info);
-
     match app.session.view {
-        ViewMode::Plan2D => draw_plan(ui, app, &painter, rect, &dl),
-        ViewMode::Perspective3D => draw_3d(ui, app, &painter, rect, &dl, ppp),
+        ViewMode::Plan2D | ViewMode::Perspective3D => {
+            let info = ViewInfo {
+                mode,
+                active_level: app.session.active_level_id(),
+                selection: match app.session.selection {
+                    Selection::Element(id) => vec![id],
+                    _ => vec![],
+                },
+                half_extent: plan_half_extent(app.session.plan.zoom, rect.width()),
+                ground_extent: 40.0,
+                show_ceilings_3d: app.show_ceilings_3d,
+                show_items_2d: app.show_items_2d,
+            };
+            let dl = build(&app.session.model, &info);
+            match app.session.view {
+                ViewMode::Plan2D => draw_plan(ui, app, &painter, rect, &dl),
+                ViewMode::Perspective3D => draw_3d(ui, app, &painter, rect, &dl, ppp),
+                ViewMode::Section => unreachable!(),
+            }
+        }
+        ViewMode::Section => {
+            if let Some(sid) = app.session.active_or_first_section() {
+                if let Some(sec) = app.session.model.section(sid).cloned() {
+                    let dl = bimcraft_render::build_section(&app.session.model, &sec);
+                    draw_section(ui, app, &painter, rect, &dl, &sec);
+                }
+            } else {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "No sections yet — pick the Section tool and click two points in the plan",
+                    theme::font_ui(13.0),
+                    Color32::from_rgb(0x8a, 0x93, 0xa3),
+                );
+            }
+        }
     }
 
     // Tool overlays (pending rubber-band etc.).
@@ -74,14 +95,14 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
     // Wheel zoom.
     if scroll.abs() > 0.5 && resp.hovered() {
         match app.session.view {
-            ViewMode::Plan2D => {
+            ViewMode::Plan2D | ViewMode::Section => {
                 let factor = if scroll > 0.0 { 1.1 } else { 1.0 / 1.1 };
                 let new_zoom = (app.session.plan.zoom * factor).clamp(6.0, 400.0);
                 if let Some(p) = pos {
                     // Zoom toward the cursor.
-                    let before = screen_to_plan(app, p, rect);
+                    let before = screen_to_view2d(app, p, rect);
                     app.session.plan.zoom = new_zoom;
-                    let after = screen_to_plan(app, p, rect);
+                    let after = screen_to_view2d(app, p, rect);
                     app.session.plan.center = app.session.plan.center + before - after;
                 } else {
                     app.session.plan.zoom = new_zoom;
@@ -127,6 +148,10 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
                     app.session.plan.center = app.session.plan.center - delta;
                 }
             }
+            ViewMode::Section => {
+                let delta = GVec2::new(drag.x as f64, -drag.y as f64) * (1.0 / app.session.plan.zoom);
+                app.session.plan.center = app.session.plan.center - delta;
+            }
             ViewMode::Perspective3D => {
                 if ui.ctx().input(|i| i.modifiers.shift) {
                     pan_target(app, drag, rect, ppp);
@@ -155,6 +180,14 @@ fn handle_input(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, rect: Rect, res
                         app.session.click_plan(world);
                     }
                 }
+                ViewMode::Section => {
+                    // Clicking a section in the section view selects it.
+                    if app.session.tool == Tool::Select {
+                        if let Some(sid) = app.session.active_or_first_section() {
+                            app.session.select(Selection::Section(sid));
+                        }
+                    }
+                }
             }
         }
     }
@@ -170,7 +203,20 @@ fn screen_world(app: &crate::BimcraftApp, p: Pos2, rect: Rect, _ppp: f32) -> Opt
     match app.session.view {
         ViewMode::Plan2D => Some(screen_to_plan(app, p, rect).to3(app.session.level_elevation())),
         ViewMode::Perspective3D => pick_ground_at(app, p, rect),
+        ViewMode::Section => {
+            let v = screen_to_view2d(app, p, rect);
+            Some(Vec3::new(v.x, 0.0, v.y))
+        }
     }
+}
+
+/// In Plan2D this maps to world XY; in Section view it maps to (u, z).
+fn screen_to_view2d(app: &crate::BimcraftApp, p: Pos2, rect: Rect) -> GVec2 {
+    let cx = rect.center().x as f64;
+    let cy = rect.center().y as f64;
+    let wx = (p.x as f64 - cx) / app.session.plan.zoom + app.session.plan.center.x;
+    let wy = (cy - p.y as f64) / app.session.plan.zoom + app.session.plan.center.y;
+    GVec2::new(wx, wy)
 }
 
 fn pick_ground_at(app: &crate::BimcraftApp, p: Pos2, rect: Rect) -> Option<Vec3> {
@@ -231,6 +277,56 @@ fn draw_plan(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pa
         format!("{}  ·  elev {:.2} m", lvl.name, lvl.elevation),
         theme::font_ui(11.0),
         Color32::from_rgb(0x8a, 0x93, 0xa3),
+    );
+}
+
+/// Section view: the display list is in section space (x = u along the cut,
+/// z = height); reuse the plan transform by feeding (u, z) as world (x, y).
+fn draw_section(
+    ui: &mut egui::Ui,
+    app: &mut crate::BimcraftApp,
+    painter: &egui::Painter,
+    rect: Rect,
+    dl: &bimcraft_render::DisplayList,
+    sec: &bimcraft_bim::Section,
+) {
+    let _ = ui;
+    let t = theme::tokens();
+    let map = |p: Vec3| -> Pos2 {
+        let w = Vec3::new(p.x, p.z, 0.0);
+        plan_to_screen(app, w, rect)
+    };
+    for l in &dl.lines {
+        let a = map(l.a);
+        let b = map(l.b);
+        if l.dashed {
+            draw_dashed(painter, a, b, l.color, l.width);
+        } else {
+            painter.line_segment([a, b], Stroke::new(l.width, l.color));
+        }
+    }
+    for tri in &dl.tris {
+        let pts: Vec<Pos2> = tri.pts.iter().map(|p| map(*p)).collect();
+        painter.add(egui::Shape::convex_polygon(pts, tri.color, Stroke::NONE));
+    }
+    for tx in &dl.texts {
+        painter.text(map(tx.pos), egui::Align2::CENTER_CENTER, &tx.text, theme::font_ui(tx.size), tx.color);
+    }
+    // Viewport hint.
+    painter.text(
+        rect.right_top() + Vec2::new(-14.0, 14.0),
+        egui::Align2::RIGHT_TOP,
+        format!("{}  ·  drag: pan  ·  wheel: zoom", sec.name),
+        theme::font_ui(11.0),
+        Color32::from_rgb(0x8a, 0x93, 0xa3),
+    );
+    // Cursor readout in section space.
+    painter.text(
+        rect.left_bottom() + Vec2::new(10.0, -10.0),
+        egui::Align2::LEFT_BOTTOM,
+        format!("u {:.2} m · z {:.2} m", app.session.cursor.x, app.session.cursor.z),
+        theme::font_mono(11.0),
+        t.text_dim,
     );
 }
 

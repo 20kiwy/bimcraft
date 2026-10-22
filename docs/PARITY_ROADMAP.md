@@ -6,11 +6,14 @@
 > engine**, while keeping BIM semantics: levels, grids, parametric walls,
 > doors, windows, floor slabs, ceilings, items, schedules.
 >
-> **Status: Phase 2 landed** — polyline walls, shiftable openings, free
-> polygon floors/ceilings, item library, measure, snapping, schedule, native
-> JSON I/O, CLI, craft-libs adoption (`craft-ui`), egui 0.36, repository
-> restructured to Rust-only main with the JavaScript edition as the
-> `clone/bimcraft-js` submodule.
+> **Status: Phase 3 landed** — on top of Phase 2 (polyline walls, shiftable
+> openings, free polygon floors/ceilings, item library, measure, snapping,
+> schedule, native JSON I/O, CLI, craft-libs adoption (`craft-ui`), egui 0.36,
+> Rust-only repo with the JavaScript edition as the `clone/bimcraft-js`
+> submodule) Phase 3 adds **room detection** (plan loops with holes, area
+> labels, named annotations, schedule), **section/elevation views** (section
+> line tool, projected cut view with punched openings) and **DXF R12
+> exchange** (clean-room layered wireframe export + plan-sketch import).
 
 Last updated: 2026-10-22 · Target: v1.0.0 Rust edition parity
 
@@ -115,11 +118,11 @@ craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb
 | Schedule | ✅ `model-schedule.js` | ✅ P2 (dock table + CLI table/CSV) |
 | Native format + autosave | ✅ | ✅ P2 (`.bimcraft.model/v2`, eframe storage autosave, file dialogs) |
 | CLI | — (differentiator) | ✅ P2 |
-| Rooms / finishes | ✅ `model-rooms.js` | P3 |
-| Sections / elevations / sheets | ✅ `views-bim.js`, `layout/` | P3 |
-| Roofs / stairs / railings | ✅ `model-roof.js`, `res-*` | P3–P4 |
+| Rooms / finishes | ✅ `model-rooms.js` | ✅ P3 (`rooms.rs` plan loops + holes, annotations, schedule) |
+| Sections / elevations | ✅ `views-bim.js` | ✅ P3 (SectionLine tool + projected section view); sheets → P4 |
+| Roofs / stairs / railings | ✅ `model-roof.js`, `res-*` | P4 |
 | IFC round-trip | ✅ `ifc/` | P3–P4 |
-| DWG/DXF exchange | ✅ `dwg/`, `dxf-model.js` | P3 (via `cadcraft-dxf`) |
+| DXF exchange | ✅ `dxf-model.js` | ✅ P3 (clean-room ASCII DXF R12 writer + minimal reader; blocks → P4) |
 | MEP, clash, BCF | ✅ `mep/`, `clash.js`, `bcf.js` | P4 |
 | Point clouds / terrain / takeoff | ✅ | P4 |
 | Family editor | ✅ `family-editor.js` | P4 |
@@ -129,8 +132,8 @@ craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb
 
 - **P1 (done):** workspace + core BIM objects + 2D/3D editing + CI + wasm preview + tagged releases.
 - **P2 (done — this release):** polyline walls, shiftable openings, polygon floors/ceilings, items, measure, snapping, schedule, native JSON I/O, CLI, `craft-ui` adoption, egui 0.36 upgrade, Rust-only repo restructure with JS submodule.
-- **P3 (engine & exchange parity):** COW entity store, tool Action model, JSON command seam, rooms, sections/sheets, DXF via `cadcraft-dxf`, theme Brightness/Accent switcher, walk mode.
-- **P4 (pro):** IFC bridge, roofs/stairs, MEP views, clash, plug-in host, `bimcraft-mcp`, off-thread render pipeline, binary container format.
+- **P3 (engine & exchange parity):** rooms ✅, sections/elevation views ✅, DXF R12 export/import ✅ (this release). Remaining: COW entity store, tool Action model, JSON command seam, theme Brightness/Accent switcher, walk mode.
+- **P4 (pro):** IFC bridge, roofs/stairs, sheets/layout, MEP views, clash, plug-in host, `bimcraft-mcp`, off-thread render pipeline, binary container format.
 
 ## 5. Release scheme
 

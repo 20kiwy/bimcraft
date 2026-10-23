@@ -577,7 +577,7 @@ mod tests {
     use super::*;
 
     fn w(pts: &[&[f64]]) -> Wall {
-        Wall { level: 0, pts: pts.iter().map(|p| Vec2::new(p[0], p[1])).collect(), thickness: 0.2, height: 3.0 }
+        Wall { level: 0, pts: pts.iter().map(|p| Vec2::new(p[0], p[1])).collect(), ..Wall::default() }
     }
 
     #[test]

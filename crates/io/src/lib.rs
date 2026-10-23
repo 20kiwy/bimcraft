@@ -82,6 +82,7 @@ pub fn summary_text(model: &Model) -> String {
     s.push_str(&format!("items   : {}\n", model.items().count()));
     s.push_str(&format!("rooms   : {}\n", model.rooms.len()));
     s.push_str(&format!("sections: {}\n", model.sections.len()));
+    s.push_str(&format!("foundations: {}\n", model.foundations.len()));
     if let Some((min, max)) = model.bounds() {
         s.push_str(&format!("bounds  : X {:.2}..{:.2}  Y {:.2}..{:.2}  Z {:.2}..{:.2}\n", min.x, max.x, min.y, max.y, min.z, max.z));
     }
@@ -133,6 +134,11 @@ pub fn validate(model: &Model) -> Vec<String> {
         };
         if !Model::poly_valid(poly) {
             issues.push(format!("{}: degenerate polygon", e.name));
+        }
+    }
+    for f in &model.foundations {
+        if model.foundation_outline(f).is_none() {
+            issues.push(format!("Foundation '{}' sits outside every building outline on its level", f.name));
         }
     }
     issues
@@ -274,10 +280,52 @@ mod tests {
             id: 99999,
             kind: bimcraft_bim::ElementKind::Door,
             name: "Orphan".into(),
-            data: bimcraft_bim::ElementData::Opening(bimcraft_bim::Opening { wall: 424242, s: 1.0, width: 0.9, height: 2.1, sill: 0.0 }),
+            data: bimcraft_bim::ElementData::Opening(bimcraft_bim::Opening {
+                wall: 424242,
+                s: 1.0,
+                width: 0.9,
+                height: 2.1,
+                sill: 0.0,
+                ..bimcraft_bim::Opening::default()
+            }),
             paint: None,
         });
         let issues = validate(&m);
         assert!(issues.iter().any(|i| i.contains("host wall")));
+    }
+
+    #[test]
+    fn foundations_roundtrip_through_json() {
+        let mut m = sample();
+        let lvl = m.levels[0].id;
+        let id = m.add_foundation(bimcraft_bim::Foundation {
+            id: 0,
+            level: lvl,
+            kind: bimcraft_bim::FoundationKind::Basement,
+            seed: bimcraft_geom::Vec2::new(4.0, 2.0),
+            sizes: bimcraft_bim::FoundationSizes::default(),
+            name: String::new(),
+        });
+        let back = load_json(&save_json(&m)).unwrap();
+        assert_eq!(back.foundations.len(), 1);
+        assert_eq!(back.foundations[0].id, id);
+        assert_eq!(back.foundations[0].kind, bimcraft_bim::FoundationKind::Basement);
+        assert_eq!(back.foundations[0].seed, bimcraft_geom::Vec2::new(4.0, 2.0));
+    }
+
+    #[test]
+    fn validate_flags_foundation_outside_outline() {
+        let mut m = sample();
+        let lvl = m.levels[0].id;
+        m.add_foundation(bimcraft_bim::Foundation {
+            id: 0,
+            level: lvl,
+            kind: bimcraft_bim::FoundationKind::Slab,
+            seed: bimcraft_geom::Vec2::new(50.0, 50.0),
+            sizes: bimcraft_bim::FoundationSizes::default(),
+            name: String::new(),
+        });
+        let issues = validate(&m);
+        assert!(issues.iter().any(|i| i.contains("sits outside every building outline")), "issues: {issues:?}");
     }
 }

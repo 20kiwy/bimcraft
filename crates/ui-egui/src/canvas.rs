@@ -2,7 +2,7 @@
 //! ground grid, XYZ axes and tool interaction. Everything is drawn through the
 //! egui painter with hand-rolled projection math (no extra 3D deps).
 
-use crate::theme;
+use crate::theme::{self, Tokens};
 use bimcraft_engine::{Selection, Tool, ViewMode};
 use bimcraft_geom::Vec2 as GVec2;
 use bimcraft_geom::Vec3;
@@ -10,7 +10,7 @@ use bimcraft_render::{build, ViewInfo, ViewModeKind};
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
 pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
-    let t = theme::tokens();
+    let t = theme::tokens_for(app.theme);
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, CornerRadius::same(0), t.viewport_bg);
@@ -42,12 +42,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
                 ground_extent: 40.0,
                 show_ceilings_3d: app.show_ceilings_3d,
                 show_items_2d: app.show_items_2d,
+                light: t.is_light(),
+                show_formwork: app.session.show_formwork,
                 eye,
             };
             let dl = build(&app.session.model, &info);
             match app.session.view {
-                ViewMode::Plan2D => draw_plan(ui, app, &painter, rect, &dl),
-                ViewMode::Perspective3D | ViewMode::Walk => draw_3d(ui, app, &painter, rect, &dl),
+                ViewMode::Plan2D => draw_plan(ui, app, &painter, rect, &dl, &t),
+                ViewMode::Perspective3D | ViewMode::Walk => draw_3d(ui, app, &painter, rect, &dl, &t),
                 ViewMode::Section => unreachable!(),
             }
         }
@@ -55,7 +57,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             if let Some(sid) = app.session.active_or_first_section() {
                 if let Some(sec) = app.session.model.section(sid).cloned() {
                     let dl = bimcraft_render::build_section(&app.session.model, &sec);
-                    draw_section(ui, app, &painter, rect, &dl, &sec);
+                    draw_section(ui, app, &painter, rect, &dl, &sec, &t);
                 }
             } else {
                 painter.text(
@@ -63,14 +65,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
                     egui::Align2::CENTER_CENTER,
                     "No sections yet — pick the Section tool and click two points in the plan",
                     theme::font_ui(13.0),
-                    Color32::from_rgb(0x8a, 0x93, 0xa3),
+                    t.text_dim,
                 );
             }
         }
     }
 
     // Tool overlays (pending rubber-band etc.).
-    draw_overlays(ui, app, &painter, rect);
+    draw_overlays(ui, app, &painter, rect, &t);
 }
 
 fn plan_half_extent(zoom: f64, width_px: f32) -> f64 {
@@ -299,7 +301,7 @@ fn plan_to_screen(app: &crate::BimcraftApp, w: Vec3, rect: Rect) -> Pos2 {
 
 // --------------------------------------------------------------- 2D ------
 
-fn draw_plan(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList) {
+fn draw_plan(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList, t: &Tokens) {
     let _ = ui;
     for l in &dl.lines {
         let a = plan_to_screen(app, l.a, rect);
@@ -324,7 +326,7 @@ fn draw_plan(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pa
         egui::Align2::LEFT_BOTTOM,
         format!("{}  ·  elev {:.2} m", lvl.name, lvl.elevation),
         theme::font_ui(11.0),
-        Color32::from_rgb(0x8a, 0x93, 0xa3),
+        t.text_dim,
     );
 }
 
@@ -337,9 +339,9 @@ fn draw_section(
     rect: Rect,
     dl: &bimcraft_render::DisplayList,
     sec: &bimcraft_bim::Section,
+    t: &Tokens,
 ) {
     let _ = ui;
-    let t = theme::tokens();
     let map = |p: Vec3| -> Pos2 {
         let w = Vec3::new(p.x, p.z, 0.0);
         plan_to_screen(app, w, rect)
@@ -366,7 +368,7 @@ fn draw_section(
         egui::Align2::RIGHT_TOP,
         format!("{}  ·  drag: pan  ·  wheel: zoom", sec.name),
         theme::font_ui(11.0),
-        Color32::from_rgb(0x8a, 0x93, 0xa3),
+        t.text_dim,
     );
     // Cursor readout in section space.
     painter.text(
@@ -425,7 +427,7 @@ impl Proj {
     }
 }
 
-fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList) {
+fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList, t: &Tokens) {
     let _ = ui;
     let walking = app.session.view == ViewMode::Walk;
     // Camera: orbit camera or the first-person walk camera.
@@ -499,7 +501,7 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
     } else {
         "drag: orbit · shift+drag: pan · wheel: zoom · V: walk"
     };
-    painter.text(rect.right_top() + Vec2::new(-14.0, 14.0), egui::Align2::RIGHT_TOP, hint, theme::font_ui(11.0), Color32::from_rgb(0x8a, 0x93, 0xa3));
+    painter.text(rect.right_top() + Vec2::new(-14.0, 14.0), egui::Align2::RIGHT_TOP, hint, theme::font_ui(11.0), t.text_dim);
 }
 
 /// Coarse software depth buffer (logical pixels) built from the projected
@@ -626,9 +628,8 @@ fn draw_line_occluded(
 
 // ------------------------------------------------------------ overlays ---
 
-fn draw_overlays(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect) {
+fn draw_overlays(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, t: &Tokens) {
     let _ = ui;
-    let t = theme::tokens();
     if app.session.view != ViewMode::Plan2D {
         return;
     }

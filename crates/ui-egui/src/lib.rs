@@ -34,17 +34,19 @@ pub enum DockTab {
     Levels,
     Library,
     Schedule,
+    Foundation,
     Model,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 5] = [DockTab::Properties, DockTab::Levels, DockTab::Library, DockTab::Schedule, DockTab::Model];
+    pub const ALL: [DockTab; 6] = [DockTab::Properties, DockTab::Levels, DockTab::Library, DockTab::Schedule, DockTab::Foundation, DockTab::Model];
     pub fn label(self) -> &'static str {
         match self {
             DockTab::Properties => "Properties",
             DockTab::Levels => "Levels",
             DockTab::Library => "Library",
             DockTab::Schedule => "Schedule",
+            DockTab::Foundation => "Foundation",
             DockTab::Model => "Model",
         }
     }
@@ -59,7 +61,7 @@ impl BimcraftApp {
             show_save_dialog: false,
             show_items_2d: true,
             show_ceilings_3d: true,
-            theme: Theme::Charcoal,
+            theme: Theme::Light,
             dock_tab: DockTab::Properties,
         }
     }
@@ -147,7 +149,7 @@ impl BimcraftApp {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::Key;
-        let (w, d, n, f, c, s, i, m, x, p, v, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
+        let (w, d, n, f, c, s, b, i, m, x, p, v, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
             (
                 i.key_pressed(Key::W),
                 i.key_pressed(Key::D),
@@ -155,6 +157,7 @@ impl BimcraftApp {
                 i.key_pressed(Key::F),
                 i.key_pressed(Key::C),
                 i.key_pressed(Key::S),
+                i.key_pressed(Key::B),
                 i.key_pressed(Key::I),
                 i.key_pressed(Key::M),
                 i.key_pressed(Key::X),
@@ -205,6 +208,10 @@ impl BimcraftApp {
             if c {
                 self.session.set_tool(Tool::Ceiling);
             }
+            if b {
+                self.session.set_tool(Tool::Foundation);
+                self.dock_tab = DockTab::Foundation;
+            }
             if i {
                 self.session.set_tool(Tool::Item);
                 self.dock_tab = DockTab::Library;
@@ -238,7 +245,7 @@ impl BimcraftApp {
             }
         }
         if esc {
-            if self.session.tool == Tool::Paint {
+            if matches!(self.session.tool, Tool::Paint | Tool::Foundation) {
                 self.session.set_tool(Tool::Select);
             } else if !self.session.pending.is_empty() || self.session.measure.is_some() {
                 self.session.cancel_pending();

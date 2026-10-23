@@ -676,7 +676,7 @@ mod tests {
         let mut m = Model::new();
         let lvl = m.levels[0].id;
         let w = m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(6.0, 0.0)], 0.2, 3.0);
-        m.add_opening(ElementKind::Window, Opening { wall: w, s: 3.0, width: 1.2, height: 1.4, sill: 0.9 });
+        m.add_opening(ElementKind::Window, Opening { wall: w, s: 3.0, width: 1.2, height: 1.4, sill: 0.9, ..Opening::default() });
         let o = m.elements.iter().find(|e| e.kind == ElementKind::Window).unwrap();
         match &o.data {
             ElementData::Opening(op) => {

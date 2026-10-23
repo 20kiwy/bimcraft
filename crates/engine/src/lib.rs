@@ -5,7 +5,7 @@
 //! snapshot-based history. The parity roadmap (docs/PARITY_ROADMAP.md) maps
 //! how this grows toward `cadcraft-engine`'s role.
 
-use bimcraft_bim::{ElementData, ElementKind, GridAxis, Id, ItemKind, Model, Opening};
+use bimcraft_bim::{ElementData, ElementKind, Foundation, GridAxis, Id, ItemKind, Model, Opening};
 use bimcraft_geom::{dist_point_segment_xy, ray_ground, Vec2, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +32,7 @@ pub enum Tool {
     Measure,
     SectionLine,
     Paint,
+    Foundation,
 }
 
 impl Tool {
@@ -47,6 +48,7 @@ impl Tool {
             Tool::Measure => "Measure",
             Tool::SectionLine => "Section",
             Tool::Paint => "Paint",
+            Tool::Foundation => "Foundation",
         }
     }
 
@@ -60,6 +62,7 @@ impl Tool {
             Tool::Measure => "Click two points to measure",
             Tool::SectionLine => "Click two points: section line, then open the Section view",
             Tool::Paint => "Click an element to paint it · pick a color in Properties · Esc: back to Select",
+            Tool::Foundation => "Click inside a building outline: foundation under the walls · Esc: back",
         }
     }
 }
@@ -186,6 +189,8 @@ pub enum Selection {
     Grid(Id),
     Level(Id),
     Section(Id),
+    /// A foundation picked by its id (its outline follows the walls).
+    Foundation(u64),
     None,
 }
 
@@ -236,6 +241,14 @@ pub struct Session {
     pub walk: WalkCam,
     /// Current paint color (0xRRGGBB) applied by the Paint tool.
     pub paint: u32,
+    /// Kind used by the next Foundation placement (Foundation dock tab).
+    pub foundation_kind: bimcraft_bim::FoundationKind,
+    /// Stored size overrides for the next placement (0 = automatic).
+    pub foundation_sizes: bimcraft_bim::FoundationSizes,
+    /// Whether wall formwork (sheets + corner posts) is drawn.
+    pub show_formwork: bool,
+    /// Restrict formwork drawing to the selected wall.
+    pub formwork_selected_only: bool,
     pub status: String,
 }
 
@@ -265,6 +278,10 @@ impl Default for Session {
             drag_anchor: None,
             walk: WalkCam::default(),
             paint: 0xc8_724a,
+            foundation_kind: bimcraft_bim::FoundationKind::Slab,
+            foundation_sizes: bimcraft_bim::FoundationSizes::default(),
+            show_formwork: true,
+            formwork_selected_only: false,
             status: "Sample house loaded — New Model starts empty".into(),
         }
     }
@@ -326,6 +343,11 @@ impl Session {
             }
             Selection::Level(id) => {
                 if self.model.level(id).is_none() {
+                    self.selection = Selection::None;
+                }
+            }
+            Selection::Foundation(id) => {
+                if self.model.foundation(id).is_none() {
                     self.selection = Selection::None;
                 }
             }
@@ -480,8 +502,8 @@ impl Session {
         };
         self.snapshot();
         let o = match kind {
-            ElementKind::Door => Opening { wall, s, width: 0.9, height: 2.1, sill: 0.0 },
-            _ => Opening { wall, s, width: 1.2, height: 1.4, sill: 0.9 },
+            ElementKind::Door => Opening { wall, s, width: 0.9, height: 2.1, sill: 0.0, type_key: "door-single".into(), hand: 'a', face: 'a' },
+            _ => Opening { wall, s, width: 1.2, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
         };
         let id = self.model.add_opening(kind, o);
         self.selection = Selection::Element(id);
@@ -525,6 +547,29 @@ impl Session {
         self.status = format!("{} placed", self.model.element(id).map(|e| e.name.clone()).unwrap_or_default());
     }
 
+    /// Place a foundation under the building outline that contains `seed` on
+    /// the active level (parity: the JS edition's foundation generator). The
+    /// outline is re-derived from the walls, so nothing is stored but the seed.
+    pub fn place_foundation(&mut self, seed: Vec2) {
+        let level = self.active_level_id();
+        let loops = self.model.outline_loops_for_level(level);
+        if !loops.iter().any(|poly| bimcraft_bim::rooms::in_poly(seed.x, seed.y, poly)) {
+            self.status = "No building outline here — draw closed walls first".into();
+            return;
+        }
+        self.snapshot();
+        let id = self.model.add_foundation(Foundation {
+            id: 0,
+            level,
+            kind: self.foundation_kind,
+            seed,
+            sizes: self.foundation_sizes,
+            name: String::new(),
+        });
+        self.selection = Selection::Foundation(id);
+        self.status = format!("{} placed — click more or pick Select", self.foundation_kind.label());
+    }
+
     pub fn rotate_item(&mut self, id: Id, by: f64) {
         if self.drag_anchor.is_none() {
             self.snapshot();
@@ -555,6 +600,13 @@ impl Session {
                 }
                 self.selection = Selection::None;
                 self.status = "Section deleted".into();
+                return;
+            }
+            Selection::Foundation(id) => {
+                self.snapshot();
+                self.model.delete_foundation(id);
+                self.selection = Selection::None;
+                self.status = "Foundation deleted".into();
                 return;
             }
             _ => return,
@@ -635,6 +687,9 @@ impl Session {
                     Selection::Section(id) => {
                         format!("Selected {}", self.model.section(id).map(|s| s.name.clone()).unwrap_or_else(|| "section".into()))
                     }
+                    Selection::Foundation(id) => {
+                        format!("Selected {}", self.model.foundation(id).map(|f| f.name.clone()).unwrap_or_else(|| "foundation".into()))
+                    }
                     Selection::None => "Nothing selected".into(),
                 };
             }
@@ -668,6 +723,7 @@ impl Session {
                     self.status = "Nothing to paint here".into();
                 }
             }
+            Tool::Foundation => self.place_foundation(p),
             Tool::Measure => match self.measure {
                 None => {
                     self.measure = Some(Measure { a: p, b: p });
@@ -714,11 +770,11 @@ impl Session {
             return false;
         }
         match self.selection {
-            Selection::Element(id) => {
-                // Openings shift along their host wall; everything else moves.
+            Selection::Element(_) | Selection::Foundation(_) => {
+                // Openings shift along their host wall; everything else moves
+                // (a foundation moves its seed).
                 self.snapshot();
                 self.drag_anchor = Some(world);
-                let _ = id;
                 true
             }
             _ => false,
@@ -729,6 +785,19 @@ impl Session {
     /// its host wall ("windows to be shifted").
     pub fn drag_to(&mut self, world: Vec2) {
         let Some(anchor) = self.drag_anchor else { return };
+        if let Selection::Foundation(id) = self.selection {
+            // A foundation stores only its seed; translating it re-derives the
+            // outline from the walls on the next read.
+            let delta = world - anchor;
+            if delta.length() > 1e-9 {
+                if let Some(f) = self.model.foundation_mut(id) {
+                    f.seed = f.seed + delta;
+                }
+                self.drag_anchor = Some(world);
+                self.status = "Moved".into();
+            }
+            return;
+        }
         let Some(id) = self.selected_element() else { return };
         match self.model.element(id).map(|e| e.data.clone()) {
             Some(ElementData::Opening(o)) => {
@@ -767,6 +836,15 @@ impl Session {
         for s in &self.model.sections {
             if dist_point_segment_xy(p, s.a, s.b) < 0.3 {
                 return Selection::Section(s.id);
+            }
+        }
+        // Foundations next: they cover the whole building outline, so they
+        // must win over the walls and slabs they sit under (latest first).
+        for f in self.model.foundations.iter().rev() {
+            if let Some(poly) = self.model.foundation_outline(f) {
+                if point_in_poly(p, &poly) {
+                    return Selection::Foundation(f.id);
+                }
             }
         }
         let mut best: Option<(Id, f64)> = None;
@@ -996,6 +1074,74 @@ mod tests {
         s.select(Selection::Section(sid));
         s.delete_selected();
         assert!(s.model.sections.is_empty());
+    }
+
+    #[test]
+    fn place_foundation_on_sample() {
+        let mut s = Session::default();
+        assert!(s.model.foundations.is_empty());
+        s.set_tool(Tool::Foundation);
+        s.click_plan(Vec2::new(4.0, 2.0));
+        assert_eq!(s.model.foundations.len(), 1);
+        assert_eq!(s.model.foundations[0].kind, bimcraft_bim::FoundationKind::Slab);
+        let id = s.model.foundations[0].id;
+        assert_eq!(s.selection, Selection::Foundation(id));
+        // Picking inside the outline selects the foundation even though the
+        // sample's floor slab covers the same point.
+        s.set_tool(Tool::Select);
+        assert_eq!(s.pick_plan(Vec2::new(4.0, 2.0)), Selection::Foundation(id));
+    }
+
+    #[test]
+    fn place_foundation_outside_fails() {
+        let mut s = Session::default();
+        s.set_tool(Tool::Foundation);
+        s.click_plan(Vec2::new(50.0, 50.0));
+        assert!(s.model.foundations.is_empty());
+        assert_eq!(s.selection, Selection::None);
+        assert!(s.status.contains("No building outline"));
+    }
+
+    #[test]
+    fn delete_foundation_via_delete_selected() {
+        let mut s = Session::default();
+        s.place_foundation(Vec2::new(4.0, 2.0));
+        let id = s.model.foundations[0].id;
+        s.delete_selected();
+        assert!(s.model.foundations.is_empty());
+        assert_eq!(s.selection, Selection::None);
+        // Undo brings it back.
+        s.undo();
+        assert_eq!(s.model.foundations.len(), 1);
+        assert_eq!(s.model.foundations[0].id, id);
+    }
+
+    #[test]
+    fn foundation_pick_wins_over_slab() {
+        let mut s = Session::default();
+        // An explicit slab covering the seed point (the sample already has one,
+        // this keeps the priority test self-contained).
+        s.model.add_slab(s.active_level_id(), vec![Vec2::new(1.0, 1.0), Vec2::new(8.0, 1.0), Vec2::new(8.0, 6.0), Vec2::new(1.0, 6.0)], 0.25, 0.0);
+        s.place_foundation(Vec2::new(4.0, 2.0));
+        let id = s.model.foundations[0].id;
+        assert_eq!(s.pick_plan(Vec2::new(4.0, 2.0)), Selection::Foundation(id));
+    }
+
+    #[test]
+    fn foundation_drag_moves_seed() {
+        let mut s = Session::default();
+        s.place_foundation(Vec2::new(4.0, 2.0));
+        let id = s.model.foundations[0].id;
+        s.set_tool(Tool::Select);
+        s.begin_drag(Vec2::new(4.0, 2.0));
+        s.drag_to(Vec2::new(5.0, 2.5));
+        s.end_drag();
+        let seed = s.model.foundation(id).unwrap().seed;
+        assert!((seed - Vec2::new(5.0, 2.5)).length() < 1e-9, "seed follows the drag");
+        // The whole drag was one edit: undo puts the seed back.
+        s.undo();
+        let seed = s.model.foundation(id).unwrap().seed;
+        assert!((seed - Vec2::new(4.0, 2.0)).length() < 1e-9);
     }
 
     #[test]

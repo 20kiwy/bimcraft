@@ -46,10 +46,10 @@ Full parity map: [docs/PARITY_ROADMAP.md](docs/PARITY_ROADMAP.md).
 |---|---|---|---|
 | Levels & storeys | `model-levels.js` | `bimcraft-bim` | ✅ edit elevation/height, per-level drafting & display |
 | Structural grids | `model-grids.js` | `bimcraft-bim` | ✅ labelled datum lines A–E / 1–4, bubbles |
-| Parametric walls | `model-walls.js` | `bimcraft-bim` | ✅ multi-segment polylines, mitered joins, thickness/height |
-| Doors & windows | `model-openings.js`, `opening-types.js` | `bimcraft-bim` | ✅ hosted openings, **windows shift along the host wall** (drag or slider), real 3D cuts |
-| Floor slabs | `model-floors.js`, `model-slabs.js` | `bimcraft-bim` | ✅ free polygon sketch, thickness + elevation offset |
-| Ceilings | `model-floors.js` (ceilings) | `bimcraft-bim` | ✅ free polygon sketch, thickness + elevation offset, dashed plan style |
+| Parametric walls | `model-walls.js` | `bimcraft-bim` | ✅ multi-segment polylines, mitered joins, **assembly types (WALL_TYPES)**, justification (left/center/right), top fixed or up-to-level, base offset, outside face flip |
+| Doors & windows | `model-openings.js`, `opening-types.js` | `bimcraft-bim` | ✅ hosted openings, **type presets with widths/heights**, hinge hand + swing face flips, from-start/from-end positioning, **windows shift along the host wall** (drag or slider), real 3D cuts |
+| Floor slabs | `model-floors.js`, `model-slabs.js` | `bimcraft-bim` | ✅ free polygon sketch, thickness + elevation offset, finish kinds (Concrete/Wood/Tile/…) |
+| Ceilings | `model-floors.js` (ceilings) | `bimcraft-bim` | ✅ free polygon sketch, thickness + elevation offset, plan patterns (none/grid/plank), dashed plan style |
 | Items / furnishings | `libitem.js`, `assets-bim.js` | `bimcraft-bim` | ✅ preset library (table, chair, sofa, bed, …), place / move / rotate |
 | 2D plan view | `model-planview.js`, `views-model.js` | `bimcraft-render` | ✅ metric grid, datum bubbles, wall fills, door swings, selection grips |
 | 3D view | `viewer3d.js` | `bimcraft-render` | ✅ orbit/pan/zoom, Blender grid + XYZ axes, shaded extrusions |
@@ -68,7 +68,11 @@ Full parity map: [docs/PARITY_ROADMAP.md](docs/PARITY_ROADMAP.md).
 | IFC import/export | `ifc/` | — | 📋 Phase 3 |
 | DXF exchange | `dxf-model.js` | `bimcraft-bim::dxf`, `bimcraft-cli` | ✅ clean-room ASCII DXF R12 export (layered 3-D wireframe) + plan-sketch import |
 | Walk mode | — (differentiator) | `bimcraft-engine`, `bimcraft-ui-egui` | ✅ first-person walkthrough: WASD + mouse look, Shift run, wheel step, seeded from the orbit camera |
+| Foundations | `res-foundation.js` (DetailCraft family) | `bimcraft-bim::foundation`, `bimcraft-engine`, `bimcraft-render` | ✅ slab-on-grade / stem walls + slab / crawlspace / basement, seeded to the wall outline (follows wall moves), light-frame footing table (stories + heavy walls), concrete volumes in the schedule, plan + 3D render |
+| Wall formwork | DetailCraft detailing | `bimcraft-bim::formwork`, `bimcraft-render`, `bimcraft-ui-egui` | ✅ 1.2 × 2.4 m sheathing grid on both wall faces, corner studs at every vertex, per-wall panel count/area, plan joints + 3D panels toggle |
 | Paint / finishes | `res-colors.js` (partial) | `bimcraft-bim`, `bimcraft-engine`, `bimcraft-render` | ✅ per-element paint override in model + IO + 2D/3D render, 16-swatch palette, eyedropper, paint-to-kind |
+| Full properties panel | `model-ui.js` propsBlock | `bimcraft-ui-egui` | ✅ per-type editors copied from the JS edition: wall type/thickness/length/justification/top/base/outside, door+window family/size/sill/from-start/from-end/hand/face, floor kind, ceiling height/thickness/pattern, item pos/rotate, foundation kind/sizes/volumes |
+| Light mode default | — | `bimcraft-ui-egui::theme` | ✅ Light is the default brightness; Dark / Charcoal / Slate stay one click away in the app bar |
 | VectorCraft themes | `theme.rs` (VectorCraft) | `bimcraft-ui-egui::theme` | ✅ 1:1 token table + Dark / Charcoal / Slate / Light switcher in the app bar |
 | MEP systems | `mep/` | — | 📋 Phase 4 |
 | Clash detection | `clash.js`, `clash-worker.js` | — | 📋 Phase 4 |
@@ -102,7 +106,7 @@ cargo run -p bimcraft-cli -- schedule /tmp/house.bimcraft.json
 cargo run -p bimcraft-cli -- validate /tmp/house.bimcraft.json
 ```
 
-Shortcuts: `W` wall · `D` door · `N` window · `F` floor · `C` ceiling ·
+Shortcuts: `W` wall · `D` door · `N` window · `F` floor · `C` ceiling · `B` foundation ·
 `S` select · `P` paint · `V` walk mode · `Tab` 2D↔3D↔Section · `G` grid snap ·
 `R` rotate item · `M` measure · `Enter` finish polyline · `Esc` cancel ·
 `Del` delete · `Ctrl+Z`/`Ctrl+Y` undo/redo.

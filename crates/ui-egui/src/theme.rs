@@ -78,6 +78,13 @@ pub struct Tokens {
     pub font_size: f32,
 }
 
+impl Tokens {
+    /// Whether this token set is a light brightness level (dark-on-light UI).
+    pub fn is_light(&self) -> bool {
+        !self.dark
+    }
+}
+
 fn hex(s: u32) -> Color32 {
     Color32::from_rgb((s >> 16) as u8, (s >> 8) as u8, s as u8)
 }

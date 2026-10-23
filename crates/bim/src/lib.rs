@@ -11,10 +11,52 @@
 //! `model-schedule` → [Model::schedule].
 
 pub mod dxf;
+pub mod formwork;
+pub mod foundation;
 pub mod rooms;
 
 use bimcraft_geom::{dist_point_segment_xy, poly_area, poly_centroid, triangulate, Aabb2, Vec2, Vec3};
+pub use foundation::{Foundation, FoundationKind, FoundationPart, FoundationRole, FoundationSizes, ResolvedSizes};
 pub use rooms::{plan_loops, PlanLoops, RoomLoop};
+
+/// Which side of a wall's location line carries a role ("outside" face,
+/// justification). `Left` is the left side looking along the first segment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Side {
+    Left,
+    #[default]
+    Right,
+}
+
+impl Side {
+    pub fn flip(self) -> Self {
+        match self {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Side::Left => "Left",
+            Side::Right => "Right",
+        }
+    }
+}
+
+/// Where the wall body sits relative to its drawn (location) line, parity with
+/// the JS edition's justifications: the line stays put when the thickness or
+/// the outside face changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Justification {
+    /// Body extends to the right of the location line.
+    Left,
+    /// Body centered on the location line (default).
+    #[default]
+    Center,
+    /// Body extends to the left of the location line.
+    Right,
+}
 use serde::{Deserialize, Serialize};
 
 pub type Id = u64;
@@ -109,20 +151,57 @@ pub struct Room {
     pub id: Id,
     pub level: Id,
     pub name: String,
+    /// Room number (schedule tag), parity with the JS properties panel.
+    #[serde(default)]
+    pub number: String,
     pub floor_finish: String,
     pub ceiling_finish: String,
     /// Plan point inside the room this annotation names.
     pub label: Vec2,
 }
 
-/// Parametric wall: polyline centerline on a level, constant thickness/height.
-/// Multi-segment walls join with miters (parity: `model-walls.js`).
+/// Parametric wall: polyline location line on a level, constant thickness and
+/// height (or a top that follows a level). Multi-segment walls join with
+/// miters (parity: `model-walls.js`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Wall {
     pub level: Id,
     pub pts: Vec<Vec2>,
     pub thickness: f64,
     pub height: f64,
+    /// Wall assembly preset key (see [WALL_TYPES]); empty = custom.
+    #[serde(default)]
+    pub type_key: String,
+    #[serde(default)]
+    pub justification: Justification,
+    /// When set, the wall top follows this level's elevation + `top_offset`.
+    #[serde(default)]
+    pub top_level: Option<Id>,
+    #[serde(default)]
+    pub top_offset: f64,
+    /// Wall base above the level floor (e.g. on a foundation stem).
+    #[serde(default)]
+    pub base_offset: f64,
+    /// Which side is the wall's outside face.
+    #[serde(default)]
+    pub ext_side: Side,
+}
+
+impl Default for Wall {
+    fn default() -> Self {
+        Self {
+            level: 0,
+            pts: Vec::new(),
+            thickness: 0.2,
+            height: 3.0,
+            type_key: String::new(),
+            justification: Justification::Center,
+            top_level: None,
+            top_offset: 0.0,
+            base_offset: 0.0,
+            ext_side: Side::Right,
+        }
+    }
 }
 
 impl Wall {
@@ -174,8 +253,9 @@ impl Wall {
     }
 
     /// Mitered outline offsets. For each vertex returns its offset point for
-    /// the left side (+) and right side (-) at `half` thickness.
-    fn offset_pts(&self, half: f64) -> (Vec<Vec2>, Vec<Vec2>) {
+    /// the left side (offset `left_off` from the location line) and the right
+    /// side (`right_off`).
+    fn offset_sides(&self, left_off: f64, right_off: f64) -> (Vec<Vec2>, Vec<Vec2>) {
         let n = self.pts.len();
         let mut left = Vec::with_capacity(n);
         let mut right = Vec::with_capacity(n);
@@ -186,27 +266,74 @@ impl Wall {
             let n_out = d_out.perp();
             let m = (n_in + n_out).normalize();
             let cos_half = m.dot(n_in).abs().max(0.35);
-            let scale = half / cos_half;
-            let (l, r) = if m.dot(n_in) >= 0.0 { (m * scale, m * -scale) } else { (m * -scale, m * scale) };
+            let (l, r) = if m.dot(n_in) >= 0.0 {
+                (m * (left_off / cos_half), m * -(right_off / cos_half))
+            } else {
+                (m * -(left_off / cos_half), m * (right_off / cos_half))
+            };
             left.push(v + l);
             right.push(v + r);
         }
         (left, right)
     }
 
+    /// The (left, right) face offsets from the location line after the
+    /// justification: the drawn line is the location line, the body sits
+    /// center (t/2 each way), left (0 / t), or right (t / 0) of it.
+    fn justification_offsets(&self) -> (f64, f64) {
+        match self.justification {
+            Justification::Left => (0.0, self.thickness),
+            Justification::Center => (self.thickness / 2.0, self.thickness / 2.0),
+            Justification::Right => (self.thickness, 0.0),
+        }
+    }
+
     /// Wall body outline polygon (left side forward + right side back).
     pub fn outline(&self) -> Vec<Vec2> {
-        let (left, right) = self.offset_pts(self.thickness / 2.0);
+        let (lo, ro) = self.justification_offsets();
+        let (left, right) = self.offset_sides(lo, ro);
         let mut out = left;
         out.extend(right.iter().rev().copied());
         out
     }
+
+    /// Distance from the location line to the left face (signed, positive =
+    /// left). Useful for aligning hosted geometry to the real faces.
+    pub fn face_offsets(&self) -> (f64, f64) {
+        self.justification_offsets()
+    }
+
+    /// Wall assembly type, falling back to a thickness match.
+    pub fn wall_type(&self) -> Option<&'static WallType> {
+        wall_type(&self.type_key).or_else(|| wall_type_for_thickness(self.thickness))
+    }
+
+    /// The wall top height above the level floor: fixed `height`, or the
+    /// `top_level` elevation difference + `top_offset`.
+    pub fn effective_height(&self, model: &Model) -> f64 {
+        match (self.top_level, model.level(self.level), model.level(self.top_level.unwrap_or(0))) {
+            (Some(_top), Some(base), Some(topl)) => (topl.elevation - base.elevation + self.top_offset).max(0.1),
+            _ => self.height.max(0.1),
+        }
+    }
+
+    /// World z of the wall base (level elevation + base offset).
+    pub fn base_z(&self, model: &Model) -> f64 {
+        model.level(self.level).map(|l| l.elevation).unwrap_or(0.0) + self.base_offset
+    }
+
+    /// World z of the wall top.
+    pub fn top_z(&self, model: &Model) -> f64 {
+        self.base_z(model) + self.effective_height(model)
+    }
 }
 
 /// Door or window hosted in a wall. `s` is the arclength position (meters)
-/// along the wall centerline; `sill` is the height above the level floor
+/// along the wall location line; `sill` is the height above the level floor
 /// (0 for doors). Windows shift along the host wall (parity: the user asked
 /// for "windows to be shifted" — drag in plan or use the properties slider).
+/// `hand` is the hinge side for handed door types ('a' | 'b'), `face` the
+/// swing side ('a' | 'b'); both flip in the plan swing drawing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Opening {
     pub wall: Id,
@@ -214,16 +341,55 @@ pub struct Opening {
     pub width: f64,
     pub height: f64,
     pub sill: f64,
+    /// Preset key from [OPENING_TYPES]; empty = a plain custom opening.
+    #[serde(default)]
+    pub type_key: String,
+    #[serde(default = "default_hand")]
+    pub hand: char,
+    #[serde(default = "default_hand")]
+    pub face: char,
+}
+
+fn default_hand() -> char {
+    'a'
+}
+
+impl Default for Opening {
+    fn default() -> Self {
+        Self { wall: 0, s: 0.0, width: 0.9, height: 2.1, sill: 0.0, type_key: String::new(), hand: 'a', face: 'a' }
+    }
+}
+
+impl Opening {
+    /// The opening type preset, when `type_key` names one.
+    pub fn opening_type(&self) -> Option<&'static OpeningType> {
+        opening_type(&self.type_key)
+    }
+
+    /// Bottom world z of the opening: level floor + sill (doors sit on the
+    /// floor; the wall's base offset raises the whole host, so the sill is
+    /// measured from the wall base).
+    pub fn base_z(&self, model: &Model) -> Option<f64> {
+        let w = model.wall(self.wall)?;
+        Some(w.base_z(model) + self.sill)
+    }
 }
 
 /// Horizontal floor slab bound to a level. `elevation` is the top-surface
-/// offset above the level elevation.
+/// offset above the level elevation; `kind` is the finish
+/// (see [FLOOR_KINDS]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Slab {
     pub level: Id,
     pub pts: Vec<Vec2>,
     pub thickness: f64,
     pub elevation: f64,
+    #[serde(default = "default_floor_kind")]
+    pub kind: String,
+}
+
+fn default_floor_kind() -> String {
+    "Concrete".into()
 }
 
 impl Slab {
@@ -233,13 +399,20 @@ impl Slab {
 }
 
 /// Ceiling bound to a level. `elevation` is the underside height above the
-/// level elevation (defaults to the level height).
+/// level elevation (defaults to the level height); `pattern` is the plan
+/// hatch pattern (`none | grid | plank`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ceiling {
     pub level: Id,
     pub pts: Vec<Vec2>,
     pub thickness: f64,
     pub elevation: f64,
+    #[serde(default = "default_ceiling_pattern")]
+    pub pattern: String,
+}
+
+fn default_ceiling_pattern() -> String {
+    "none".into()
 }
 
 impl Ceiling {
@@ -334,6 +507,81 @@ impl ItemKind {
     ];
 }
 
+/// A wall assembly preset (parity with the JS edition's wall type table):
+/// thickness drives the geometry, `exterior` marks weather-side assemblies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WallType {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub thickness: f64,
+    pub exterior: bool,
+}
+
+/// The wall assembly presets offered in the properties panel.
+pub const WALL_TYPES: &[WallType] = &[
+    WallType { key: "ext-300", name: "Exterior 300", thickness: 0.30, exterior: true },
+    WallType { key: "ext-250", name: "Exterior 250", thickness: 0.25, exterior: true },
+    WallType { key: "brick-230", name: "Brick 230", thickness: 0.23, exterior: true },
+    WallType { key: "concrete-250", name: "Concrete 250", thickness: 0.25, exterior: true },
+    WallType { key: "cmu-200", name: "CMU 200", thickness: 0.20, exterior: true },
+    WallType { key: "int-150", name: "Interior 150", thickness: 0.15, exterior: false },
+    WallType { key: "int-120", name: "Interior 120", thickness: 0.12, exterior: false },
+    WallType { key: "int-100", name: "Partition 100", thickness: 0.10, exterior: false },
+];
+
+pub fn wall_type(key: &str) -> Option<&'static WallType> {
+    WALL_TYPES.iter().find(|t| t.key == key)
+}
+
+/// The preset whose thickness matches exactly (1 mm tolerance), if any.
+pub fn wall_type_for_thickness(t: f64) -> Option<&'static WallType> {
+    WALL_TYPES.iter().find(|wt| (wt.thickness - t).abs() < 1e-3)
+}
+
+/// Door/window family tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpeningFamily {
+    Door,
+    Window,
+}
+
+/// A door or window preset (parity: `opening-types.js` starter kinds).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OpeningType {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub family: OpeningFamily,
+    pub width: f64,
+    pub height: f64,
+    /// Whether the type draws a swing with a hinge side (`hand`).
+    pub handed: bool,
+}
+
+pub const OPENING_TYPES: &[OpeningType] = &[
+    OpeningType { key: "door-single", name: "Single door", family: OpeningFamily::Door, width: 0.90, height: 2.10, handed: true },
+    OpeningType { key: "door-double", name: "Double door", family: OpeningFamily::Door, width: 1.80, height: 2.10, handed: true },
+    OpeningType { key: "door-sliding", name: "Sliding door", family: OpeningFamily::Door, width: 1.50, height: 2.10, handed: false },
+    OpeningType { key: "door-garage", name: "Garage door", family: OpeningFamily::Door, width: 2.40, height: 2.10, handed: false },
+    OpeningType { key: "win-single", name: "Single window", family: OpeningFamily::Window, width: 1.20, height: 1.20, handed: false },
+    OpeningType { key: "win-double", name: "Double window", family: OpeningFamily::Window, width: 1.80, height: 1.20, handed: false },
+    OpeningType { key: "win-picture", name: "Picture window", family: OpeningFamily::Window, width: 2.40, height: 1.40, handed: false },
+    OpeningType { key: "win-hung", name: "Double-hung window", family: OpeningFamily::Window, width: 0.90, height: 1.40, handed: false },
+];
+
+pub fn opening_type(key: &str) -> Option<&'static OpeningType> {
+    OPENING_TYPES.iter().find(|t| t.key == key)
+}
+
+pub fn opening_types_of(family: OpeningFamily) -> impl Iterator<Item = &'static OpeningType> {
+    OPENING_TYPES.iter().filter(move |t| t.family == family)
+}
+
+/// Floor finish presets (floor slab `kind`).
+pub const FLOOR_KINDS: &[&str] = &["Concrete", "Wood", "Tile", "Stone", "Carpet", "Vinyl"];
+
+/// Ceiling plan patterns.
+pub const CEILING_PATTERNS: &[&str] = &["none", "grid", "plank"];
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ElementData {
     Wall(Wall),
@@ -383,6 +631,10 @@ pub struct Model {
     pub rooms: Vec<Room>,
     #[serde(default)]
     pub sections: Vec<Section>,
+    /// Foundations derived from the wall outlines (slab / stem / crawl /
+    /// basement), each anchored by a seed point inside its outline.
+    #[serde(default)]
+    pub foundations: Vec<Foundation>,
     next_id: Id,
 }
 
@@ -496,8 +748,82 @@ impl Model {
 
     pub fn add_room(&mut self, level: Id, name: &str, label: Vec2) -> Id {
         let id = self.alloc();
-        self.rooms.push(Room { id, level, name: name.into(), floor_finish: "—".into(), ceiling_finish: "—".into(), label });
+        self.rooms
+            .push(Room { id, level, name: name.into(), number: String::new(), floor_finish: "—".into(), ceiling_finish: "—".into(), label });
         id
+    }
+
+    // ------------------------------------------------------- foundations --
+
+    pub fn foundation(&self, id: Id) -> Option<&Foundation> {
+        self.foundations.iter().find(|f| f.id == id)
+    }
+
+    pub fn foundation_mut(&mut self, id: Id) -> Option<&mut Foundation> {
+        self.foundations.iter_mut().find(|f| f.id == id)
+    }
+
+    /// Add a foundation (allocates the id when `f.id == 0`).
+    pub fn add_foundation(&mut self, mut f: Foundation) -> Id {
+        if f.id == 0 {
+            f.id = self.alloc();
+        }
+        if f.name.is_empty() {
+            f.name = format!("{} {}", f.kind.label(), f.id);
+        }
+        let id = f.id;
+        self.foundations.push(f);
+        id
+    }
+
+    pub fn delete_foundation(&mut self, id: Id) {
+        self.foundations.retain(|f| f.id != id);
+    }
+
+    /// The joined outline loops of one level's walls (outer faces, anticlockwise).
+    pub fn outline_loops_for_level(&self, level: Id) -> Vec<Vec<Vec2>> {
+        self.detect_rooms(level).outlines.into_iter().map(|o| o.poly).collect()
+    }
+
+    /// The outline loop a foundation's seed sits inside, re-derived from the
+    /// current walls (so the geometry follows wall moves).
+    pub fn foundation_outline(&self, f: &Foundation) -> Option<Vec<Vec2>> {
+        self.outline_loops_for_level(f.level).into_iter().find(|poly| crate::rooms::in_poly(f.seed.x, f.seed.y, poly))
+    }
+
+    /// Resolved sizes of a foundation after the walls standing on its level
+    /// (stories above, heavy when any masonry/concrete wall is among them).
+    pub fn foundation_resolved(&self, f: &Foundation) -> Option<(ResolvedSizes, Vec<Vec2>)> {
+        let outline = self.foundation_outline(f)?;
+        let (stories, heavy) = self.loads_on_level(f.level);
+        let p = foundation::foundation_params(f.kind, &f.sizes, stories, heavy);
+        Some((p, outline))
+    }
+
+    /// (stories, heavy) for a level: how many levels from here up carry walls,
+    /// and whether any wall is masonry or concrete (heavier footings).
+    pub fn loads_on_level(&self, level: Id) -> (u32, bool) {
+        let idx = self.levels.iter().position(|l| l.id == level);
+        let mut stories = 0u32;
+        let mut heavy = false;
+        if let Some(i) = idx {
+            for l in &self.levels[i..] {
+                let mut any = false;
+                for w in self.walls().filter_map(|e| match &e.data {
+                    ElementData::Wall(w) if w.level == l.id => Some(w),
+                    _ => None,
+                }) {
+                    any = true;
+                    if matches!(w.type_key.as_str(), "brick-230" | "cmu-200" | "concrete-250") {
+                        heavy = true;
+                    }
+                }
+                if any {
+                    stories += 1;
+                }
+            }
+        }
+        (stories.max(1), heavy)
     }
 
     pub fn delete_level(&mut self, id: Id) {
@@ -505,6 +831,7 @@ impl Model {
         self.elements.retain(|e| e.level_id() != Some(id));
         self.rooms.retain(|r| r.level != id);
         self.sections.retain(|s| s.level != id);
+        self.foundations.retain(|f| f.level != id);
     }
 
     pub fn add_level(&mut self, name: &str, elevation: f64, height: f64) -> Id {
@@ -521,11 +848,12 @@ impl Model {
 
     pub fn add_wall(&mut self, level: Id, pts: Vec<Vec2>, thickness: f64, height: f64) -> Id {
         let id = self.alloc();
+        let type_key = wall_type_for_thickness(thickness).map(|t| t.key).unwrap_or("").to_string();
         self.elements.push(Element {
             id,
             kind: ElementKind::Wall,
             name: format!("Wall {id}"),
-            data: ElementData::Wall(Wall { level, pts, thickness, height }),
+            data: ElementData::Wall(Wall { level, pts, thickness, height, type_key, ..Wall::default() }),
             paint: None,
         });
         id
@@ -548,7 +876,7 @@ impl Model {
             id,
             kind: ElementKind::Slab,
             name: format!("Floor {id}"),
-            data: ElementData::Slab(Slab { level, pts, thickness, elevation }),
+            data: ElementData::Slab(Slab { level, pts, thickness, elevation, kind: default_floor_kind() }),
             paint: None,
         });
         id
@@ -560,7 +888,7 @@ impl Model {
             id,
             kind: ElementKind::Ceiling,
             name: format!("Ceiling {id}"),
-            data: ElementData::Ceiling(Ceiling { level, pts, thickness, elevation }),
+            data: ElementData::Ceiling(Ceiling { level, pts, thickness, elevation, pattern: default_ceiling_pattern() }),
             paint: None,
         });
         id
@@ -630,9 +958,11 @@ impl Model {
 
     /// World-space rectangle for an opening, on the host wall centerline:
     /// [left-jamb bottom, right-jamb bottom, right-jamb top, left-jamb top].
+    /// The bottom sits at the wall base + sill (a wall's base offset raises
+    /// its hosted openings with it).
     pub fn opening_rect(&self, o: &Opening) -> Option<[Vec3; 4]> {
         let w = self.wall(o.wall)?;
-        let z0 = self.level(w.level).map(|l| l.elevation).unwrap_or(0.0);
+        let z0 = w.base_z(self);
         let (c, seg) = w.point_at(o.s);
         let segs: Vec<(Vec2, Vec2)> = w.segments().collect();
         let dir = segs.get(seg).map(|(a, b)| (*b - *a).normalize()).unwrap_or_else(|| Vec2::new(1.0, 0.0));
@@ -724,6 +1054,14 @@ impl Model {
         if room_count > 0 {
             rows.push(ScheduleRow { group: "Rooms".into(), name: "Rooms (net)".into(), count: room_count, unit: "m²".into(), quantity: room_area });
         }
+        // Foundations: one row per foundation with its concrete volume.
+        for f in &self.foundations {
+            let vol = self
+                .foundation_resolved(f)
+                .map(|(p, outline)| foundation::foundation_concrete_volume(&foundation::foundation_geometry(&outline, &p)))
+                .unwrap_or(0.0);
+            rows.push(ScheduleRow { group: "Foundations".into(), name: f.name.clone(), count: 1, unit: "m³".into(), quantity: vol });
+        }
         rows
     }
 
@@ -743,9 +1081,10 @@ impl Model {
         for e in &self.elements {
             match &e.data {
                 ElementData::Wall(w) => {
-                    let z = self.level(w.level).map(|l| l.elevation).unwrap_or(0.0);
+                    let z0 = w.base_z(self);
+                    let z1 = w.top_z(self);
                     for p in &w.pts {
-                        grow(*p, z, z + w.height, &mut min, &mut max);
+                        grow(*p, z0, z1, &mut min, &mut max);
                         any = true;
                     }
                 }
@@ -767,6 +1106,15 @@ impl Model {
                     any = true;
                 }
                 ElementData::Opening(_) => {}
+            }
+        }
+        // Foundations reach below the floor; include their outline + depth.
+        for f in &self.foundations {
+            if let Some((p, outline)) = self.foundation_resolved(f) {
+                for pt in &outline {
+                    grow(*pt, -p.bottom, 0.0, &mut min, &mut max);
+                }
+                any = true;
             }
         }
         any.then_some((min, max))
@@ -835,14 +1183,35 @@ pub fn sample() -> Model {
     let _ = int1;
     let _ = int2;
 
-    // Openings: front door + windows.
-    m.add_opening(ElementKind::Door, Opening { wall: south, s: 1.4, width: 1.0, height: 2.1, sill: 0.0 });
-    m.add_opening(ElementKind::Door, Opening { wall: int2, s: 1.2, width: 0.9, height: 2.1, sill: 0.0 });
-    m.add_opening(ElementKind::Window, Opening { wall: south, s: 4.5, width: 1.6, height: 1.4, sill: 0.9 });
-    m.add_opening(ElementKind::Window, Opening { wall: south, s: 7.6, width: 1.2, height: 1.4, sill: 0.9 });
-    m.add_opening(ElementKind::Window, Opening { wall: east, s: 2.0, width: 1.4, height: 1.4, sill: 0.9 });
-    m.add_opening(ElementKind::Window, Opening { wall: east, s: 5.2, width: 1.4, height: 1.4, sill: 0.9 });
-    m.add_opening(ElementKind::Window, Opening { wall: west, s: 5.0, width: 1.4, height: 1.4, sill: 0.9 });
+    // Openings: front door + windows (type keys, hinge side, swing face).
+    m.add_opening(
+        ElementKind::Door,
+        Opening { wall: south, s: 1.4, width: 1.0, height: 2.1, sill: 0.0, type_key: "door-single".into(), hand: 'a', face: 'a' },
+    );
+    m.add_opening(
+        ElementKind::Door,
+        Opening { wall: int2, s: 1.2, width: 0.9, height: 2.1, sill: 0.0, type_key: "door-single".into(), hand: 'a', face: 'a' },
+    );
+    m.add_opening(
+        ElementKind::Window,
+        Opening { wall: south, s: 4.5, width: 1.6, height: 1.4, sill: 0.9, type_key: "win-double".into(), hand: 'a', face: 'a' },
+    );
+    m.add_opening(
+        ElementKind::Window,
+        Opening { wall: south, s: 7.6, width: 1.2, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
+    );
+    m.add_opening(
+        ElementKind::Window,
+        Opening { wall: east, s: 2.0, width: 1.4, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
+    );
+    m.add_opening(
+        ElementKind::Window,
+        Opening { wall: east, s: 5.2, width: 1.4, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
+    );
+    m.add_opening(
+        ElementKind::Window,
+        Opening { wall: west, s: 5.0, width: 1.4, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
+    );
 
     // Floor slab + ceiling on level 0; slab on level 1.
     let footprint = Model::rect_poly(Vec2::new(-0.1, -0.1), Vec2::new(9.1, 7.1));
@@ -856,8 +1225,14 @@ pub fn sample() -> Model {
     m.add_wall(l1, vec![Vec2::new(9.0, 7.0), Vec2::new(0.0, 7.0)], thk, h);
     m.add_wall(l1, vec![Vec2::new(0.0, 7.0), Vec2::new(0.0, 0.0)], thk, h);
     let w_up = m.add_wall(l1, vec![Vec2::new(4.5, 0.0), Vec2::new(4.5, 7.0)], thk, h);
-    m.add_opening(ElementKind::Door, Opening { wall: w_up, s: 2.2, width: 0.9, height: 2.1, sill: 0.0 });
-    m.add_opening(ElementKind::Window, Opening { wall: north, s: 2.0, width: 1.4, height: 1.4, sill: 0.9 });
+    m.add_opening(
+        ElementKind::Door,
+        Opening { wall: w_up, s: 2.2, width: 0.9, height: 2.1, sill: 0.0, type_key: "door-single".into(), hand: 'a', face: 'a' },
+    );
+    m.add_opening(
+        ElementKind::Window,
+        Opening { wall: north, s: 2.0, width: 1.4, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
+    );
 
     // Items: living room + kitchen + bedroom.
     m.add_item(l0, ItemKind::Sofa, Vec2::new(2.2, 5.6), 0.0);
@@ -892,7 +1267,7 @@ mod tests {
         let mut m = Model::new();
         let lvl = m.levels[0].id;
         let w = m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(6.0, 0.0)], 0.2, 3.0);
-        let d = m.add_opening(ElementKind::Door, Opening { wall: w, s: 3.0, width: 0.9, height: 2.1, sill: 0.0 });
+        let d = m.add_opening(ElementKind::Door, Opening { wall: w, s: 3.0, width: 0.9, height: 2.1, sill: 0.0, ..Opening::default() });
         assert_eq!(m.elements.len(), 2);
         m.delete(w);
         assert!(m.element(d).is_none());
@@ -914,7 +1289,7 @@ mod tests {
         let mut m = Model::new();
         let lvl = m.levels[0].id;
         let w = m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(6.0, 0.0)], 0.2, 3.0);
-        let win = m.add_opening(ElementKind::Window, Opening { wall: w, s: 3.0, width: 1.2, height: 1.4, sill: 0.9 });
+        let win = m.add_opening(ElementKind::Window, Opening { wall: w, s: 3.0, width: 1.2, height: 1.4, sill: 0.9, ..Opening::default() });
         m.shift_opening(win, 5.9).unwrap(); // clamped below 6.0
         let o = m.element(win).unwrap();
         match &o.data {
@@ -931,7 +1306,7 @@ mod tests {
 
     #[test]
     fn polyline_wall_length_and_point() {
-        let w = Wall { level: 0, pts: vec![Vec2::ZERO, Vec2::new(3.0, 0.0), Vec2::new(3.0, 4.0)], thickness: 0.2, height: 3.0 };
+        let w = Wall { level: 0, pts: vec![Vec2::ZERO, Vec2::new(3.0, 0.0), Vec2::new(3.0, 4.0)], ..Wall::default() };
         assert!((w.total_length() - 7.0).abs() < 1e-9);
         let (p, seg) = w.point_at(5.0);
         assert_eq!(seg, 1);
@@ -957,5 +1332,103 @@ mod tests {
         let back: Model = serde_json::from_str(&json).unwrap();
         assert_eq!(back.elements.len(), m.elements.len());
         assert_eq!(back.levels.len(), m.levels.len());
+    }
+
+    #[test]
+    fn wall_properties_defaults_and_heights() {
+        let mut m = sample();
+        let l1 = m.levels.iter().find(|l| l.name == "Level 1").unwrap().id;
+        let w = m.add_wall(l1, vec![Vec2::ZERO, Vec2::new(4.0, 0.0)], 0.30, 3.0);
+        let wall = m.wall(w).unwrap().clone();
+        assert_eq!(wall.type_key, "ext-300");
+        assert_eq!(wall.justification, Justification::Center);
+        assert_eq!(wall.ext_side, Side::Right);
+        assert!((wall.effective_height(&m) - 3.0).abs() < 1e-9);
+        // Top following the next level: add one 3 m above level 1.
+        let l2 = m.add_level("Level 2", 6.0, 3.0);
+        if let Some(ElementData::Wall(w)) = m.element_mut(w).map(|e| &mut e.data) {
+            w.top_level = Some(l2);
+            w.top_offset = 0.4;
+        }
+        assert!((m.wall(w).unwrap().effective_height(&m) - 3.4).abs() < 1e-9);
+        // Base offset raises the wall.
+        if let Some(ElementData::Wall(w)) = m.element_mut(w).map(|e| &mut e.data) {
+            w.base_offset = 0.3;
+        }
+        // Level 1 sits at elevation 3.0.
+        assert!((m.wall(w).unwrap().base_z(&m) - 3.3).abs() < 1e-9);
+        assert!((m.wall(w).unwrap().top_z(&m) - 6.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn wall_justification_moves_body_off_the_line() {
+        // Line along +X; Left justification keeps the left (north) face on it.
+        let mut w = Wall {
+            level: 0,
+            pts: vec![Vec2::ZERO, Vec2::new(6.0, 0.0)],
+            thickness: 0.2,
+            height: 3.0,
+            justification: Justification::Left,
+            ..Wall::default()
+        };
+        let outline = w.outline();
+        let north = &outline[0..w.pts.len()];
+        assert!(north.iter().all(|p| p.y.abs() < 1e-9));
+        w.justification = Justification::Right;
+        let outline = w.outline();
+        // Body moved to the left side: the left (north) face sits at +t.
+        let north = &outline[0..w.pts.len()];
+        assert!(north.iter().all(|p| (p.y - 0.2).abs() < 1e-9));
+    }
+
+    #[test]
+    fn foundation_from_seed_follows_walls() {
+        let mut m = sample();
+        let l0 = m.levels[0].id;
+        let id = m.add_foundation(Foundation {
+            id: 0,
+            level: l0,
+            kind: FoundationKind::StemSlab,
+            seed: Vec2::new(4.0, 2.0),
+            sizes: FoundationSizes::default(),
+            name: String::new(),
+        });
+        let f = m.foundation(id).unwrap().clone();
+        assert!(!f.name.is_empty());
+        let (p, outline) = m.foundation_resolved(&f).expect("outline found");
+        assert_eq!(p.kind, FoundationKind::StemSlab);
+        assert!((poly_area(&outline).abs()) > 1.0);
+        let parts = foundation::foundation_geometry(&outline, &p);
+        assert!(foundation::foundation_concrete_volume(&parts) > 0.5);
+        // A seed outside every outline resolves to nothing.
+        let outside = Foundation {
+            id: 0,
+            level: l0,
+            kind: FoundationKind::Slab,
+            seed: Vec2::new(50.0, 50.0),
+            sizes: FoundationSizes::default(),
+            name: String::new(),
+        };
+        assert!(m.foundation_resolved(&outside).is_none());
+        // Schedule gains a foundations row.
+        assert!(m.schedule().iter().any(|r| r.group == "Foundations"));
+    }
+
+    #[test]
+    fn old_json_without_new_fields_loads() {
+        // A v0.4 file: walls/openings without the new fields, no foundations.
+        let old = r#"{
+            "levels": [{"id":1,"name":"L0","elevation":0.0,"height":3.0}],
+            "grids": [],
+            "elements": [{"id":2,"kind":"Wall","name":"Wall 2",
+                "data":{"Wall":{"level":1,"pts":[[0,0],[6,0]],"thickness":0.2,"height":3.0}},"paint":null}],
+            "next_id": 3
+        }"#;
+        let m: Model = serde_json::from_str(old).unwrap();
+        let w = m.wall(2).unwrap();
+        assert_eq!(w.type_key, "");
+        assert_eq!(w.justification, Justification::Center);
+        assert!(w.top_level.is_none());
+        assert!(m.foundations.is_empty());
     }
 }

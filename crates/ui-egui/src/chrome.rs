@@ -4,14 +4,14 @@
 //! adopted `craft-ui` crate (storytold craft-libs, MIT OR Apache-2.0).
 
 use crate::theme::{self, Theme, Tokens};
-use bimcraft_bim::{ElementData, ElementKind, GridAxis, ItemKind};
+use bimcraft_bim::{ElementData, ElementKind, FoundationKind, GridAxis, ItemKind};
 use bimcraft_engine::{Selection, Tool, ViewMode};
 use egui::{Color32, CornerRadius, Rect, Sense, Stroke, Vec2};
 
 // ------------------------------------------------------------- app bar ----
 
 pub fn app_bar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
-    let t = theme::tokens();
+    let t = theme::tokens_for(app.theme);
     egui::Panel::top("app_bar").exact_size(34.0).resizable(false).frame(egui::Frame::NONE.fill(t.app_bar)).show(ui, |ui| {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.add_space(8.0);
@@ -197,18 +197,19 @@ fn snap_toggle(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
 pub const TOOLBAR_W: f32 = 48.0;
 
 pub fn toolbar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
-    let t = theme::tokens();
+    let t = theme::tokens_for(app.theme);
     egui::Panel::left("tool_rail").exact_size(TOOLBAR_W).resizable(false).frame(egui::Frame::NONE.fill(t.app_bar)).show(ui, |ui| {
         ui.add_space(6.0);
         let style = theme::icon_button_style(&t);
         use craft_ui::buttons::IconButton;
-        let tools: [(Tool, &str); 10] = [
+        let tools: [(Tool, &str); 11] = [
             (Tool::Select, "Select / move (S)"),
             (Tool::Wall, "Wall — chain polyline (W)"),
             (Tool::Door, "Place door (D)"),
             (Tool::Window, "Place window (N)"),
             (Tool::Floor, "Floor slab polygon (F)"),
             (Tool::Ceiling, "Ceiling polygon (C)"),
+            (Tool::Foundation, "Foundation under a building outline (B)"),
             (Tool::Item, "Place item (I)"),
             (Tool::Measure, "Measure distance (M)"),
             (Tool::SectionLine, "Section line — two clicks (X)"),
@@ -305,19 +306,29 @@ pub fn draw_tool_icon(p: &egui::Painter, c: egui::Pos2, tool: Tool, color: Color
             p.line_segment([c + Vec2::new(1.5, 1.0), c + Vec2::new(1.5, 6.0)], fill);
             p.circle_filled(c + Vec2::new(1.5, 7.2), 1.3, color);
         }
+        Tool::Foundation => {
+            // Ground slab (edge-on line pair) + footing trapezoid + wall stub.
+            p.line_segment([c + Vec2::new(-6.0, 1.0), c + Vec2::new(6.0, 1.0)], s);
+            p.line_segment([c + Vec2::new(-6.0, 3.0), c + Vec2::new(6.0, 3.0)], s);
+            p.line_segment([c + Vec2::new(-1.5, -6.0), c + Vec2::new(-1.5, 1.0)], fill);
+            p.line_segment([c + Vec2::new(1.5, -6.0), c + Vec2::new(1.5, 1.0)], fill);
+            p.line_segment([c + Vec2::new(-2.0, 3.0), c + Vec2::new(-3.5, 6.0)], fill);
+            p.line_segment([c + Vec2::new(2.0, 3.0), c + Vec2::new(3.5, 6.0)], fill);
+            p.line_segment([c + Vec2::new(-3.5, 6.0), c + Vec2::new(3.5, 6.0)], fill);
+        }
     }
 }
 
 // ----------------------------------------------------------------- dock ---
 
 pub fn dock(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
-    let t = theme::tokens();
-    egui::Panel::right("dock").exact_size(288.0).resizable(false).frame(egui::Frame::NONE.fill(t.panel)).show(ui, |ui| {
-        // Tab row.
-        ui.horizontal(|ui| {
+    let t = theme::tokens_for(app.theme);
+    egui::Panel::right("dock").exact_size(304.0).resizable(true).size_range(240.0..=460.0).frame(egui::Frame::NONE.fill(t.panel)).show(ui, |ui| {
+        // Tab row (wrapped: every tab stays reachable at 240 px width).
+        ui.horizontal_wrapped(|ui| {
             for tab in crate::DockTab::ALL {
                 let active = app.dock_tab == tab;
-                let txt = egui::RichText::new(tab.label()).font(theme::font_ui(11.5)).color(if active { Color32::WHITE } else { t.text_dim });
+                let txt = egui::RichText::new(tab.label()).font(theme::font_ui(11.5)).color(if active { t.text_strong } else { t.text_dim });
                 if ui.add(egui::Button::new(txt).fill(if active { t.tool_active } else { Color32::TRANSPARENT })).clicked() {
                     app.dock_tab = tab;
                 }
@@ -329,14 +340,15 @@ pub fn dock(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             crate::DockTab::Levels => levels_ui(ui, app, &t),
             crate::DockTab::Library => library_ui(ui, app, &t),
             crate::DockTab::Schedule => schedule_ui(ui, app, &t),
+            crate::DockTab::Foundation => foundation_ui(ui, app, &t),
             crate::DockTab::Model => model_ui(ui, app, &t),
         });
     });
 }
 
-fn section(ui: &mut egui::Ui, title: &str) {
+fn section(ui: &mut egui::Ui, title: &str, t: &Tokens) {
     ui.add_space(2.0);
-    ui.label(egui::RichText::new(title).font(theme::font_ui(11.0)).strong().color(theme::tokens().text_dim));
+    ui.label(egui::RichText::new(title).font(theme::font_ui(11.0)).strong().color(t.text_dim));
     ui.separator();
 }
 
@@ -353,12 +365,12 @@ fn properties_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
     match app.session.selection {
         Selection::None => {
             if app.session.tool == Tool::Paint {
-                section(ui, "Paint");
+                section(ui, "Paint", t);
                 ui.label(
                     egui::RichText::new("Pick a color, then click elements in the plan or 3D view.").font(theme::font_ui(11.0)).color(t.text_dim),
                 );
                 ui.add_space(4.0);
-                paint_palette(ui, app);
+                paint_palette(ui, app, t);
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new("Double-click / Enter: paint every element of the same kind.").font(theme::font_ui(10.5)).color(t.text_dim),
@@ -368,15 +380,18 @@ fn properties_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
             ui.label(egui::RichText::new("Nothing selected").font(theme::font_ui(12.0)).color(t.text_dim));
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("Pick an element in the plan:\n· walls, doors, windows, floors, ceilings, items\n· or a datum grid line")
-                    .font(theme::font_ui(11.0))
-                    .color(t.text_dim),
+                egui::RichText::new(
+                    "Pick an element in the plan:\n· walls, doors, windows, floors, ceilings, items, foundations\n· or a datum grid line",
+                )
+                .font(theme::font_ui(11.0))
+                .color(t.text_dim),
             );
         }
         Selection::Level(id) => level_editor(ui, app, t, id),
         Selection::Grid(id) => grid_editor(ui, app, t, id),
         Selection::Element(id) => element_editor(ui, app, t, id),
         Selection::Section(id) => section_editor(ui, app, t, id),
+        Selection::Foundation(id) => foundation_editor(ui, app, t, id),
     }
 }
 
@@ -386,8 +401,7 @@ const PAINTS: [u32; 16] = [
     0xe4e9f1, 0x3d4553,
 ];
 
-fn paint_palette(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
-    let t = theme::tokens();
+fn paint_palette(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
     egui::Grid::new("paint_palette").num_columns(8).spacing([4.0, 4.0]).show(ui, |ui| {
         for (i, &c) in PAINTS.iter().enumerate() {
             let col = Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
@@ -421,8 +435,7 @@ fn section_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, i
         ui.label("Section not found");
         return;
     };
-    let _ = t;
-    section(ui, "Section");
+    section(ui, "Section", t);
     ui.horizontal(|ui| {
         ui.label("Name");
         let mut name = sec.name.clone();
@@ -464,7 +477,7 @@ fn level_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id:
         ui.label("Level not found");
         return;
     };
-    section(ui, "Level");
+    section(ui, "Level", t);
     ui.horizontal(|ui| {
         ui.label("Name");
         let mut name = level.name.clone();
@@ -506,7 +519,7 @@ fn grid_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: 
         return;
     };
     let g = app.session.model.grids[idx].clone();
-    section(ui, "Datum grid");
+    section(ui, "Datum grid", t);
     ui.horizontal(|ui| {
         ui.label("Name");
         let mut name = g.name.clone();
@@ -531,8 +544,17 @@ fn element_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, i
         app.session.select(Selection::None);
         return;
     };
-    section(ui, &el.name);
-    // Name (full properties: every element is renamable).
+    // Full properties: one editor block per element kind (JS propsBlock parity).
+    let kind_label = match el.kind {
+        ElementKind::Wall => "Wall",
+        ElementKind::Door => "Door",
+        ElementKind::Window => "Window",
+        ElementKind::Slab => "Floor",
+        ElementKind::Ceiling => "Ceiling",
+        ElementKind::Item => "Item",
+    };
+    section(ui, kind_label, t);
+    // Name (every element is renamable).
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Name").font(theme::font_ui(12.0)));
         let mut name = el.name.clone();
@@ -543,127 +565,17 @@ fn element_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, i
             }
         }
     });
-    let mut changed = false;
     match &el.data {
-        ElementData::Wall(w) => {
-            let len = w.total_length();
-            ui.label(
-                egui::RichText::new(format!("{} segments · length {:.2} m", w.pts.len().saturating_sub(1), len))
-                    .font(theme::font_mono(11.0))
-                    .color(t.text_dim),
-            );
-            let mut thk = w.thickness;
-            let mut h = w.height;
-            changed |= drag_f64(ui, "Thickness", &mut thk, 0.01, 0.05..=2.0, " m");
-            changed |= drag_f64(ui, "Height", &mut h, 0.05, 0.5..=20.0, " m");
-            if changed {
-                app.session.begin_edit();
-                if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
-                    w.thickness = thk;
-                    w.height = h;
-                }
-            }
-        }
-        ElementData::Opening(o) => {
-            let wall_len = app.session.model.wall(o.wall).map(|w| w.total_length()).unwrap_or(0.0);
-            let kind_label = if el.kind == ElementKind::Door { "Door" } else { "Window" };
-            ui.label(egui::RichText::new(format!("{kind_label} hosted on a wall")).font(theme::font_ui(11.0)).color(t.text_dim));
-            let mut width = o.width;
-            let mut height = o.height;
-            let mut sill = o.sill;
-            changed |= drag_f64(ui, "Width", &mut width, 0.01, 0.3..=4.0, " m");
-            changed |= drag_f64(ui, "Height", &mut height, 0.01, 0.3..=4.0, " m");
-            changed |= drag_f64(ui, "Sill", &mut sill, 0.01, 0.0..=2.5, " m");
-            // Shift along host wall (the "windows to be shifted" feature).
-            let mut s = o.s;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Shift").font(theme::font_ui(12.0)));
-                let slider = ui.add(egui::Slider::new(&mut s, 0.0..=wall_len.max(0.1)).text("along wall").suffix(" m"));
-                changed |= slider.changed();
-            });
-            if changed {
-                app.session.begin_edit();
-                if let Some(ElementData::Opening(o)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
-                    o.width = width;
-                    o.height = height;
-                    o.sill = sill;
-                    o.s = s;
-                }
-                // Re-clamp via the model API.
-                let s_final = app.session.model.element(id).and_then(|e| match &e.data {
-                    ElementData::Opening(o) => Some(o.s),
-                    _ => None,
-                });
-                if let Some(s) = s_final {
-                    app.session.model.shift_opening(id, s);
-                }
-            }
-            ui.label(
-                egui::RichText::new("Tip: drag the opening in the plan to slide it along the wall.").font(theme::font_ui(10.5)).color(t.text_dim),
-            );
-        }
-        ElementData::Slab(_) | ElementData::Ceiling(_) => {
-            let (pts, mut thk, mut elev, area) = match &el.data {
-                ElementData::Slab(s) => (s.pts.clone(), s.thickness, s.elevation, s.area()),
-                ElementData::Ceiling(c) => (c.pts.clone(), c.thickness, c.elevation, c.area()),
-                _ => unreachable!(),
-            };
-            ui.label(
-                egui::RichText::new(format!("Polygon · {} points · area {:.2} m²", pts.len(), area)).font(theme::font_mono(11.0)).color(t.text_dim),
-            );
-            changed |= drag_f64(ui, "Thickness", &mut thk, 0.01, 0.02..=2.0, " m");
-            changed |= drag_f64(ui, "Elevation", &mut elev, 0.02, -2.0..=30.0, " m");
-            if changed {
-                app.session.begin_edit();
-                match app.session.model.element_mut(id).map(|e| &mut e.data) {
-                    Some(ElementData::Slab(s)) => {
-                        s.thickness = thk;
-                        s.elevation = elev;
-                    }
-                    Some(ElementData::Ceiling(c)) => {
-                        c.thickness = thk;
-                        c.elevation = elev;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        ElementData::Item(i) => {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} · footprint {:.2} × {:.2} × {:.2} m",
-                    i.kind.name(),
-                    i.kind.preset().0,
-                    i.kind.preset().1,
-                    i.kind.preset().2
-                ))
-                .font(theme::font_mono(11.0))
-                .color(t.text_dim),
-            );
-            // Full placement properties: position on the plan.
-            let (mut px, mut py) = (i.pos.x, i.pos.y);
-            changed |= drag_f64(ui, "Pos X", &mut px, 0.05, -200.0..=200.0, " m");
-            changed |= drag_f64(ui, "Pos Y", &mut py, 0.05, -200.0..=200.0, " m");
-            let mut rot_deg = i.rotation.to_degrees();
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Rotate").font(theme::font_ui(12.0)));
-                let sl = ui.add(egui::Slider::new(&mut rot_deg, -180.0..=180.0).suffix("°"));
-                changed |= sl.changed();
-            });
-            if changed {
-                app.session.begin_edit();
-                if let Some(ElementData::Item(it)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
-                    it.pos = bimcraft_geom::Vec2::new(px, py);
-                    it.rotation = rot_deg.to_radians();
-                }
-            }
-            ui.label(egui::RichText::new("R rotates 90° · Shift+R rotates 15°").font(theme::font_ui(10.5)).color(t.text_dim));
-        }
+        ElementData::Wall(w) => wall_editor(ui, app, t, id, w),
+        ElementData::Opening(o) => opening_editor(ui, app, t, id, el.kind, o),
+        ElementData::Slab(s) => slab_editor(ui, app, t, id, s),
+        ElementData::Ceiling(c) => ceiling_editor(ui, app, t, id, c),
+        ElementData::Item(i) => item_editor(ui, app, t, id, i),
     }
     // Paint section (Paint tool + properties: full color control).
     ui.add_space(4.0);
-    section(ui, "Paint");
-    paint_palette(ui, app);
+    section(ui, "Paint", t);
+    paint_palette(ui, app, t);
     ui.horizontal(|ui| {
         if ui.button("Eyedropper").on_hover_text("Take this element's paint as the active color").clicked() {
             app.session.pick_paint(id);
@@ -678,13 +590,547 @@ fn element_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, i
     }
 }
 
+fn caption(ui: &mut egui::Ui, t: &Tokens, text: String) {
+    ui.label(egui::RichText::new(text).font(theme::font_mono(11.0)).color(t.text_dim));
+}
+
+/// The next level strictly above `level_id` (by elevation), for "up to level" tops.
+fn next_level_above(model: &bimcraft_bim::Model, level_id: u64) -> Option<u64> {
+    let base = model.level(level_id)?.elevation;
+    model.levels.iter().filter(|l| l.id != level_id && l.elevation > base).min_by(|a, b| a.elevation.total_cmp(&b.elevation)).map(|l| l.id)
+}
+
+fn wall_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64, w: &bimcraft_bim::Wall) {
+    let len = w.total_length();
+    caption(ui, t, format!("{} segments · length {:.2} m", w.pts.len().saturating_sub(1), len));
+
+    // Type: assembly presets (thickness drives the geometry) + Custom.
+    let matched = bimcraft_bim::wall_type(&w.type_key).filter(|pt| (pt.thickness - w.thickness).abs() < 1e-3);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Type").font(theme::font_ui(12.0)));
+        egui::ComboBox::from_id_salt("wall_type").selected_text(matched.map(|pt| pt.name).unwrap_or("Custom")).show_ui(ui, |ui| {
+            for pt in bimcraft_bim::WALL_TYPES {
+                let on = matched.map(|cur| cur.key == pt.key).unwrap_or(false);
+                if ui.selectable_label(on, pt.name).clicked() {
+                    app.session.begin_edit();
+                    if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                        w.type_key = pt.key.to_string();
+                        w.thickness = pt.thickness;
+                    }
+                }
+            }
+            if ui.selectable_label(matched.is_none(), "Custom").clicked() {
+                app.session.begin_edit();
+                if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                    w.type_key = String::new();
+                }
+            }
+        });
+    });
+
+    // Thickness: keep the assembly key in sync (no preset at that thickness = custom).
+    let mut thk = w.thickness;
+    if drag_f64(ui, "Thickness", &mut thk, 0.01, 0.05..=2.0, " m") {
+        app.session.begin_edit();
+        if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+            w.thickness = thk;
+            w.type_key = bimcraft_bim::wall_type_for_thickness(thk).map(|pt| pt.key).unwrap_or("").to_string();
+        }
+    }
+
+    // Length: editing moves the last point along the last segment's direction.
+    let mut new_len = len;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Length").font(theme::font_ui(12.0)));
+        if ui.add(egui::DragValue::new(&mut new_len).speed(0.1).range(0.1..=1000.0).suffix(" m")).changed() {
+            app.session.begin_edit();
+            if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                let n = w.pts.len();
+                if n >= 2 {
+                    if n == 2 {
+                        let dir = (w.pts[1] - w.pts[0]).normalize();
+                        w.pts[1] = w.pts[0] + dir * new_len;
+                    } else {
+                        let prev = w.pts[n - 2];
+                        let dir = (w.pts[n - 1] - prev).normalize();
+                        let up_to: f64 = w.pts.windows(2).take(n - 2).map(|s| (s[1] - s[0]).length()).sum();
+                        let rest = (new_len - up_to).max(0.05);
+                        w.pts[n - 1] = prev + dir * rest;
+                    }
+                }
+            }
+        }
+    });
+
+    // Justification: where the body sits relative to the location line.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Justification").font(theme::font_ui(12.0)));
+        egui::ComboBox::from_id_salt("wall_just")
+            .selected_text(match w.justification {
+                bimcraft_bim::Justification::Left => "Left",
+                bimcraft_bim::Justification::Center => "Center",
+                bimcraft_bim::Justification::Right => "Right",
+            })
+            .show_ui(ui, |ui| {
+                for (j, name) in [
+                    (bimcraft_bim::Justification::Left, "Left"),
+                    (bimcraft_bim::Justification::Center, "Center"),
+                    (bimcraft_bim::Justification::Right, "Right"),
+                ] {
+                    if ui.selectable_label(w.justification == j, name).clicked() {
+                        app.session.begin_edit();
+                        if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                            w.justification = j;
+                        }
+                    }
+                }
+            });
+    });
+
+    // Top: fixed height or following a level above.
+    let up_to_level = w.top_level.is_some();
+    let mut top_mode: Option<bool> = None;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Top").font(theme::font_ui(12.0)));
+        egui::ComboBox::from_id_salt("wall_top").selected_text(if up_to_level { "Up to level" } else { "Fixed height" }).show_ui(ui, |ui| {
+            if ui.selectable_label(!up_to_level, "Fixed height").clicked() {
+                top_mode = Some(false);
+            }
+            if ui.selectable_label(up_to_level, "Up to level").clicked() {
+                top_mode = Some(true);
+            }
+        });
+    });
+    if top_mode == Some(true) && !up_to_level {
+        match next_level_above(&app.session.model, w.level) {
+            Some(lid) => {
+                app.session.begin_edit();
+                if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                    w.top_level = Some(lid);
+                }
+            }
+            None => app.session.status = "No level above — keeping fixed height".into(),
+        }
+    }
+    if top_mode == Some(false) && up_to_level {
+        // Freeze the current effective height so the wall does not jump.
+        let h = w.effective_height(&app.session.model);
+        app.session.begin_edit();
+        if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+            w.top_level = None;
+            w.height = h;
+        }
+    }
+    if up_to_level {
+        // Levels strictly above the wall's level, by elevation.
+        let base_elev = app.session.model.level(w.level).map(|l| l.elevation).unwrap_or(0.0);
+        let mut entries: Vec<(u64, String)> =
+            app.session.model.levels.iter().filter(|l| l.elevation > base_elev).map(|l| (l.id, l.name.clone())).collect();
+        if let Some(tid) = w.top_level {
+            if !entries.iter().any(|(lid, _)| *lid == tid) {
+                if let Some(l) = app.session.model.level(tid) {
+                    entries.push((l.id, l.name.clone()));
+                }
+            }
+        }
+        let sel_name = w.top_level.and_then(|tid| app.session.model.level(tid).map(|l| l.name.clone())).unwrap_or_else(|| "?".into());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Level").font(theme::font_ui(12.0)));
+            egui::ComboBox::from_id_salt("wall_top_level").selected_text(sel_name).show_ui(ui, |ui| {
+                for (lid, name) in &entries {
+                    if ui.selectable_label(w.top_level == Some(*lid), name).clicked() {
+                        app.session.begin_edit();
+                        if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                            w.top_level = Some(*lid);
+                        }
+                    }
+                }
+            });
+        });
+        let mut top_off = w.top_offset;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Top offset").font(theme::font_ui(12.0)));
+            if ui.add(egui::DragValue::new(&mut top_off).speed(0.05).suffix(" m")).changed() {
+                app.session.begin_edit();
+                if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                    w.top_offset = top_off;
+                }
+            }
+        });
+    } else {
+        let mut h = w.height;
+        if drag_f64(ui, "Height", &mut h, 0.05, 0.5..=20.0, " m") {
+            app.session.begin_edit();
+            if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                w.height = h;
+            }
+        }
+    }
+
+    // Base offset above the level floor (e.g. on a foundation stem).
+    let mut base = w.base_offset;
+    if drag_f64(ui, "Base offset", &mut base, 0.05, -2.0..=10.0, " m") {
+        app.session.begin_edit();
+        if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+            w.base_offset = base;
+        }
+    }
+
+    // Outside face: which side of the location line is the exterior.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Outside face").font(theme::font_ui(12.0)));
+        ui.label(egui::RichText::new(w.ext_side.label()).font(theme::font_ui(12.0)).color(t.text_dim));
+        if ui.button("Flip").on_hover_text("Swap the outside face to the other side").clicked() {
+            app.session.begin_edit();
+            if let Some(ElementData::Wall(w)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                w.ext_side = w.ext_side.flip();
+            }
+        }
+    });
+
+    // Level: read-only (move walls by selecting them on the level).
+    if let Some(name) = app.session.model.level(w.level).map(|l| l.name.clone()) {
+        ui.label(egui::RichText::new(format!("Level: {name}")).font(theme::font_ui(11.0)).color(t.text_dim));
+    }
+}
+
+fn opening_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64, kind: ElementKind, o: &bimcraft_bim::Opening) {
+    let family = if kind == ElementKind::Door { bimcraft_bim::OpeningFamily::Door } else { bimcraft_bim::OpeningFamily::Window };
+    let kind_label = if kind == ElementKind::Door { "Door" } else { "Window" };
+    let host = app.session.model.element(o.wall);
+    let wall_len = app.session.model.wall(o.wall).map(|w| w.total_length()).unwrap_or(0.0);
+    ui.label(
+        egui::RichText::new(format!("{kind_label} hosted on {}", host.map(|w| w.name.as_str()).unwrap_or("a wall")))
+            .font(theme::font_ui(11.0))
+            .color(t.text_dim),
+    );
+
+    // Type: family presets (width + height come from the preset) + Custom.
+    let preset = o.opening_type();
+    let in_family = preset.map(|pt| pt.family == family).unwrap_or(false);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Type").font(theme::font_ui(12.0)));
+        egui::ComboBox::from_id_salt("opening_type")
+            .selected_text(if in_family { preset.map(|pt| pt.name).unwrap_or("Custom") } else { "Custom" })
+            .show_ui(ui, |ui| {
+                for pt in bimcraft_bim::opening_types_of(family) {
+                    let on = preset.map(|cur| cur.key == pt.key).unwrap_or(false);
+                    if ui.selectable_label(on, pt.name).clicked() {
+                        app.session.begin_edit();
+                        if let Some(ElementData::Opening(o)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                            o.type_key = pt.key.to_string();
+                            o.width = pt.width;
+                            o.height = pt.height;
+                        }
+                        // Re-clamp the center position after the width change.
+                        let s = app.session.model.element(id).and_then(|e| match &e.data {
+                            ElementData::Opening(o) => Some(o.s),
+                            _ => None,
+                        });
+                        if let Some(s) = s {
+                            app.session.model.shift_opening(id, s);
+                        }
+                    }
+                }
+                if ui.selectable_label(!in_family, "Custom").clicked() {
+                    app.session.begin_edit();
+                    if let Some(ElementData::Opening(o)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                        o.type_key = String::new();
+                    }
+                }
+            });
+    });
+
+    // Dimensions.
+    let mut width = o.width;
+    let mut height = o.height;
+    let mut sill = o.sill;
+    let mut dims = false;
+    dims |= drag_f64(ui, "Width", &mut width, 0.01, 0.3..=4.0, " m");
+    dims |= drag_f64(ui, "Height", &mut height, 0.01, 0.3..=4.0, " m");
+    if kind == ElementKind::Window {
+        dims |= drag_f64(ui, "Sill", &mut sill, 0.01, 0.0..=2.5, " m");
+    }
+
+    // Position: `s` is the center arclength; from start / from end read the jambs.
+    let mut from_start = (o.s - o.width / 2.0).max(0.0);
+    let mut from_end = (wall_len - o.s - o.width / 2.0).max(0.0);
+    let mut fs = false;
+    let mut fe = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("From start").font(theme::font_ui(12.0)));
+        fs |= ui.add(egui::DragValue::new(&mut from_start).speed(0.05).suffix(" m")).changed();
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("From end").font(theme::font_ui(12.0)));
+        fe |= ui.add(egui::DragValue::new(&mut from_end).speed(0.05).suffix(" m")).changed();
+    });
+
+    // Shift along host wall (the "windows to be shifted" feature, kept).
+    let mut s = o.s;
+    let mut shifted = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Shift").font(theme::font_ui(12.0)));
+        shifted |= ui.add(egui::Slider::new(&mut s, 0.0..=wall_len.max(0.1)).text("along wall").suffix(" m")).changed();
+    });
+
+    if dims || fs || fe || shifted {
+        app.session.begin_edit();
+        if let Some(ElementData::Opening(o)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+            o.width = width;
+            o.height = height;
+            o.sill = sill;
+            if fs {
+                o.s = from_start + o.width / 2.0;
+            } else if fe {
+                o.s = wall_len - from_end - o.width / 2.0;
+            } else if shifted {
+                o.s = s;
+            }
+        }
+        // Re-clamp via the model API.
+        let s_final = app.session.model.element(id).and_then(|e| match &e.data {
+            ElementData::Opening(o) => Some(o.s),
+            _ => None,
+        });
+        if let Some(s) = s_final {
+            app.session.model.shift_opening(id, s);
+        }
+    }
+
+    // Hand (hinge side) only for handed presets; swing face for everything.
+    if preset.map(|pt| pt.handed).unwrap_or(false) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Hinges").font(theme::font_ui(12.0)));
+            ui.label(egui::RichText::new(if o.hand == 'a' { "A" } else { "B" }).font(theme::font_ui(12.0)).color(t.text_dim));
+            if ui.button("Flip").on_hover_text("Swap the hinge side").clicked() {
+                app.session.begin_edit();
+                if let Some(ElementData::Opening(o)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                    o.hand = if o.hand == 'a' { 'b' } else { 'a' };
+                }
+            }
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Swing faces").font(theme::font_ui(12.0)));
+        ui.label(egui::RichText::new(if o.face == 'a' { "A" } else { "B" }).font(theme::font_ui(12.0)).color(t.text_dim));
+        if ui.button("Flip").on_hover_text("Mirror the swing to the other face").clicked() {
+            app.session.begin_edit();
+            if let Some(ElementData::Opening(o)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                o.face = if o.face == 'a' { 'b' } else { 'a' };
+            }
+        }
+    });
+
+    caption(ui, t, format!("Host wall length {:.2} m", wall_len));
+    ui.label(egui::RichText::new("Tip: drag the opening in the plan to slide it along the wall.").font(theme::font_ui(10.5)).color(t.text_dim));
+}
+
+fn slab_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64, s: &bimcraft_bim::Slab) {
+    caption(ui, t, format!("Polygon · {} points · area {:.2} m²", s.pts.len(), s.area()));
+    // Kind: floor finish preset.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Kind").font(theme::font_ui(12.0)));
+        let cur = s.kind.clone();
+        egui::ComboBox::from_id_salt("floor_kind").selected_text(cur.clone()).show_ui(ui, |ui| {
+            for k in bimcraft_bim::FLOOR_KINDS {
+                if ui.selectable_label(cur == *k, *k).clicked() {
+                    app.session.begin_edit();
+                    if let Some(ElementData::Slab(sl)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                        sl.kind = (*k).to_string();
+                    }
+                }
+            }
+        });
+    });
+    let mut thk = s.thickness;
+    let mut elev = s.elevation;
+    let mut changed = false;
+    changed |= drag_f64(ui, "Thickness", &mut thk, 0.01, 0.02..=2.0, " m");
+    changed |= drag_f64(ui, "Elevation", &mut elev, 0.02, -2.0..=30.0, " m");
+    if changed {
+        app.session.begin_edit();
+        if let Some(ElementData::Slab(sl)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+            sl.thickness = thk;
+            sl.elevation = elev;
+        }
+    }
+}
+
+fn ceiling_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64, c: &bimcraft_bim::Ceiling) {
+    caption(ui, t, format!("Polygon · {} points · area {:.2} m²", c.pts.len(), c.area()));
+    let mut elev = c.elevation;
+    let mut thk = c.thickness;
+    let mut changed = false;
+    changed |= drag_f64(ui, "Height", &mut elev, 0.05, 0.5..=20.0, " m");
+    changed |= drag_f64(ui, "Thickness", &mut thk, 0.01, 0.01..=2.0, " m");
+    // Pattern: plan hatch (none / grid / plank).
+    let mut pattern = c.pattern.clone();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Pattern").font(theme::font_ui(12.0)));
+        egui::ComboBox::from_id_salt("ceiling_pattern").selected_text(pattern.clone()).show_ui(ui, |ui| {
+            for p in bimcraft_bim::CEILING_PATTERNS {
+                if ui.selectable_label(pattern == *p, *p).clicked() {
+                    pattern = (*p).to_string();
+                }
+            }
+        });
+    });
+    changed |= pattern != c.pattern;
+    if changed {
+        app.session.begin_edit();
+        if let Some(ElementData::Ceiling(cl)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+            cl.elevation = elev;
+            cl.thickness = thk;
+            cl.pattern = pattern;
+        }
+    }
+}
+
+fn item_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64, i: &bimcraft_bim::Item) {
+    caption(ui, t, format!("{} · footprint {:.2} × {:.2} × {:.2} m", i.kind.name(), i.kind.preset().0, i.kind.preset().1, i.kind.preset().2));
+    // Full placement properties: position on the plan.
+    let (mut px, mut py) = (i.pos.x, i.pos.y);
+    let mut changed = false;
+    changed |= drag_f64(ui, "Pos X", &mut px, 0.05, -200.0..=200.0, " m");
+    changed |= drag_f64(ui, "Pos Y", &mut py, 0.05, -200.0..=200.0, " m");
+    let mut rot_deg = i.rotation.to_degrees();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Rotate").font(theme::font_ui(12.0)));
+        let sl = ui.add(egui::Slider::new(&mut rot_deg, -180.0..=180.0).suffix("°"));
+        changed |= sl.changed();
+    });
+    if changed {
+        app.session.begin_edit();
+        if let Some(ElementData::Item(it)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+            it.pos = bimcraft_geom::Vec2::new(px, py);
+            it.rotation = rot_deg.to_radians();
+        }
+    }
+    ui.label(egui::RichText::new("R rotates 90° · Shift+R rotates 15°").font(theme::font_ui(10.5)).color(t.text_dim));
+}
+
+fn foundation_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64) {
+    let Some(f) = app.session.model.foundation(id).cloned() else {
+        app.session.select(Selection::None);
+        return;
+    };
+    section(ui, "Foundation", t);
+    // Name.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Name").font(theme::font_ui(12.0)));
+        let mut name = f.name.clone();
+        if ui.text_edit_singleline(&mut name).lost_focus() && name != f.name {
+            app.session.begin_edit();
+            if let Some(fo) = app.session.model.foundation_mut(id) {
+                fo.name = name;
+            }
+        }
+    });
+
+    // Kind: switching resets the depth-related sizes (fresh depths per kind).
+    let mut kind_pick: Option<FoundationKind> = None;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Kind").font(theme::font_ui(12.0)));
+        egui::ComboBox::from_id_salt("foundation_kind").selected_text(f.kind.label()).show_ui(ui, |ui| {
+            for k in FoundationKind::ALL {
+                if ui.selectable_label(f.kind == k, k.label()).clicked() {
+                    kind_pick = Some(k);
+                }
+            }
+        });
+    });
+    if let Some(k) = kind_pick {
+        if k != f.kind {
+            app.session.begin_edit();
+            if let Some(fo) = app.session.model.foundation_mut(id) {
+                fo.kind = k;
+                fo.sizes.bottom = 0.0;
+                fo.sizes.stem_drop = 0.0;
+            }
+            app.session.status = format!("Kind set to {} — depths reset to automatic", k.label());
+        }
+    }
+
+    // Stored sizes (0 = automatic). Only the kind's relevant fields are shown.
+    ui.label(egui::RichText::new("0 = automatic size").font(theme::font_ui(10.5)).color(t.text_dim));
+    let mut sizes = f.sizes;
+    let mut changed = false;
+    let stem = [(&mut sizes.stem_t, "Stem thickness"), (&mut sizes.foot_w, "Footing width"), (&mut sizes.foot_d, "Footing depth")];
+    match f.kind {
+        FoundationKind::Slab => {
+            changed |= drag_f64(ui, "Slab thickness", &mut sizes.slab_t, 0.01, 0.0..=2.0, " m");
+            changed |= drag_f64(ui, "Edge width", &mut sizes.edge_w, 0.01, 0.0..=2.0, " m");
+            changed |= drag_f64(ui, "Edge depth", &mut sizes.edge_d, 0.01, 0.0..=2.0, " m");
+        }
+        FoundationKind::StemSlab => {
+            for (v, label) in stem {
+                changed |= drag_f64(ui, label, v, 0.01, 0.0..=6.0, " m");
+            }
+            changed |= drag_f64(ui, "Below floor", &mut sizes.bottom, 0.01, 0.0..=6.0, " m");
+            changed |= drag_f64(ui, "Stem drop", &mut sizes.stem_drop, 0.01, 0.0..=6.0, " m");
+            changed |= drag_f64(ui, "Slab thickness", &mut sizes.slab_t, 0.01, 0.0..=2.0, " m");
+        }
+        FoundationKind::Crawl => {
+            for (v, label) in stem {
+                changed |= drag_f64(ui, label, v, 0.01, 0.0..=6.0, " m");
+            }
+            changed |= drag_f64(ui, "Below floor", &mut sizes.bottom, 0.01, 0.0..=6.0, " m");
+            changed |= drag_f64(ui, "Stem drop", &mut sizes.stem_drop, 0.01, 0.0..=6.0, " m");
+        }
+        FoundationKind::Basement => {
+            for (v, label) in stem {
+                changed |= drag_f64(ui, label, v, 0.01, 0.0..=6.0, " m");
+            }
+            changed |= drag_f64(ui, "Basement height", &mut sizes.basement_h, 0.01, 0.0..=6.0, " m");
+            changed |= drag_f64(ui, "Slab thickness", &mut sizes.slab_t, 0.01, 0.0..=2.0, " m");
+        }
+    }
+    if changed {
+        app.session.begin_edit();
+        if let Some(fo) = app.session.model.foundation_mut(id) {
+            fo.sizes = sizes;
+        }
+    }
+
+    // Computed block: outline, loads, footing, concrete volume, part list.
+    if let Some((p, outline)) = app.session.model.foundation_resolved(&f) {
+        let mut perimeter: f64 = outline.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+        if outline.len() >= 2 {
+            perimeter += (outline[0] - outline[outline.len() - 1]).length();
+        }
+        let (stories, heavy) = app.session.model.loads_on_level(f.level);
+        ui.add_space(4.0);
+        caption(ui, t, format!("Outline {:.1} m · {} {}", perimeter, stories, if stories == 1 { "story" } else { "stories" }));
+        if heavy {
+            caption(ui, t, "heavy walls — footings widened".into());
+        }
+        caption(ui, t, format!("Footing {:.2} × {:.2} m ({})", p.foot_w, p.foot_d, if f.sizes.foot_w > 0.0 { "set" } else { "auto" }));
+        let parts = bimcraft_bim::foundation::foundation_geometry(&outline, &p);
+        let volume = bimcraft_bim::foundation::foundation_concrete_volume(&parts);
+        caption(ui, t, format!("Concrete {volume:.2} m³ · {} parts", parts.len()));
+        for part in &parts {
+            caption(ui, t, format!("{}  z {:.2}..{:.2}", part.role.label(), part.z0, part.z1));
+        }
+    } else {
+        ui.label(egui::RichText::new("No building outline under the seed — sizes stay automatic.").font(theme::font_ui(11.0)).color(t.warning));
+    }
+
+    ui.add_space(4.0);
+    if ui.add(egui::Button::new(egui::RichText::new("Delete").color(t.danger))).clicked() {
+        app.session.begin_edit();
+        app.session.model.delete_foundation(id);
+        app.session.select(Selection::None);
+    }
+}
+
 fn levels_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
-    section(ui, "Levels");
+    section(ui, "Levels", t);
     let levels = app.session.model.levels.clone();
     for l in &levels {
         let is_active = Some(l.id) == app.session.active_level;
         let txt = format!("{}   elev {:.2} m   h {:.1} m", l.name, l.elevation, l.height);
-        let rich = egui::RichText::new(txt).font(theme::font_ui(12.0)).color(if is_active { Color32::WHITE } else { t.text_dim });
+        let rich = egui::RichText::new(txt).font(theme::font_ui(12.0)).color(if is_active { t.text_strong } else { t.text_dim });
         let resp =
             ui.add(egui::Button::new(rich).fill(if is_active { t.tool_active } else { t.input }).min_size(Vec2::new(ui.available_width(), 0.0)));
         if resp.clicked() {
@@ -698,17 +1144,82 @@ fn levels_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
         app.session.add_level();
     }
     ui.add_space(10.0);
-    section(ui, "View toggles");
+    section(ui, "View toggles", t);
     ui.checkbox(&mut app.show_items_2d, "Show items in plan");
     ui.checkbox(&mut app.show_ceilings_3d, "Show ceilings in 3D");
     ui.add_space(10.0);
-    section(ui, "Snapping");
+    section(ui, "Snapping", t);
     ui.checkbox(&mut app.session.snap_grid, "Grid snap (0.5 m, G)");
     ui.checkbox(&mut app.session.snap_endpoints, "Endpoint snap");
 }
 
+/// Foundation dock tab: list, next placement kind, formwork summary.
+fn foundation_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
+    section(ui, "Foundations", t);
+    let founds = app.session.model.foundations.clone();
+    if founds.is_empty() {
+        ui.label(egui::RichText::new("Click inside a building outline with the Foundation tool (B).").font(theme::font_ui(11.0)).color(t.text_dim));
+    }
+    for f in &founds {
+        let vol =
+            app.session.model.foundation_resolved(f).map(|(p, outline)| {
+                bimcraft_bim::foundation::foundation_concrete_volume(&bimcraft_bim::foundation::foundation_geometry(&outline, &p))
+            });
+        let vol_txt = vol.map(|v| format!("{v:.1} m³")).unwrap_or_else(|| "—".into());
+        let selected = app.session.selection == Selection::Foundation(f.id);
+        let rich = egui::RichText::new(format!("{} · {} · {}", f.name, f.kind.label(), vol_txt)).font(theme::font_ui(12.0)).color(if selected {
+            t.text_strong
+        } else {
+            t.text
+        });
+        let resp = ui
+            .add(egui::Button::new(rich).fill(if selected { t.tool_active } else { t.input }).min_size(Vec2::new(ui.available_width(), 0.0)))
+            .on_hover_text("Click to select · edit sizes in Properties");
+        if resp.clicked() {
+            app.session.select(Selection::Foundation(f.id));
+            app.dock_tab = crate::DockTab::Properties;
+        }
+    }
+    ui.horizontal(|ui| {
+        if ui.button("+ Place foundation").on_hover_text("Foundation tool: click inside a building outline (B)").clicked() {
+            app.session.set_tool(Tool::Foundation);
+            app.session.status = "Click inside a building outline to place the foundation".into();
+        }
+        let can_del = matches!(app.session.selection, Selection::Foundation(_));
+        if ui.add_enabled(can_del, egui::Button::new(egui::RichText::new("Delete selected").color(t.danger))).clicked() {
+            app.session.delete_selected();
+        }
+    });
+    ui.add_space(10.0);
+    section(ui, "Next placement", t);
+    egui::ComboBox::from_id_salt("next_foundation_kind").selected_text(app.session.foundation_kind.label()).show_ui(ui, |ui| {
+        for k in FoundationKind::ALL {
+            let on = app.session.foundation_kind == k;
+            if ui.selectable_label(on, k.label()).clicked() {
+                app.session.foundation_kind = k;
+            }
+        }
+    });
+    ui.label(egui::RichText::new("Sizes are automatic (0) until you override them in Properties.").font(theme::font_ui(10.5)).color(t.text_dim));
+    ui.add_space(10.0);
+    section(ui, "Formwork", t);
+    ui.checkbox(&mut app.session.show_formwork, "Show wall formwork (sheets + corners)");
+    if app.session.show_formwork {
+        if let Some(elid) = app.session.selected_element() {
+            if let Some(w) = app.session.model.wall(elid).cloned() {
+                let base_z = w.base_z(&app.session.model);
+                let top_z = w.top_z(&app.session.model);
+                let panels = bimcraft_bim::formwork::wall_formwork(&w, base_z, top_z);
+                let posts = bimcraft_bim::formwork::wall_corner_posts(&w, base_z, top_z);
+                let area = bimcraft_bim::formwork::formwork_area(&panels);
+                caption(ui, t, format!("Panels {} · sheathing {:.1} m² · corner posts {}", panels.len(), area, posts.len()));
+            }
+        }
+    }
+}
+
 fn library_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
-    section(ui, "Item library");
+    section(ui, "Item library", t);
     ui.label(egui::RichText::new("Pick a kind, then click in the plan to place. R rotates.").font(theme::font_ui(11.0)).color(t.text_dim));
     ui.add_space(4.0);
     egui::Grid::new("item_library").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
@@ -716,18 +1227,17 @@ fn library_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
             let (w, d, h) = kind.preset();
             let active = app.session.item_kind == kind && app.session.tool == Tool::Item;
             let txt = format!("{}  {:.1}×{:.1}×{:.1}", kind.name(), w, d, h);
-            let rich = egui::RichText::new(txt).font(theme::font_ui(11.5)).color(if active { Color32::WHITE } else { t.text });
+            let rich = egui::RichText::new(txt).font(theme::font_ui(11.5)).color(if active { t.text_strong } else { t.text });
             if ui.add(egui::Button::new(rich).fill(if active { t.tool_active } else { t.input }).min_size(Vec2::new(128.0, 0.0))).clicked() {
                 app.session.item_kind = kind;
                 app.session.set_tool(Tool::Item);
             }
         }
     });
-    let _ = t;
 }
 
-fn schedule_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, _t: &Tokens) {
-    section(ui, "Quantity schedule");
+fn schedule_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
+    section(ui, "Quantity schedule", t);
     let rows = app.session.model.schedule();
     if rows.is_empty() {
         ui.label("Nothing to schedule yet.");
@@ -742,7 +1252,7 @@ fn schedule_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, _t: &Tokens) {
             let mut last_group = String::new();
             for r in &rows {
                 if r.group != last_group {
-                    ui.label(egui::RichText::new(&r.group).font(theme::font_ui(11.0)).color(theme::tokens().accent));
+                    ui.label(egui::RichText::new(&r.group).font(theme::font_ui(11.0)).color(t.accent));
                     ui.label("");
                     ui.label("");
                     ui.end_row();
@@ -756,11 +1266,11 @@ fn schedule_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, _t: &Tokens) {
         });
     });
     ui.add_space(6.0);
-    ui.label(egui::RichText::new("CSV export: bimcraft-cli schedule <file> --csv").font(theme::font_ui(10.5)).color(theme::tokens().text_dim));
+    ui.label(egui::RichText::new("CSV export: bimcraft-cli schedule <file> --csv").font(theme::font_ui(10.5)).color(t.text_dim));
 }
 
 fn model_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
-    section(ui, "Datum grids");
+    section(ui, "Datum grids", t);
     let grids = app.session.model.grids.clone();
     for g in &grids {
         let label = format!("{}  {}  @ {:.1} m", g.name, if g.axis == GridAxis::V { "V" } else { "H" }, g.position);
@@ -791,7 +1301,7 @@ fn model_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
         (ElementKind::Item, "Items"),
     ];
     ui.add_space(10.0);
-    section(ui, "Model tree");
+    section(ui, "Model tree", t);
     for (kind, title) in kinds {
         let count = app.session.model.elements.iter().filter(|e| e.kind == kind).count();
         egui::CollapsingHeader::new(egui::RichText::new(format!("{title} ({count})")).font(theme::font_ui(12.0))).default_open(false).show(
@@ -808,7 +1318,6 @@ fn model_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
             },
         );
     }
-    let _ = t;
 }
 
 fn letter_name(mut n: usize) -> String {
@@ -826,7 +1335,7 @@ fn letter_name(mut n: usize) -> String {
 // ----------------------------------------------------------- status bar ---
 
 pub fn status_bar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
-    let t = theme::tokens();
+    let t = theme::tokens_for(app.theme);
     egui::Panel::bottom("status_bar").exact_size(24.0).resizable(false).frame(egui::Frame::NONE.fill(t.app_bar)).show(ui, |ui| {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.add_space(8.0);
@@ -840,11 +1349,14 @@ pub fn status_bar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             ui.separator();
             ui.label(egui::RichText::new(app.session.tool.label()).font(theme::font_ui(11.0)).color(t.text));
             ui.separator();
-            // Current paint chip.
+            // Current paint chip + formwork state chip.
             let pc = app.session.paint;
             let (prect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
             ui.painter().rect_filled(prect, CornerRadius::same(3), Color32::from_rgb((pc >> 16) as u8, (pc >> 8) as u8, pc as u8));
             ui.painter().rect_stroke(prect, CornerRadius::same(3), Stroke::new(1.0, t.input_border), egui::StrokeKind::Inside);
+            if app.session.show_formwork {
+                ui.label(egui::RichText::new("formwork").font(theme::font_ui(11.0)).color(t.accent));
+            }
             ui.separator();
             ui.label(egui::RichText::new(app.session.tool.hint()).font(theme::font_ui(11.0)).color(t.text_dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -867,7 +1379,7 @@ pub fn status_bar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
 // -------------------------------------------------------------- dialogs ---
 
 pub fn file_dialogs(ctx: &egui::Context, app: &mut crate::BimcraftApp) {
-    let t = theme::tokens();
+    let t = theme::tokens_for(app.theme);
     if app.show_save_dialog {
         let mut open = std::mem::take(&mut app.show_save_dialog);
         egui::Window::new("Save model").open(&mut open).resizable(false).show(ctx, |ui| {

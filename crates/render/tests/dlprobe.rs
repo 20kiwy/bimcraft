@@ -13,6 +13,8 @@ fn info_for(m: &bimcraft_bim::Model, eye: Vec3) -> bimcraft_render::ViewInfo {
         ground_extent: 40.0,
         show_ceilings_3d: true,
         show_items_2d: true,
+        light: false,
+        show_formwork: false,
         eye,
     }
 }

@@ -297,6 +297,15 @@ impl Wall {
         out
     }
 
+    /// Mitered face chains matching the justification, one offset vertex per
+    /// location-line vertex: `(left_chain, right_chain)`. The 3D renderer
+    /// extrudes side faces along these so adjacent segments meet cleanly at
+    /// corners (no wedge gaps) and end caps can close the wall ends.
+    pub fn side_chains(&self) -> (Vec<Vec2>, Vec<Vec2>) {
+        let (lo, ro) = self.justification_offsets();
+        self.offset_sides(lo, ro)
+    }
+
     /// Distance from the location line to the left face (signed, positive =
     /// left). Useful for aligning hosted geometry to the real faces.
     pub fn face_offsets(&self) -> (f64, f64) {

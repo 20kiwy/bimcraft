@@ -26,6 +26,11 @@ pub struct BimcraftApp {
     pub theme: Theme,
     /// Dock tab (persisted per session only).
     pub dock_tab: DockTab,
+    /// Reusable software color+depth framebuffer for the 3D viewport
+    /// (real per-pixel z-buffer, parity with the JS edition's WebGL).
+    pub viewport_frame: canvas::Frame3D,
+    /// GPU handle the framebuffer is blitted through each 3D repaint.
+    pub viewport_texture: Option<egui::TextureHandle>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +68,8 @@ impl BimcraftApp {
             show_ceilings_3d: true,
             theme: Theme::Light,
             dock_tab: DockTab::Properties,
+            viewport_frame: canvas::Frame3D::default(),
+            viewport_texture: None,
         }
     }
 

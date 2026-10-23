@@ -918,7 +918,7 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
             ElementData::Slab(s) => {
                 let base = model.level(s.level).map(|l| l.elevation).unwrap_or(0.0);
                 let col = selected(paint_or(e.paint, floor_color(&s.kind)), sel);
-                prism(dl, &s.pts, base + s.elevation - s.thickness, base + s.elevation, col, true);
+                prism(dl, &s.pts, base + s.elevation - s.thickness, base + s.elevation, col, true, false);
                 // Feature edge: the finished-floor outline (JS-parity glyph).
                 if !sel {
                     outline_loop(dl, &s.pts, base + s.elevation + 0.005, PAL3D.edge, 1.0);
@@ -928,7 +928,10 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
                 if info.show_ceilings_3d || sel {
                     let base = model.level(c.level).map(|l| l.elevation).unwrap_or(0.0);
                     let col = selected(paint_or(e.paint, PAL3D.ceiling), sel);
-                    prism(dl, &c.pts, base + c.elevation, base + c.elevation + c.thickness, col, false);
+                    // The underside is the visible face from below; without it
+                    // ceilings rendered as an open skirt with a hole in the
+                    // middle when seen from the floor.
+                    prism(dl, &c.pts, base + c.elevation, base + c.elevation + c.thickness, col, false, true);
                 }
             }
             ElementData::Item(i) => {
@@ -1040,8 +1043,11 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
     // a foundation stem) to its top (fixed height or the top level + offset).
     let z0 = w.base_z(model);
     let z1 = w.top_z(model);
-    let half = w.thickness / 2.0;
+    if z1 <= z0 + 1e-9 {
+        return;
+    }
     let outline = w.outline();
+    let (left_chain, right_chain) = w.side_chains();
     let face = selected(paint_or(paint, PAL3D.wall_face), sel);
 
     // Top face: outline polygon at z1 (ear-clipped so concave works).
@@ -1050,99 +1056,112 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
         dl.tri(t, shade(Vec3::new(0.0, 0.0, 1.0), face));
     }
 
-    // Side faces per segment, with openings subtracted (real cuts).
-    let segs: Vec<(Vec2, Vec2)> = w.segments().collect();
-    for (i, (a, b)) in segs.iter().enumerate() {
-        let dir = (*b - *a).normalize();
-        let n = dir.perp();
-        let seg_len = (*b - *a).length();
-        if seg_len < 1e-6 {
-            continue;
-        }
-        // Miter-aware start/end offsets for this segment: use the outline
-        // vertex positions (they carry the miter) projected on the normal.
-        // For simplicity recompute per-segment quads; corner gaps are covered
-        // by the top face and the shared outline.
-        let a_l = *a + n * half;
-        let a_r = *a - n * half;
-        let b_l = *b + n * half;
-        let b_r = *b - n * half;
-
-        // Openings that live on this segment. Sills are measured from the
-        // wall base (base offsets raise the whole host).
-        let mut cuts: Vec<(f64, f64, f64, f64)> = Vec::new(); // (s0, s1, zb, zt)
-        for op in model.openings_for_wall(wall_id) {
-            if let ElementData::Opening(o) = &op.data {
-                // Locate this opening's segment.
-                let (seg_idx, local) = w.locate(o.s);
-                if seg_idx != i {
-                    continue;
-                }
-                let half_w = o.width / 2.0;
-                let s0 = (local - half_w).clamp(0.0, seg_len);
-                let s1 = (local + half_w).clamp(0.0, seg_len);
-                if s1 > s0 + 1e-6 {
-                    let zb = o.base_z(model).unwrap_or(z0);
-                    cuts.push((s0, s1, zb, (zb + o.height).min(z1)));
-                }
-            }
-        }
-        cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
-
-        for side in 0..2 {
-            let (p0, p1) = if side == 0 { (a_l, b_l) } else { (a_r, b_r) };
-            let nrm = face_normal(p0.to3(z0), p1.to3(z0), p1.to3(z1));
-            let base_col = face;
-            let pieces = subtract_cuts(seg_len, z0, z1, &cuts);
-            for (s0, s1, pz0, pz1) in pieces {
-                let w0 = p0 + dir * s0;
-                let w1 = p0 + dir * s1;
-                dl.quad([w0.to3(pz0), w1.to3(pz0), w1.to3(pz1), w0.to3(pz1)], shade(nrm, base_col));
-            }
-        }
-
-        // Opening frames: jamb/head edges + glass for windows.
-        for op in model.openings_for_wall(wall_id) {
-            if let ElementData::Opening(o) = &op.data {
-                let (seg_idx, local) = w.locate(o.s);
-                if seg_idx != i {
-                    continue;
-                }
-                let half_w = o.width / 2.0;
-                let s0 = local - half_w;
-                let s1 = local + half_w;
+    // Collect openings per location-line segment: (seg, s0, s1, zb, zt).
+    let mut cuts_per_seg: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); w.pts.len().saturating_sub(1)];
+    for op in model.openings_for_wall(wall_id) {
+        if let ElementData::Opening(o) = &op.data {
+            let (seg_idx, local) = w.locate(o.s);
+            let seg_len = {
+                let segs: Vec<(Vec2, Vec2)> = w.segments().collect();
+                segs.get(seg_idx).map(|(a, b)| (*b - *a).length()).unwrap_or(0.0)
+            };
+            let half_w = o.width / 2.0;
+            let s0 = (local - half_w).clamp(0.0, seg_len);
+            let s1 = (local + half_w).clamp(0.0, seg_len);
+            if s1 > s0 + 1e-6 {
                 let zb = o.base_z(model).unwrap_or(z0);
                 let zt = (zb + o.height).min(z1);
-                if s1 <= s0 + 1e-6 {
-                    continue;
+                if zt > zb + 1e-6 {
+                    let seg = seg_idx.min(cuts_per_seg.len().saturating_sub(1));
+                    cuts_per_seg[seg].push((s0, s1, zb.max(z0), zt));
                 }
-                let c0 = *a + dir * s0.max(0.0);
-                let c1 = *a + dir * s1.min(seg_len);
-                let frame_col = if sel { SELECT } else { paint_or(op.paint, PAL3D.door_frame) };
-                // Jamb + head + sill lines on both sides.
-                for side in 0..2 {
-                    let off = if side == 0 { n * (half + 0.01) } else { n * -(half + 0.01) };
-                    let f0 = (c0 + off).to3(z0);
-                    let f1 = (c1 + off).to3(z0);
-                    dl.line(f0.with_z(zb), f1.with_z(zb), frame_col, 1.2);
-                    dl.line(f0.with_z(z0), f0.with_z(zt), frame_col, 1.2);
-                    dl.line(f1.with_z(z0), f1.with_z(zt), frame_col, 1.2);
-                    dl.line(f0.with_z(zt), f1.with_z(zt), frame_col, 1.2);
-                }
-                if op.kind == ElementKind::Window {
-                    let g0 = (c0 - n * (half * 0.4)).to3(zb);
-                    let g1 = (c1 + n * (half * 0.4)).to3(zb);
-                    dl.quad([g0, g1, g1.with_z(zt), g0.with_z(zt)], shade(Vec3::new(0.0, 1.0, 0.0), with_alpha(PAL3D.window_glass, 150)));
-                } else if op.kind == ElementKind::Door {
-                    // Door leaf, drawn 90° open from the hinge.
-                    let leaf_col = if sel { SELECT } else { paint_or(op.paint, PAL3D.door) };
-                    let leaf_end = c0 + n * (c1 - c0).length();
-                    dl.quad(
-                        [c0.to3(zb), leaf_end.to3(zb), leaf_end.to3(zt), c0.to3(zt)],
-                        shade(face_normal(c0.to3(zb), leaf_end.to3(zb), leaf_end.to3(zt)), leaf_col),
-                    );
-                    dl.line(leaf_end.to3(zt), c0.to3(zt), leaf_col, 1.0);
-                }
+            }
+        }
+    }
+    for cuts in cuts_per_seg.iter_mut() {
+        cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
+    }
+
+    // Side faces along the mitered chains: adjacent segments share the corner
+    // vertex, so the faces meet cleanly (the old per-segment ±thickness/2
+    // quads left wedge gaps at every corner).
+    for chain in [&left_chain, &right_chain] {
+        for j in 0..chain.len().saturating_sub(1) {
+            let (ca, cb) = (chain[j], chain[j + 1]);
+            let dir = (cb - ca).normalize();
+            let seg_len = (cb - ca).length();
+            if seg_len < 1e-6 {
+                continue;
+            }
+            let nrm = face_normal(ca.to3(z0), cb.to3(z0), cb.to3(z1));
+            let cuts = cuts_per_seg.get(j).map(Vec::as_slice).unwrap_or(&[]);
+            for (s0, s1, pz0, pz1) in subtract_cuts(seg_len, z0, z1, cuts) {
+                let w0 = ca + dir * s0;
+                let w1 = ca + dir * s1;
+                dl.quad([w0.to3(pz0), w1.to3(pz0), w1.to3(pz1), w0.to3(pz1)], shade(nrm, face));
+            }
+        }
+    }
+
+    // End caps: close the two wall ends (left face ↔ right face).
+    if let (Some(&fl), Some(&fr)) = (left_chain.first(), right_chain.first()) {
+        let nrm = face_normal(fl.to3(z0), fr.to3(z0), fr.to3(z1));
+        dl.quad([fl.to3(z0), fr.to3(z0), fr.to3(z1), fl.to3(z1)], shade(nrm, face));
+    }
+    if let (Some(&bl), Some(&br)) = (left_chain.last(), right_chain.last()) {
+        let nrm = face_normal(bl.to3(z0), br.to3(z0), br.to3(z1));
+        dl.quad([bl.to3(z0), br.to3(z0), br.to3(z1), bl.to3(z1)], shade(nrm, face));
+    }
+
+    // Opening frames: jamb/head/sill edges + glass for windows + door leaves.
+    let (lo, ro) = w.face_offsets();
+    let segs: Vec<(Vec2, Vec2)> = w.segments().collect();
+    for op in model.openings_for_wall(wall_id) {
+        if let ElementData::Opening(o) = &op.data {
+            let (seg_idx, local) = w.locate(o.s);
+            let Some(&(a, b)) = segs.get(seg_idx) else { continue };
+            let dir = (b - a).normalize();
+            let n = dir.perp();
+            let seg_len = (b - a).length();
+            let half_w = o.width / 2.0;
+            let s0 = (local - half_w).clamp(0.0, seg_len);
+            let s1 = (local + half_w).clamp(0.0, seg_len);
+            if s1 <= s0 + 1e-6 {
+                continue;
+            }
+            let zb = o.base_z(model).unwrap_or(z0).max(z0);
+            let zt = (zb + o.height).min(z1);
+            if zt <= zb + 1e-6 {
+                continue;
+            }
+            let c0 = a + dir * s0;
+            let c1 = a + dir * s1;
+            let frame_col = if sel { SELECT } else { paint_or(op.paint, PAL3D.door_frame) };
+            // Jamb + head + sill lines on both faces, jambs only between sill
+            // and head (they used to run the full wall height, drawing spurious
+            // verticals across the solid wall below windows).
+            for off in [n * (lo + 0.01), n * -(ro + 0.01)] {
+                let f0 = (c0 + off).to3(z0);
+                let f1 = (c1 + off).to3(z0);
+                dl.line(f0.with_z(zb), f1.with_z(zb), frame_col, 1.2);
+                dl.line(f0.with_z(zb), f0.with_z(zt), frame_col, 1.2);
+                dl.line(f1.with_z(zb), f1.with_z(zt), frame_col, 1.2);
+                dl.line(f0.with_z(zt), f1.with_z(zt), frame_col, 1.2);
+            }
+            if op.kind == ElementKind::Window {
+                let g0 = (c0 - n * (ro * 0.4)).to3(zb);
+                let g1 = (c1 + n * (lo * 0.4)).to3(zb);
+                // Pane normal runs along the wall direction's perp.
+                dl.quad([g0, g1, g1.with_z(zt), g0.with_z(zt)], shade(Vec3::new(n.x, n.y, 0.0), with_alpha(PAL3D.window_glass, 150)));
+            } else if op.kind == ElementKind::Door {
+                // Door leaf, drawn 90° open from the hinge.
+                let leaf_col = if sel { SELECT } else { paint_or(op.paint, PAL3D.door) };
+                let leaf_end = c0 + n * (c1 - c0).length();
+                dl.quad(
+                    [c0.to3(zb), leaf_end.to3(zb), leaf_end.to3(zt), c0.to3(zt)],
+                    shade(face_normal(c0.to3(zb), leaf_end.to3(zb), leaf_end.to3(zt)), leaf_col),
+                );
+                dl.line(leaf_end.to3(zt), c0.to3(zt), leaf_col, 1.0);
             }
         }
     }
@@ -1243,20 +1262,35 @@ fn face_normal(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     (b - a).cross(c - a).normalize()
 }
 
-fn prism(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], z0: f64, z1: f64, color: Color32, top_face: bool) {
+fn prism(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], z0: f64, z1: f64, color: Color32, top_face: bool, bottom_face: bool) {
     let n = pts.len();
-    if n < 3 {
+    if n < 3 || z1 <= z0 + 1e-9 {
         return;
     }
+    // Normalize to CCW so every side quad's normal points outward regardless
+    // of how the outline was authored (a CW slab used to shade its faces as
+    // if lit from inside).
+    let ccw;
+    let loop_pts: &[bimcraft_geom::Vec2] = if bimcraft_geom::poly_area(pts) < 0.0 {
+        ccw = pts.iter().rev().copied().collect::<Vec<_>>();
+        &ccw
+    } else {
+        pts
+    };
     for i in 0..n {
-        let p0 = pts[i].to3(z0);
-        let p1 = pts[(i + 1) % n].to3(z0);
+        let p0 = loop_pts[i].to3(z0);
+        let p1 = loop_pts[(i + 1) % n].to3(z0);
         let nrm = face_normal(p0, p1, p1.with_z(z1));
         dl.quad([p0, p1, p1.with_z(z1), p0.with_z(z1)], shade(nrm, color));
     }
+    let up = Vec3::new(0.0, 0.0, 1.0);
     if top_face {
-        let top: Vec<Vec3> = pts.iter().map(|p| p.to3(z1)).collect();
-        dl.poly(&top, shade(Vec3::new(0.0, 0.0, 1.0), color));
+        let top: Vec<Vec3> = loop_pts.iter().map(|p| p.to3(z1)).collect();
+        dl.poly(&top, shade(up, color));
+    }
+    if bottom_face {
+        let bottom: Vec<Vec3> = loop_pts.iter().map(|p| p.to3(z0)).collect();
+        dl.poly(&bottom, shade(-up, color));
     }
 }
 
@@ -1600,5 +1634,83 @@ mod tests {
         assert_eq!(pieces.len(), 4);
         let full: f64 = pieces.iter().map(|(s0, s1, z0, z1)| (s1 - s0) * (z1 - z0)).sum();
         assert!((full - (15.0 - 1.0 * 1.4)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn wall_end_caps_close_the_wall_ends() {
+        // A single straight wall must be closed at both ends (the old
+        // renderer left the two ends open — see-through slots).
+        let mut m = Model::new();
+        let lvl = m.levels[0].id;
+        m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
+        let info = ViewInfo {
+            mode: ViewModeKind::Perspective3D,
+            active_level: lvl,
+            selection: vec![],
+            half_extent: 20.0,
+            ground_extent: 30.0,
+            show_ceilings_3d: false,
+            show_items_2d: true,
+            light: false,
+            show_formwork: false,
+            eye: Vec3::ZERO,
+        };
+        let dl = build(&m, &info);
+        let cap_at = |x: f64| dl.tris.iter().any(|t| t.pts.iter().all(|p| (p.x - x).abs() < 1e-6));
+        assert!(cap_at(0.0), "start end cap expected (vertical quad at x=0)");
+        assert!(cap_at(5.0), "far end cap expected (vertical quad at x=5)");
+    }
+
+    #[test]
+    fn wall_side_faces_reach_the_miter_corner() {
+        // L-shaped wall: side faces must share the mitered corner vertex so
+        // no wedge gap opens at the bend.
+        let mut m = Model::new();
+        let lvl = m.levels[0].id;
+        m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(4.0, 3.0)], 0.2, 3.0);
+        let info = ViewInfo {
+            mode: ViewModeKind::Perspective3D,
+            active_level: lvl,
+            selection: vec![],
+            half_extent: 20.0,
+            ground_extent: 30.0,
+            show_ceilings_3d: false,
+            show_items_2d: true,
+            light: false,
+            show_formwork: false,
+            eye: Vec3::ZERO,
+        };
+        let dl = build(&m, &info);
+        // Left chain miter corner for thickness 0.2 sits at (4 - 0.1, 0.1);
+        // right chain at (4.1, -0.1).
+        let has_vertex = |x: f64, y: f64| dl.tris.iter().any(|t| t.pts.iter().any(|p| (p.x - x).abs() < 1e-6 && (p.y - y).abs() < 1e-6));
+        assert!(has_vertex(3.9, 0.1), "left chain reaches the miter corner");
+        assert!(has_vertex(4.1, -0.1), "right chain reaches the miter corner");
+    }
+
+    #[test]
+    fn ceiling_prism_closes_its_underside() {
+        // Ceilings are seen from below: without a bottom face the room above
+        // showed a hole where the ceiling should be.
+        let mut m = Model::new();
+        let lvl = m.levels[0].id;
+        let pts = vec![Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(4.0, 3.0), Vec2::new(0.0, 3.0)];
+        m.add_ceiling(lvl, pts.clone(), 0.1, 3.0);
+        let info = ViewInfo {
+            mode: ViewModeKind::Perspective3D,
+            active_level: lvl,
+            selection: vec![],
+            half_extent: 20.0,
+            ground_extent: 30.0,
+            show_ceilings_3d: true,
+            show_items_2d: true,
+            light: false,
+            show_formwork: false,
+            eye: Vec3::ZERO,
+        };
+        let dl = build(&m, &info);
+        let z_bottom = 3.0;
+        let has_bottom = dl.tris.iter().any(|t| t.pts.iter().all(|p| (p.z - z_bottom).abs() < 1e-6));
+        assert!(has_bottom, "ceiling bottom face triangles expected at the ceiling base plane");
     }
 }

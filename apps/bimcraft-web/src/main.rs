@@ -57,6 +57,16 @@ fn main() {
         });
         if let Err(e) = eframe::WebRunner::new().start(canvas, web_options, app_creator).await {
             log::error!("eframe web start failed: {e:?}");
+        } else {
+            // First frame is up: tell the shell to drop the loading overlay
+            // (index.html waits for this event; it used to stay on screen
+            // forever because nothing ever dispatched it).
+            if let Some(win) = web_sys::window() {
+                let event = web_sys::CustomEvent::new("bimcraft-ready").ok();
+                if let Some(ev) = event {
+                    let _ = win.dispatch_event(&ev);
+                }
+            }
         }
     });
 }

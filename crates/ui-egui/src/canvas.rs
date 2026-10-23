@@ -475,11 +475,12 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
         h: rect.height() as f64 * ppp,
     };
 
-    // Depth-sorted triangles, near-plane clipped in view space (no screen
-    // bounds rejection: the painter clips to the viewport, and dropping whole
-    // triangles because one vertex leaves the window made walls vanish).
+    // Near-plane clip in view space (no screen-bounds rejection: the painter
+    // clips to the viewport, and dropping whole triangles because one vertex
+    // leaves the window made walls vanish).
     const NEAR: f64 = 0.08;
-    let mut tris: Vec<(Vec<Pos2>, Vec<f64>, f64, Color32)> = Vec::with_capacity(dl.tris.len());
+    let mut opaque: Vec<(Vec<Pos2>, Vec<f64>, f64, Color32)> = Vec::with_capacity(dl.tris.len());
+    let mut translucent: Vec<(Vec<Pos2>, Vec<f64>, f64, Color32)> = Vec::new();
     for tri in &dl.tris {
         let mut poly: Vec<(f64, f64, f64)> = Vec::with_capacity(3);
         for p in &tri.pts {
@@ -493,32 +494,48 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
         let pts: Vec<Pos2> = clipped.iter().map(|v| proj.project_view(v.0, v.1, v.2).0).collect();
         let zs: Vec<f64> = clipped.iter().map(|v| v.2).collect();
         let zavg = zs.iter().sum::<f64>() / zs.len() as f64;
-        tris.push((pts, zs, zavg, tri.color));
-    }
-    tris.sort_by(|a, b| b.2.total_cmp(&a.2));
-    for (pts, _, _, color) in &tris {
-        // Fan-triangulate the clipped polygon (3 or 4 vertices) for the fill.
-        for k in 1..pts.len().saturating_sub(1) {
-            painter.add(egui::Shape::convex_polygon(vec![pts[0], pts[k], pts[k + 1]], *color, Stroke::NONE));
+        if tri.color.a() == 255 {
+            opaque.push((pts, zs, zavg, tri.color));
+        } else {
+            translucent.push((pts, zs, zavg, tri.color));
         }
     }
 
-    let mut depth = DepthBuf::new(rect);
-    for (pts, zs, _, _) in &tris {
+    // Software z-buffer rasterization (parity with the JS edition's WebGL
+    // depth buffer). The old painter sort by per-triangle AVERAGE depth
+    // mis-ordered large wall quads against roof/floor slabs, so slab
+    // triangulation fans bled through facades as diagonal shading bands.
+    let frame = &mut app.viewport_frame;
+    frame.ensure(rect, ui.ctx().pixels_per_point(), t.viewport_bg);
+    for (pts, zs, _, color) in &opaque {
         for k in 1..pts.len().saturating_sub(1) {
-            depth.rasterize([pts[0], pts[k], pts[k + 1]], [zs[0], zs[k], zs[k + 1]]);
+            frame.raster([pts[0], pts[k], pts[k + 1]], [zs[0], zs[k], zs[k + 1]], *color, false);
+        }
+    }
+    // Translucent faces (glass, formwork sheathing) blend over the opaque
+    // scene, far to near, and do not occlude later depth tests.
+    translucent.sort_by(|a, b| b.2.total_cmp(&a.2));
+    for (pts, zs, _, color) in &translucent {
+        for k in 1..pts.len().saturating_sub(1) {
+            frame.raster([pts[0], pts[k], pts[k + 1]], [zs[0], zs[k], zs[k + 1]], *color, true);
         }
     }
 
-    // Lines with occlusion (was: plain wireframe pass on top).
+    // Blit the finished frame as a texture at device resolution.
+    let image = frame.image();
+    let tex = app.viewport_texture.get_or_insert_with(|| ui.ctx().load_texture("bimcraft-3d-frame", image.clone(), egui::TextureOptions::LINEAR));
+    tex.set(image, egui::TextureOptions::LINEAR);
+    painter.image(tex.id(), rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+
+    // Lines with occlusion against the same depth buffer.
     for l in &dl.lines {
-        draw_line_occluded(painter, &proj, &depth, eye, r, u, f, l.a, l.b, l.color, l.width);
+        draw_line_occluded(painter, &proj, frame, eye, r, u, f, l.a, l.b, l.color, l.width);
     }
 
     // Texts (projected; skip when behind camera or hidden by the model).
     for tx in &dl.texts {
         if let Some((sp, z)) = proj.point(tx.pos, eye, r, u, f) {
-            if depth.visible(sp.x, sp.y, z + 0.25) {
+            if frame.visible_logical(sp.x, sp.y, z + 0.25) {
                 painter.text(sp, egui::Align2::CENTER_CENTER, &tx.text, theme::font_ui(tx.size), tx.color);
             }
         }
@@ -533,32 +550,68 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
     painter.text(rect.right_top() + Vec2::new(-14.0, 14.0), egui::Align2::RIGHT_TOP, hint, theme::font_ui(11.0), t.text_dim);
 }
 
-/// Coarse software depth buffer over the canvas rect. Coordinates passed in
-/// are absolute egui screen pixels; the buffer is indexed RELATIVE to the
-/// rect origin (`ox`/`oy`) — using absolute values directly sampled the wrong
-/// cells whenever the viewport was offset by the app bar/dock, which broke
-/// every occlusion decision (the "streak" bug).
-struct DepthBuf {
+/// Software color+depth framebuffer for the 3D viewport — the parity
+/// equivalent of the JS edition's WebGL per-pixel z-buffer. Triangles pass an
+/// exact per-pixel depth test, so large coplanar faces can no longer
+/// interleave by average depth and bleed through each other.
+///
+/// Buffer pixels are DEVICE pixels (logical egui pixels × pixels-per-point);
+/// the public raster/visible APIs take logical coordinates and scale
+/// internally. The color buffer starts filled with the viewport background,
+/// so the final image is fully opaque and blits without alpha surprises.
+pub struct Frame3D {
     w: usize,
     h: usize,
+    scale: f32,
     ox: f32,
     oy: f32,
-    data: Vec<f32>,
+    color: Vec<Color32>,
+    depth: Vec<f32>,
 }
 
-impl DepthBuf {
-    fn new(rect: Rect) -> Self {
-        let w = (rect.width().ceil() as usize).max(1);
-        let h = (rect.height().ceil() as usize).max(1);
-        Self { w, h, ox: rect.left(), oy: rect.top(), data: vec![f32::INFINITY; w * h] }
+impl Default for Frame3D {
+    fn default() -> Self {
+        Self { w: 0, h: 0, scale: 1.0, ox: 0.0, oy: 0.0, color: Vec::new(), depth: Vec::new() }
+    }
+}
+
+impl Frame3D {
+    /// Hard pixel budget (device px) so huge 4K/HiDPI viewports degrade
+    /// gracefully instead of exploding fill cost.
+    const MAX_PIXELS: usize = 9_000_000;
+
+    fn ensure(&mut self, rect: Rect, ppp: f32, bg: Color32) {
+        let mut scale = ppp.max(0.5);
+        let mut w = ((rect.width() * scale).ceil() as usize).max(1);
+        let mut h = ((rect.height() * scale).ceil() as usize).max(1);
+        if w.saturating_mul(h) > Self::MAX_PIXELS {
+            let k = ((Self::MAX_PIXELS as f64) / ((w * h) as f64)).sqrt();
+            scale = (scale as f64 * k).max(0.25) as f32;
+            w = ((rect.width() * scale).ceil() as usize).max(1);
+            h = ((rect.height() * scale).ceil() as usize).max(1);
+        }
+        if self.w != w || self.h != h || self.color.len() != w * h {
+            self.w = w;
+            self.h = h;
+            self.color = vec![bg; w * h];
+            self.depth = vec![f32::INFINITY; w * h];
+        } else {
+            self.color.fill(bg);
+            self.depth.fill(f32::INFINITY);
+        }
+        self.scale = scale;
+        self.ox = rect.left();
+        self.oy = rect.top();
     }
 
-    /// Barycentric rasterization with perspective-correct view depth
-    /// (screen-linear 1/z interpolation, then z = 1/w).
-    fn rasterize(&mut self, pts: [Pos2; 3], zs: [f64; 3]) {
-        let p0 = Pos2::new(pts[0].x - self.ox, pts[0].y - self.oy);
-        let p1 = Pos2::new(pts[1].x - self.ox, pts[1].y - self.oy);
-        let p2 = Pos2::new(pts[2].x - self.ox, pts[2].y - self.oy);
+    /// Rasterize one triangle with an exact depth test. Screen points are
+    /// logical egui pixels; depths are view-space meters. `blend` does a
+    /// straight src-over onto the opaque buffer (for glass/formwork) and
+    /// leaves the depth buffer untouched; opaque writes both.
+    fn raster(&mut self, pts: [Pos2; 3], zs: [f64; 3], color: Color32, blend: bool) {
+        let p0 = Pos2::new((pts[0].x - self.ox) * self.scale, (pts[0].y - self.oy) * self.scale);
+        let p1 = Pos2::new((pts[1].x - self.ox) * self.scale, (pts[1].y - self.oy) * self.scale);
+        let p2 = Pos2::new((pts[2].x - self.ox) * self.scale, (pts[2].y - self.oy) * self.scale);
         let area = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
         if area.abs() < 0.01 {
             return;
@@ -571,39 +624,64 @@ impl DepthBuf {
         if minx > maxx || miny > maxy {
             return;
         }
-        // Perspective-correct weights: interpolate 1/z (screen-linear), then
-        // invert. Guards keep far/degenerate corners stable.
+        // Perspective-correct depth: interpolate 1/z (screen-linear), invert.
         let inv_z = [1.0 / zs[0], 1.0 / zs[1], 1.0 / zs[2]];
+        // Incremental barycentric edge values, normalized by the signed area
+        // so the inside test works in either winding.
+        let w0_row = ((p1.y - p2.y) * (minx as f32 + 0.5 - p2.x) + (p2.x - p1.x) * (miny as f32 + 0.5 - p2.y)) * inv;
+        let w1_row = ((p2.y - p0.y) * (minx as f32 + 0.5 - p2.x) + (p0.x - p2.x) * (miny as f32 + 0.5 - p2.y)) * inv;
+        let w0_dx = (p1.y - p2.y) * inv;
+        let w0_dy = (p2.x - p1.x) * inv;
+        let w1_dx = (p2.y - p0.y) * inv;
+        let w1_dy = (p0.x - p2.x) * inv;
+        let (sr, sg, sb, sa) = (color.r() as u16, color.g() as u16, color.b() as u16, color.a() as u16);
         for y in miny..=maxy {
             let row = y * self.w;
-            for x in minx..maxx {
-                let px = x as f32 + 0.5;
-                let py = y as f32 + 0.5;
-                // Signed barycentric weights (orientation-agnostic).
-                let w0 = ((p1.y - p2.y) * (px - p2.x) + (p2.x - p1.x) * (py - p2.y)) * inv;
-                let w1 = ((p2.y - p0.y) * (px - p2.x) + (p0.x - p2.x) * (py - p2.y)) * inv;
+            let mut w0 = w0_row + w0_dy * (y - miny) as f32;
+            let mut w1 = w1_row + w1_dy * (y - miny) as f32;
+            for x in minx..=maxx {
                 let w2 = 1.0 - w0 - w1;
-                // Inside test in either winding.
                 let inside = (w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4) || (w0 <= 1e-4 && w1 <= 1e-4 && w2 <= 1e-4);
-                if !inside {
-                    continue;
+                if inside {
+                    let wi = (w0 as f64) * inv_z[0] + (w1 as f64) * inv_z[1] + (w2 as f64) * inv_z[2];
+                    let z = if wi > 1e-9 { 1.0 / wi } else { f64::INFINITY };
+                    let slot = &mut self.depth[row + x];
+                    if (z as f32) < *slot {
+                        let px = &mut self.color[row + x];
+                        if blend && sa < 255 {
+                            // Straight src-over over an opaque destination:
+                            // out = src*a + dst*(1-a).
+                            let ia = 255 - sa;
+                            let mix = |d: u8, s: u16| ((d as u16 * ia + s * sa + 127) / 255) as u8;
+                            *px = Color32::from_rgb(mix(px.r(), sr), mix(px.g(), sg), mix(px.b(), sb));
+                        } else {
+                            *px = color;
+                        }
+                        if !blend {
+                            *slot = z as f32;
+                        }
+                    }
                 }
-                let wi = (w0 as f64) * inv_z[0] + (w1 as f64) * inv_z[1] + (w2 as f64) * inv_z[2];
-                let z = if wi > 1e-9 { 1.0 / wi } else { f64::INFINITY };
-                let slot = &mut self.data[row + x];
-                if (z as f32) < *slot {
-                    *slot = z as f32;
-                }
+                w0 += w0_dx;
+                w1 += w1_dx;
             }
         }
     }
 
-    fn visible(&self, x: f32, y: f32, z: f64) -> bool {
-        let xr = x - self.ox;
-        let yr = y - self.oy;
-        let xi = (xr.max(0.0) as usize).min(self.w - 1);
-        let yi = (yr.max(0.0) as usize).min(self.h - 1);
-        z <= self.data[yi * self.w + xi] as f64 + 0.045
+    /// Depth test at a logical-pixel position (lines, labels).
+    fn visible_logical(&self, x: f32, y: f32, z: f64) -> bool {
+        let xr = (x - self.ox) * self.scale;
+        let yr = (y - self.oy) * self.scale;
+        if xr < 0.0 || yr < 0.0 {
+            return false;
+        }
+        let xi = (xr as usize).min(self.w - 1);
+        let yi = (yr as usize).min(self.h - 1);
+        z <= self.depth[yi * self.w + xi] as f64 + 0.045
+    }
+
+    fn image(&self) -> egui::ColorImage {
+        egui::ColorImage::new([self.w, self.h], self.color.clone())
     }
 }
 
@@ -612,7 +690,7 @@ impl DepthBuf {
 fn draw_line_occluded(
     painter: &egui::Painter,
     proj: &Proj,
-    depth: &DepthBuf,
+    frame: &Frame3D,
     eye: Vec3,
     r: Vec3,
     u: Vec3,
@@ -654,7 +732,7 @@ fn draw_line_occluded(
         let vy = ay + (by - ay) * t;
         let vz = az + (bz - az) * t;
         let (sp, z) = proj.project_view(vx, vy, vz);
-        let vis = depth.visible(sp.x, sp.y, z);
+        let vis = frame.visible_logical(sp.x, sp.y, z);
         if let Some((last, last_vis)) = prev {
             if vis && last_vis {
                 painter.line_segment([last, sp], Stroke::new(width, color));
@@ -798,18 +876,41 @@ mod tests {
     }
 
     #[test]
-    fn depth_buf_is_rect_relative() {
+    fn frame3d_is_rect_relative_and_depth_sorts() {
         // The viewport sits offset from the window origin (app bar + dock):
         // occlusion must still index the right cells (the streak bug).
         let rect = Rect::from_min_size(Pos2::new(300.0, 50.0), egui::vec2(64.0, 64.0));
-        let mut d = DepthBuf::new(rect);
+        let mut f = Frame3D::default();
+        f.ensure(rect, 1.0, Color32::from_rgb(10, 20, 30));
         let (cx, cy) = (rect.center().x, rect.center().y);
-        let pts = [Pos2::new(cx - 10.0, cy + 10.0), Pos2::new(cx + 10.0, cy + 10.0), Pos2::new(cx, cy - 10.0)];
-        d.rasterize(pts, [2.0, 2.0, 2.0]);
+        let near = [Pos2::new(cx - 10.0, cy + 10.0), Pos2::new(cx + 10.0, cy + 10.0), Pos2::new(cx, cy - 10.0)];
+        // Near triangle (red), then a far triangle (green) covering the same
+        // pixels: the z-buffer must keep the near color.
+        f.raster(near, [2.0, 2.0, 2.0], Color32::from_rgb(200, 0, 0), false);
+        f.raster(near, [6.0, 6.0, 6.0], Color32::from_rgb(0, 200, 0), false);
+        assert_eq!(f.image().pixels[32 * 64 + 32], Color32::from_rgb(200, 0, 0));
         // Center: hidden behind the surface, visible at/near it.
-        assert!(!d.visible(cx, cy, 5.0));
-        assert!(d.visible(cx, cy, 2.04));
+        assert!(!f.visible_logical(cx, cy, 5.0));
+        assert!(f.visible_logical(cx, cy, 2.04));
         // An offset-buffer bug would read the clamped edge instead.
-        assert!(d.visible(cx - 20.0, cy, 50.0));
+        assert!(f.visible_logical(cx - 20.0, cy, 50.0));
+    }
+
+    #[test]
+    fn frame3d_blends_translucent_without_depth_write() {
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(32.0, 32.0));
+        let mut f = Frame3D::default();
+        f.ensure(rect, 1.0, Color32::from_rgb(0, 0, 0));
+        let tri = [Pos2::new(4.0, 24.0), Pos2::new(24.0, 24.0), Pos2::new(14.0, 6.0)];
+        // Opaque white wall at 2 m, then translucent gray glass at 1 m.
+        f.raster(tri, [2.0, 2.0, 2.0], Color32::from_rgb(255, 255, 255), false);
+        f.raster(tri, [1.0, 1.0, 1.0], Color32::from_rgba_unmultiplied(0, 0, 0, 128), true);
+        let px = f.image().pixels[16 * 32 + 16];
+        // 255*(1-0.502) rounds to 127 with the +127 rounding bias.
+        assert_eq!(px, Color32::from_rgb(127, 127, 127));
+        // Glass must not write depth: an edge behind the glass stays visible.
+        assert!(f.visible_logical(16.0, 16.0, 1.5));
+        // …but a line behind the opaque wall is hidden.
+        assert!(!f.visible_logical(16.0, 16.0, 2.5));
     }
 }

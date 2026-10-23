@@ -78,6 +78,13 @@ impl std::ops::Mul<f64> for Vec3 {
     }
 }
 
+impl std::ops::Neg for Vec3 {
+    type Output = Vec3;
+    fn neg(self) -> Self {
+        Self { x: -self.x, y: -self.y, z: -self.z }
+    }
+}
+
 /// 2D vector, f64 (plan/XY plane).
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Vec2 {

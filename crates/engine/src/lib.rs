@@ -536,11 +536,8 @@ impl Session {
         // automatic when auto_foundation is on.
         let created = self.model.ensure_foundations();
         self.selection = Selection::Element(id);
-        self.status = if created.is_empty() {
-            format!("Wall {id} added")
-        } else {
-            format!("Wall {id} added — {} foundation auto-placed", created.len())
-        };
+        self.status =
+            if created.is_empty() { format!("Wall {id} added") } else { format!("Wall {id} added — {} foundation auto-placed", created.len()) };
     }
 
     pub fn place_opening(&mut self, kind: ElementKind, world: Vec2) {
@@ -803,7 +800,10 @@ impl Session {
                         format!("Selected {}", self.model.foundation(id).map(|f| f.name.clone()).unwrap_or_else(|| "foundation".into()))
                     }
                     Selection::Site(id) => {
-                        format!("Selected {}", self.model.site_element(id).map(|s| format!("{} {}", s.kind.name(), s.id)).unwrap_or_else(|| "landscaping".into()))
+                        format!(
+                            "Selected {}",
+                            self.model.site_element(id).map(|s| format!("{} {}", s.kind.name(), s.id)).unwrap_or_else(|| "landscaping".into())
+                        )
                     }
                     Selection::None => "Nothing selected".into(),
                 };
@@ -824,7 +824,12 @@ impl Session {
                 SiteShape::Point => self.place_site(p),
                 _ => {
                     self.pending.push(p);
-                    self.status = format!("{}: {} points — Enter to {}", self.site_kind.name(), self.pending.len(), if self.site_kind.shape() == SiteShape::Chain { "finish" } else { "close" });
+                    self.status = format!(
+                        "{}: {} points — Enter to {}",
+                        self.site_kind.name(),
+                        self.pending.len(),
+                        if self.site_kind.shape() == SiteShape::Chain { "finish" } else { "close" }
+                    );
                 }
             },
             Tool::SectionLine => {

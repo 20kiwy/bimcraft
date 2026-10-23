@@ -45,7 +45,8 @@ pub enum DockTab {
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 7] = [DockTab::Properties, DockTab::Levels, DockTab::Library, DockTab::Landscaping, DockTab::Schedule, DockTab::Foundation, DockTab::Model];
+    pub const ALL: [DockTab; 7] =
+        [DockTab::Properties, DockTab::Levels, DockTab::Library, DockTab::Landscaping, DockTab::Schedule, DockTab::Foundation, DockTab::Model];
     pub fn label(self) -> &'static str {
         match self {
             DockTab::Properties => "Properties",

@@ -208,9 +208,18 @@ pub fn footing_rebar(parts: &[FoundationPart], p: &ResolvedSizes, spec: &RebarSp
     let Some(foot) = parts.iter().find(|f| f.role == FoundationRole::StripFooting) else {
         // Slab-on-grade: a thin mat under the slab, both ways.
         if p.kind == crate::foundation::FoundationKind::Slab && spec.spacing > 0.0 {
-            add_slab_mat(&mut out, &parts.iter().find(|f| f.role == FoundationRole::Slab).cloned().unwrap_or(crate::foundation::FoundationPart {
-                role: FoundationRole::Slab, outer: Vec::new(), inner: None, z0: 0.0, z1: 0.0,
-            }), spec, floor_z);
+            add_slab_mat(
+                &mut out,
+                &parts.iter().find(|f| f.role == FoundationRole::Slab).cloned().unwrap_or(crate::foundation::FoundationPart {
+                    role: FoundationRole::Slab,
+                    outer: Vec::new(),
+                    inner: None,
+                    z0: 0.0,
+                    z1: 0.0,
+                }),
+                spec,
+                floor_z,
+            );
         } else {
             out.problems.push("No footing to reinforce (slab kinds take a mat when present)".into());
         }
@@ -246,14 +255,7 @@ pub fn footing_rebar(parts: &[FoundationPart], p: &ResolvedSizes, spec: &RebarSp
                 } else {
                     (p_out, p_in, RebarShape::S)
                 };
-                out.bars.push(RebarBar {
-                    pts: vec![hook0, hook1],
-                    z: z_bot,
-                    z_top: z_bot,
-                    shape,
-                    bar: spec.bar,
-                    role: RebarRole::BottomTransverse,
-                });
+                out.bars.push(RebarBar { pts: vec![hook0, hook1], z: z_bot, z_top: z_bot, shape, bar: spec.bar, role: RebarRole::BottomTransverse });
             }
             // Two longitudinal bars per side (quarter points of the width).
             for q in [0.25, 0.75] {
@@ -315,11 +317,7 @@ pub fn footing_rebar(parts: &[FoundationPart], p: &ResolvedSizes, spec: &RebarSp
     let clear = spec.effective_spacing() - b.db;
     let min_clear = 0.0254_f64.max(b.db);
     if clear < min_clear {
-        out.warnings.push(format!(
-            "Clear spacing {:.0} mm < min {:.0} mm (ACI 318-19 25.2.1)",
-            clear * 1000.0,
-            min_clear * 1000.0
-        ));
+        out.warnings.push(format!("Clear spacing {:.0} mm < min {:.0} mm (ACI 318-19 25.2.1)", clear * 1000.0, min_clear * 1000.0));
     }
     if (foot.z1 - foot.z0) < spec.cover * 2.0 + b.db * 3.0 {
         out.warnings.push("Footing too shallow for two bar layers plus cover".into());
@@ -508,7 +506,13 @@ mod tests {
 
     #[test]
     fn corner_starters_at_wall_vertices_only() {
-        let wall = crate::Wall { level: 1, pts: vec![Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0), Vec2::new(5.0, 4.0)], thickness: 0.2, height: 3.0, ..Wall::default() };
+        let wall = crate::Wall {
+            level: 1,
+            pts: vec![Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0), Vec2::new(5.0, 4.0)],
+            thickness: 0.2,
+            height: 3.0,
+            ..Wall::default()
+        };
         let walls = vec![&wall];
         let bars = corner_starters(&walls, 0.0, 3.0, &spec());
         assert_eq!(bars.len(), 1, "one interior corner");
@@ -519,8 +523,22 @@ mod tests {
     #[test]
     fn schedule_groups_and_marks() {
         let bars = vec![
-            RebarBar { pts: vec![Vec2::ZERO, Vec2::new(2.0, 0.0)], z: 0.0, z_top: 0.0, shape: RebarShape::S, bar: 1, role: RebarRole::BottomTransverse },
-            RebarBar { pts: vec![Vec2::ZERO, Vec2::new(2.0, 0.0)], z: 0.0, z_top: 0.0, shape: RebarShape::S, bar: 1, role: RebarRole::BottomTransverse },
+            RebarBar {
+                pts: vec![Vec2::ZERO, Vec2::new(2.0, 0.0)],
+                z: 0.0,
+                z_top: 0.0,
+                shape: RebarShape::S,
+                bar: 1,
+                role: RebarRole::BottomTransverse,
+            },
+            RebarBar {
+                pts: vec![Vec2::ZERO, Vec2::new(2.0, 0.0)],
+                z: 0.0,
+                z_top: 0.0,
+                shape: RebarShape::S,
+                bar: 1,
+                role: RebarRole::BottomTransverse,
+            },
             RebarBar { pts: vec![Vec2::ZERO, Vec2::new(2.0, 0.0)], z: 0.0, z_top: 0.5, shape: RebarShape::L, bar: 1, role: RebarRole::Starter },
         ];
         let rows = bending_schedule(&bars);

@@ -44,11 +44,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
                     }
                     _ => None,
                 };
-                let pending_pts = if app.session.tool == bimcraft_engine::Tool::Site {
-                    app.session.pending.clone()
-                } else {
-                    Vec::new()
-                };
+                let pending_pts = if app.session.tool == bimcraft_engine::Tool::Site { app.session.pending.clone() } else { Vec::new() };
                 ViewInfo {
                     mode,
                     active_level: app.session.active_level_id(),

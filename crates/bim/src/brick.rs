@@ -41,16 +41,106 @@ impl BrickType {
 /// The brick presets offered in the properties panel. Dimensions follow
 /// common metric products (UK/EU face + engineering bricks, US modular).
 pub const BRICK_TYPES: &[BrickType] = &[
-    BrickType { key: "brick-red", name: "Red face brick", length: 0.215, height: 0.065, width: 0.1025, joint: 0.010, color: 0x9b_4f_3a, mortar: 0xb6_ad_a2 },
-    BrickType { key: "brick-common", name: "Common brick", length: 0.240, height: 0.071, width: 0.115, joint: 0.012, color: 0xa8_5c_44, mortar: 0xb0_a8_9c },
-    BrickType { key: "brick-engineering", name: "Engineering blue", length: 0.215, height: 0.065, width: 0.1025, joint: 0.010, color: 0x3e_4a_55, mortar: 0x9a_98_92 },
-    BrickType { key: "brick-clinker", name: "Clinker", length: 0.230, height: 0.071, width: 0.110, joint: 0.012, color: 0x7a_46_30, mortar: 0xa8_9e_90 },
-    BrickType { key: "brick-roman", name: "Roman (low)", length: 0.235, height: 0.040, width: 0.115, joint: 0.010, color: 0xb2_6a_4c, mortar: 0xbc_b2_a6 },
-    BrickType { key: "brick-norwegian", name: "Norwegian", length: 0.228, height: 0.054, width: 0.108, joint: 0.011, color: 0xc0_7e_5a, mortar: 0xc4_ba_ac },
-    BrickType { key: "brick-fire", name: "Fire brick", length: 0.230, height: 0.064, width: 0.114, joint: 0.005, color: 0xd8_c9_9e, mortar: 0xd0_c4_a0 },
-    BrickType { key: "brick-sandlime", name: "Sandlime white", length: 0.250, height: 0.067, width: 0.120, joint: 0.010, color: 0xd9_d4_c8, mortar: 0xcc_c6_ba },
-    BrickType { key: "brick-brown", name: "Brown stock", length: 0.215, height: 0.065, width: 0.1025, joint: 0.010, color: 0x6e_50_3c, mortar: 0xac_a4_98 },
-    BrickType { key: "brick-black", name: "Glazed black", length: 0.240, height: 0.071, width: 0.115, joint: 0.008, color: 0x2c_2c_30, mortar: 0x8a_88_84 },
+    BrickType {
+        key: "brick-red",
+        name: "Red face brick",
+        length: 0.215,
+        height: 0.065,
+        width: 0.1025,
+        joint: 0.010,
+        color: 0x9b_4f_3a,
+        mortar: 0xb6_ad_a2,
+    },
+    BrickType {
+        key: "brick-common",
+        name: "Common brick",
+        length: 0.240,
+        height: 0.071,
+        width: 0.115,
+        joint: 0.012,
+        color: 0xa8_5c_44,
+        mortar: 0xb0_a8_9c,
+    },
+    BrickType {
+        key: "brick-engineering",
+        name: "Engineering blue",
+        length: 0.215,
+        height: 0.065,
+        width: 0.1025,
+        joint: 0.010,
+        color: 0x3e_4a_55,
+        mortar: 0x9a_98_92,
+    },
+    BrickType {
+        key: "brick-clinker",
+        name: "Clinker",
+        length: 0.230,
+        height: 0.071,
+        width: 0.110,
+        joint: 0.012,
+        color: 0x7a_46_30,
+        mortar: 0xa8_9e_90,
+    },
+    BrickType {
+        key: "brick-roman",
+        name: "Roman (low)",
+        length: 0.235,
+        height: 0.040,
+        width: 0.115,
+        joint: 0.010,
+        color: 0xb2_6a_4c,
+        mortar: 0xbc_b2_a6,
+    },
+    BrickType {
+        key: "brick-norwegian",
+        name: "Norwegian",
+        length: 0.228,
+        height: 0.054,
+        width: 0.108,
+        joint: 0.011,
+        color: 0xc0_7e_5a,
+        mortar: 0xc4_ba_ac,
+    },
+    BrickType {
+        key: "brick-fire",
+        name: "Fire brick",
+        length: 0.230,
+        height: 0.064,
+        width: 0.114,
+        joint: 0.005,
+        color: 0xd8_c9_9e,
+        mortar: 0xd0_c4_a0,
+    },
+    BrickType {
+        key: "brick-sandlime",
+        name: "Sandlime white",
+        length: 0.250,
+        height: 0.067,
+        width: 0.120,
+        joint: 0.010,
+        color: 0xd9_d4_c8,
+        mortar: 0xcc_c6_ba,
+    },
+    BrickType {
+        key: "brick-brown",
+        name: "Brown stock",
+        length: 0.215,
+        height: 0.065,
+        width: 0.1025,
+        joint: 0.010,
+        color: 0x6e_50_3c,
+        mortar: 0xac_a4_98,
+    },
+    BrickType {
+        key: "brick-black",
+        name: "Glazed black",
+        length: 0.240,
+        height: 0.071,
+        width: 0.115,
+        joint: 0.008,
+        color: 0x2c_2c_30,
+        mortar: 0x8a_88_84,
+    },
 ];
 
 pub fn brick_type(key: &str) -> Option<&'static BrickType> {
@@ -155,9 +245,7 @@ mod tests {
         assert!(cells.iter().any(|c| c[0] < 1e-9 && c[2] >= t.length - 1e-9));
         let second = cells.iter().find(|c| c[1] > t.height).unwrap();
         assert!(second[2] < t.length, "odd rows open with a half brick");
-        let full_in_second = cells.iter().find(|c| {
-            c[1] > t.height && (c[0] - (t.length / 2.0 + t.joint / 2.0)).abs() < 1e-9
-        });
+        let full_in_second = cells.iter().find(|c| c[1] > t.height && (c[0] - (t.length / 2.0 + t.joint / 2.0)).abs() < 1e-9);
         assert!(full_in_second.is_some(), "stretcher bond shifts full bricks");
         // No cell exceeds the face.
         for c in &cells {

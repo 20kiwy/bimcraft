@@ -5,7 +5,9 @@
 //! implemented. 3D geometry is shaded with a fixed light and drawn back-to-front
 //! by the UI layer; openings cut real holes into wall faces (no overlay quads).
 
-use bimcraft_bim::{formwork, foundation, plan_radius, ElementData, ElementKind, FoundationKind, FoundationPart, FoundationRole, GridAxis, ItemKind, Model};
+use bimcraft_bim::{
+    formwork, foundation, plan_radius, ElementData, ElementKind, FoundationKind, FoundationPart, FoundationRole, GridAxis, ItemKind, Model,
+};
 use bimcraft_geom::{Vec2, Vec3};
 use egui::{Color32, Stroke};
 
@@ -597,10 +599,7 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
 
     // Datum grids with bubbles — shifted by the active level's grid offset
     // (aedifex "level grid shift": each level slides its reference grid).
-    let grid_shift = model
-        .level(info.active_level)
-        .map(|l| l.grid_shift)
-        .unwrap_or([0.0, 0.0]);
+    let grid_shift = model.level(info.active_level).map(|l| l.grid_shift).unwrap_or([0.0, 0.0]);
     for g in &model.grids {
         let (a, b) = match g.axis {
             GridAxis::V => (Vec3::new(g.position + grid_shift[0], -he, z_active), Vec3::new(g.position + grid_shift[0], he, z_active)),
@@ -691,12 +690,7 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
             dl.line(quad[k], quad[(k + 1) % 4], col, 1.0);
         }
         if sel || info.half_extent < 14.0 {
-            dl.text(
-                Vec3::new(c.at.x, c.at.y - 0.34, z_active),
-                if c.note.is_empty() { "corner".to_string() } else { c.note.clone() },
-                9.0,
-                col,
-            );
+            dl.text(Vec3::new(c.at.x, c.at.y - 0.34, z_active), if c.note.is_empty() { "corner".to_string() } else { c.note.clone() }, 9.0, col);
         }
     }
 
@@ -985,12 +979,7 @@ fn draw_site_plan_ghost(dl: &mut DisplayList, info: &ViewInfo, z: f64) {
             for k in 0..n {
                 let a0 = k as f64 / n as f64 * std::f64::consts::TAU;
                 let a1 = (k + 1) as f64 / n as f64 * std::f64::consts::TAU;
-                dl.line(
-                    Vec2::new(c.x + r * a0.cos(), c.y + r * a0.sin()).to3(z),
-                    Vec2::new(c.x + r * a1.cos(), c.y + r * a1.sin()).to3(z),
-                    col,
-                    1.1,
-                );
+                dl.line(Vec2::new(c.x + r * a0.cos(), c.y + r * a0.sin()).to3(z), Vec2::new(c.x + r * a1.cos(), c.y + r * a1.sin()).to3(z), col, 1.1);
             }
         }
         _ => {
@@ -1515,7 +1504,14 @@ fn draw_site_3d(dl: &mut DisplayList, s: &bimcraft_bim::SiteElement, sel: bool) 
                 let n = dir.perp() * 0.045;
                 for (p, z0, z1, r) in [(a, 0.0, fh, 0.055), (b, 0.0, fh, 0.055)] {
                     let _ = r;
-                    let sect = |z: f64| [Vec3::new(p.x + n.x, p.y + n.y, z), Vec3::new(p.x - n.x, p.y - n.y, z), Vec3::new(p.x + dir.x * 0.05, p.y + dir.y * 0.05, z), Vec3::new(p.x - dir.x * 0.05, p.y - dir.y * 0.05, z)];
+                    let sect = |z: f64| {
+                        [
+                            Vec3::new(p.x + n.x, p.y + n.y, z),
+                            Vec3::new(p.x - n.x, p.y - n.y, z),
+                            Vec3::new(p.x + dir.x * 0.05, p.y + dir.y * 0.05, z),
+                            Vec3::new(p.x - dir.x * 0.05, p.y - dir.y * 0.05, z),
+                        ]
+                    };
                     let sa = sect(z0);
                     let sb = sect(z1);
                     for k in 0..4 {
@@ -1536,7 +1532,10 @@ fn draw_site_3d(dl: &mut DisplayList, s: &bimcraft_bim::SiteElement, sel: bool) 
                     let p = a + (b - a) * t;
                     let pa = p + n * 0.6;
                     let pb = p - n * 0.6;
-                    dl.quad([pa.to3(fh * 0.1), pb.to3(fh * 0.1), pb.to3(fh * 0.95), pa.to3(fh * 0.95)], shade(face_normal(pa.to3(0.0), pb.to3(0.0), pb.to3(1.0)), accent));
+                    dl.quad(
+                        [pa.to3(fh * 0.1), pb.to3(fh * 0.1), pb.to3(fh * 0.95), pa.to3(fh * 0.95)],
+                        shade(face_normal(pa.to3(0.0), pb.to3(0.0), pb.to3(1.0)), accent),
+                    );
                 }
                 let _ = pw;
             }
@@ -2131,7 +2130,11 @@ mod tests {
     #[test]
     fn plan_light_mode_swaps_grid_colors() {
         let m = sample();
-        let info = |light: bool| { let mut vi = vinfo(ViewModeKind::Plan2D, m.levels[0].id, 20.0); vi.light = light; vi };
+        let info = |light: bool| {
+            let mut vi = vinfo(ViewModeKind::Plan2D, m.levels[0].id, 20.0);
+            vi.light = light;
+            vi
+        };
         let dark = build(&m, &info(false));
         let light = build(&m, &info(true));
         assert!(dark.lines.iter().any(|l| l.color == GRID_LINE), "dark grid expected");
@@ -2149,7 +2152,7 @@ mod tests {
         m.add_wall(lvl, vec![Vec2::new(8.0, 0.0), Vec2::new(8.0, 6.0)], 0.2, 3.0);
         m.add_wall(lvl, vec![Vec2::new(8.0, 6.0), Vec2::new(0.0, 6.0)], 0.2, 3.0);
         m.add_wall(lvl, vec![Vec2::new(0.0, 6.0), Vec2::new(0.0, 0.0)], 0.2, 3.0);
-        let info = {  vinfo(ViewModeKind::Plan2D, lvl, 20.0) };
+        let info = { vinfo(ViewModeKind::Plan2D, lvl, 20.0) };
         let without = build(&m, &info);
         assert!(without.lines.iter().all(|l| l.color != FOUND_2D), "no foundation edges before the pass");
         m.add_foundation(bimcraft_bim::Foundation {
@@ -2173,7 +2176,11 @@ mod tests {
     #[test]
     fn plan_formwork_overlay_zoom_gated() {
         let m = sample();
-        let info = |fw: bool, he: f64| { let mut vi = vinfo(ViewModeKind::Plan2D, m.levels[0].id, he); vi.show_formwork = fw; vi };
+        let info = |fw: bool, he: f64| {
+            let mut vi = vinfo(ViewModeKind::Plan2D, m.levels[0].id, he);
+            vi.show_formwork = fw;
+            vi
+        };
         let base = build(&m, &info(false, 10.0));
         let on = build(&m, &info(true, 10.0));
         assert!(on.lines.len() > base.lines.len(), "formwork ticks appear when zoomed in");
@@ -2186,7 +2193,11 @@ mod tests {
     #[test]
     fn three_d_build_runs() {
         let m = sample();
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, m.levels[0].id, 20.0); vi.ground_extent = 30.0; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, m.levels[0].id, 20.0);
+            vi.ground_extent = 30.0;
+            vi
+        };
         let dl = build(&m, &info);
         assert!(!dl.tris.is_empty());
     }
@@ -2199,7 +2210,12 @@ mod tests {
         m.add_wall(lvl, vec![Vec2::new(8.0, 0.0), Vec2::new(8.0, 6.0)], 0.2, 3.0);
         m.add_wall(lvl, vec![Vec2::new(8.0, 6.0), Vec2::new(0.0, 6.0)], 0.2, 3.0);
         m.add_wall(lvl, vec![Vec2::new(0.0, 6.0), Vec2::new(0.0, 0.0)], 0.2, 3.0);
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+            vi.ground_extent = 30.0;
+            vi.show_ceilings_3d = false;
+            vi
+        };
         let base_count = build(&m, &info).tris.len();
         m.add_foundation(bimcraft_bim::Foundation {
             id: 0,
@@ -2219,7 +2235,13 @@ mod tests {
     #[test]
     fn three_d_formwork_adds_sheathing_and_posts() {
         let m = sample();
-        let info = |fw: bool| { let mut vi = vinfo(ViewModeKind::Perspective3D, m.levels[0].id, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi.show_formwork = fw; vi };
+        let info = |fw: bool| {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, m.levels[0].id, 20.0);
+            vi.ground_extent = 30.0;
+            vi.show_ceilings_3d = false;
+            vi.show_formwork = fw;
+            vi
+        };
         let plain = build(&m, &info(false));
         let with = build(&m, &info(true));
         assert!(with.tris.len() > plain.tris.len(), "sheathing quads add triangles");
@@ -2242,7 +2264,12 @@ mod tests {
             }
         }
         m.add_opening(ElementKind::Window, Opening { wall: w, s: 3.0, width: 1.2, height: 1.4, sill: 0.9, ..Opening::default() });
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, l0, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, l0, 20.0);
+            vi.ground_extent = 30.0;
+            vi.show_ceilings_3d = false;
+            vi
+        };
         let dl = build(&m, &info);
         // base_z = 0.0 + 0.5; top_z = base_z + (Level 1 delta 3.4 + 0.2) = 4.1
         // (the effective-height contract: the top offset rides on the wall base).
@@ -2262,7 +2289,12 @@ mod tests {
         let wid = m.walls().next().unwrap().id;
         let wall = m.element_mut(wid).unwrap();
         wall.paint = Some(0xcc4a2a);
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+            vi.ground_extent = 30.0;
+            vi.show_ceilings_3d = false;
+            vi
+        };
         let dl = build(&m, &info);
         // Some shaded triangle now carries the paint hue (shading scales RGB,
         // so check the red dominance pattern of #cc4a2a).
@@ -2278,7 +2310,12 @@ mod tests {
         let mut plain_m = Model::new();
         let plvl = plain_m.levels[0].id;
         plain_m.add_wall(plvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
-        let info_plain = { let mut vi = vinfo(ViewModeKind::Perspective3D, plvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
+        let info_plain = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, plvl, 20.0);
+            vi.ground_extent = 30.0;
+            vi.show_ceilings_3d = false;
+            vi
+        };
         let dl2 = build(&plain_m, &info_plain);
         let painted2 = dl2.tris.iter().any(|t| warm(t.color) && t.pts.iter().all(|p| p.z > 0.1));
         assert!(!painted2, "neutral palette has no terracotta wall faces");
@@ -2290,7 +2327,12 @@ mod tests {
         let lvl = m.levels[0].id;
         let w = m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
         m.add_opening(ElementKind::Window, Opening { wall: w, s: 2.5, width: 1.2, height: 1.4, sill: 0.9, ..Opening::default() });
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+            vi.ground_extent = 30.0;
+            vi.show_ceilings_3d = false;
+            vi
+        };
         let dl = build(&m, &info);
         // The wall (5 m × 3 m face) minus a 1.2 m gap must produce more than
         // two side pieces: full pieces + below/above sill pieces.
@@ -2308,7 +2350,11 @@ mod tests {
             w.type_key = "brick-230".into();
             w.finish = "brick-red".into();
         }
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+            vi.ground_extent = 30.0;
+            vi
+        };
         let dl = build(&m, &info);
         // Shading scales RGB uniformly, so match by channel *ratios*: brick
         // red 0x9b4f3a has r ≈ 2·g ≈ 2.7·b; mortar 0xb6ada2 is near-neutral.
@@ -2316,21 +2362,33 @@ mod tests {
             let (r, g, b) = (t.color.r() as f32, t.color.g() as f32, t.color.b() as f32);
             (r / g.max(1.0), r / b.max(1.0))
         };
-        let bricks = dl.tris.iter().filter(|t| {
-            let (rg, rb) = ratio(t);
-            (rg - 1.96).abs() < 0.35 && (rb - 2.67).abs() < 0.5
-        }).count();
+        let bricks = dl
+            .tris
+            .iter()
+            .filter(|t| {
+                let (rg, rb) = ratio(t);
+                (rg - 1.96).abs() < 0.35 && (rb - 2.67).abs() < 0.5
+            })
+            .count();
         assert!(bricks > 200, "stretcher-bond bricks expected, got {bricks}");
-        let mortar = dl.tris.iter().filter(|t| {
-            let (rg, rb) = ratio(t);
-            (rg - 1.06).abs() < 0.12 && (rb - 1.13).abs() < 0.12 && t.pts.iter().all(|p| p.z >= 0.0 && p.z <= 3.0)
-        }).count();
+        let mortar = dl
+            .tris
+            .iter()
+            .filter(|t| {
+                let (rg, rb) = ratio(t);
+                (rg - 1.06).abs() < 0.12 && (rb - 1.13).abs() < 0.12 && t.pts.iter().all(|p| p.z >= 0.0 && p.z <= 3.0)
+            })
+            .count();
         assert!(mortar > 8, "mortar face expected, got {mortar}");
         // Cells sit inset from the face and within the wall height.
-        assert!(dl.tris.iter().filter(|t| {
-            let (rg, rb) = ratio(t);
-            (rg - 1.96).abs() < 0.35 && (rb - 2.67).abs() < 0.5
-        }).all(|t| t.pts.iter().all(|p| p.z > 0.0 && p.z < 3.0)));
+        assert!(dl
+            .tris
+            .iter()
+            .filter(|t| {
+                let (rg, rb) = ratio(t);
+                (rg - 1.96).abs() < 0.35 && (rb - 2.67).abs() < 0.5
+            })
+            .all(|t| t.pts.iter().all(|p| p.z > 0.0 && p.z < 3.0)));
     }
 
     #[test]
@@ -2376,10 +2434,14 @@ mod tests {
         info.show_rebar = true;
         let dl = build(&m, &info);
         // Rebar red steel (0xb3122e shaded): r ≫ g, b between them.
-        let rebar = dl.tris.iter().filter(|t| {
-            let (r, g, b) = (t.color.r() as f32, t.color.g() as f32, t.color.b() as f32);
-            r > 60.0 && g < r * 0.25 && b > g && b < r * 0.45
-        }).count();
+        let rebar = dl
+            .tris
+            .iter()
+            .filter(|t| {
+                let (r, g, b) = (t.color.r() as f32, t.color.g() as f32, t.color.b() as f32);
+                r > 60.0 && g < r * 0.25 && b > g && b < r * 0.45
+            })
+            .count();
         assert!(rebar > 20, "rebar tubes expected, got {rebar}");
         // Ghost preview: window placeholder on the hovered wall.
         info.tool = PreviewTool::Window;
@@ -2407,7 +2469,12 @@ mod tests {
         let mut m = Model::new();
         let lvl = m.levels[0].id;
         m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+            vi.ground_extent = 30.0;
+            vi.show_ceilings_3d = false;
+            vi
+        };
         let dl = build(&m, &info);
         let cap_at = |x: f64| dl.tris.iter().any(|t| t.pts.iter().all(|p| (p.x - x).abs() < 1e-6));
         assert!(cap_at(0.0), "start end cap expected (vertical quad at x=0)");
@@ -2421,7 +2488,12 @@ mod tests {
         let mut m = Model::new();
         let lvl = m.levels[0].id;
         m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(4.0, 3.0)], 0.2, 3.0);
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+            vi.ground_extent = 30.0;
+            vi.show_ceilings_3d = false;
+            vi
+        };
         let dl = build(&m, &info);
         // Left chain miter corner for thickness 0.2 sits at (4 - 0.1, 0.1);
         // right chain at (4.1, -0.1).
@@ -2438,7 +2510,11 @@ mod tests {
         let lvl = m.levels[0].id;
         let pts = vec![Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(4.0, 3.0), Vec2::new(0.0, 3.0)];
         m.add_ceiling(lvl, pts.clone(), 0.1, 3.0);
-        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi };
+        let info = {
+            let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+            vi.ground_extent = 30.0;
+            vi
+        };
         let dl = build(&m, &info);
         let z_bottom = 3.0;
         let has_bottom = dl.tris.iter().any(|t| t.pts.iter().all(|p| (p.z - z_bottom).abs() < 1e-6));

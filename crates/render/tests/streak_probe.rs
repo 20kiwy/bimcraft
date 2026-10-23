@@ -85,7 +85,15 @@ fn no_streaks_in_typical_models() {
     for (name, kind) in
         [("Slab", FoundationKind::Slab), ("Stem", FoundationKind::StemSlab), ("Crawl", FoundationKind::Crawl), ("Base", FoundationKind::Basement)]
     {
-        m3.add_foundation(Foundation { id: 0, level: lvl, kind, seed: Vec2::new(4.0, 3.0), sizes: FoundationSizes::default(), name: name.into(), rebar: bimcraft_bim::RebarSpec::default() });
+        m3.add_foundation(Foundation {
+            id: 0,
+            level: lvl,
+            kind,
+            seed: Vec2::new(4.0, 3.0),
+            sizes: FoundationSizes::default(),
+            name: name.into(),
+            rebar: bimcraft_bim::RebarSpec::default(),
+        });
     }
     scan("foundations", &m3, &info(true, eye));
 

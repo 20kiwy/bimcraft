@@ -19,10 +19,10 @@ pub mod rebar;
 pub mod rooms;
 
 use bimcraft_geom::{dist_point_segment_xy, poly_area, poly_centroid, triangulate, Aabb2, Vec2, Vec3};
-pub use brick::{brick_type, face_bricks, BRICK_TYPES, BrickType};
+pub use brick::{brick_type, face_bricks, BrickType, BRICK_TYPES};
 pub use foundation::{Foundation, FoundationKind, FoundationPart, FoundationRole, FoundationSizes, ResolvedSizes};
-pub use landscaping::{preset_size, plan_radius, SiteElement, SiteKind, SiteShape};
-pub use rebar::{bending_schedule, corner_starters, footing_rebar, BARS, RebarBar, RebarRole, RebarSet, RebarShape, RebarSpec, RebarRow};
+pub use landscaping::{plan_radius, preset_size, SiteElement, SiteKind, SiteShape};
+pub use rebar::{bending_schedule, corner_starters, footing_rebar, RebarBar, RebarRole, RebarRow, RebarSet, RebarShape, RebarSpec, BARS};
 pub use rooms::{plan_loops, PlanLoops, RoomLoop};
 
 /// Which side of a wall's location line carries a role ("outside" face,
@@ -1038,10 +1038,14 @@ impl Model {
     pub fn wall_corners(&self, level: Id) -> Vec<Vec2> {
         let mut out: Vec<Vec2> = Vec::new();
         let eps = 1e-4;
-        let walls: Vec<&Wall> = self.elements.iter().filter_map(|e| match &e.data {
-            ElementData::Wall(w) if w.level == level => Some(w),
-            _ => None,
-        }).collect();
+        let walls: Vec<&Wall> = self
+            .elements
+            .iter()
+            .filter_map(|e| match &e.data {
+                ElementData::Wall(w) if w.level == level => Some(w),
+                _ => None,
+            })
+            .collect();
         for (wi, w) in walls.iter().enumerate() {
             for (i, v) in w.pts.iter().enumerate() {
                 let interior_bend = i > 0 && i + 1 < w.pts.len() && {
@@ -1113,7 +1117,8 @@ impl Model {
             }
             let loops = self.outline_loops_for_level(level.id);
             // A foundation already covers this level's outline?
-            let covered = self.foundations.iter().any(|f| f.level == level.id && loops.iter().any(|poly| crate::rooms::in_poly(f.seed.x, f.seed.y, poly)));
+            let covered =
+                self.foundations.iter().any(|f| f.level == level.id && loops.iter().any(|poly| crate::rooms::in_poly(f.seed.x, f.seed.y, poly)));
             if covered {
                 continue;
             }
@@ -1281,14 +1286,32 @@ impl Model {
             if let Some((p, outline)) = self.foundation_resolved(f) {
                 let set = rebar::footing_rebar(&foundation::foundation_geometry(&outline, &p), &p, &f.rebar, 0.0);
                 if !set.bars.is_empty() {
-                    rows.push(ScheduleRow { group: "Rebar".into(), name: format!("{} — bars", f.name), count: set.bars.len(), unit: "pcs".into(), quantity: set.bars.len() as f64 });
-                    rows.push(ScheduleRow { group: "Rebar".into(), name: format!("{} — steel", f.name), count: set.bars.len(), unit: "kg".into(), quantity: set.total_mass() });
+                    rows.push(ScheduleRow {
+                        group: "Rebar".into(),
+                        name: format!("{} — bars", f.name),
+                        count: set.bars.len(),
+                        unit: "pcs".into(),
+                        quantity: set.bars.len() as f64,
+                    });
+                    rows.push(ScheduleRow {
+                        group: "Rebar".into(),
+                        name: format!("{} — steel", f.name),
+                        count: set.bars.len(),
+                        unit: "kg".into(),
+                        quantity: set.total_mass(),
+                    });
                 }
             }
         }
         // Wall corner details (DetailCraft-style corner schedule).
         if !self.corner_details.is_empty() {
-            rows.push(ScheduleRow { group: "Detailing".into(), name: "Detailed corners".into(), count: self.corner_details.len(), unit: "pcs".into(), quantity: self.corner_details.len() as f64 });
+            rows.push(ScheduleRow {
+                group: "Detailing".into(),
+                name: "Detailed corners".into(),
+                count: self.corner_details.len(),
+                unit: "pcs".into(),
+                quantity: self.corner_details.len() as f64,
+            });
         }
         // Landscaping: counts per kind + areas for the flat kinds.
         for kind in SiteKind::ALL {
@@ -1297,7 +1320,9 @@ impl Model {
                 continue;
             }
             match kind.shape() {
-                SiteShape::Point => rows.push(ScheduleRow { group: "Landscaping".into(), name: kind.name().into(), count: n, unit: "pcs".into(), quantity: n as f64 }),
+                SiteShape::Point => {
+                    rows.push(ScheduleRow { group: "Landscaping".into(), name: kind.name().into(), count: n, unit: "pcs".into(), quantity: n as f64 })
+                }
                 SiteShape::Chain => {
                     let len: f64 = self.site.iter().filter(|s| s.kind == kind).map(|s| s.chain_length()).sum();
                     rows.push(ScheduleRow { group: "Landscaping".into(), name: kind.name().into(), count: n, unit: "m".into(), quantity: len });
@@ -1465,7 +1490,7 @@ pub fn sample() -> Model {
     let bn = concrete_wall(&mut m, lb, vec![Vec2::new(12.0, 9.0), Vec2::new(0.0, 9.0)], 2.7);
     let bw = concrete_wall(&mut m, lb, vec![Vec2::new(0.0, 9.0), Vec2::new(0.0, 0.0)], 2.7);
     door(&mut m, bw, 7.0, 2.4, "door-garage"); // ramp entrance from the drive
-    // Bunker walls (8..12 × 6..9 room).
+                                               // Bunker walls (8..12 × 6..9 room).
     let bk1 = concrete_wall(&mut m, lb, vec![Vec2::new(8.0, 6.0), Vec2::new(12.0, 6.0)], 2.7);
     let bk2 = concrete_wall(&mut m, lb, vec![Vec2::new(8.0, 6.0), Vec2::new(8.0, 9.0)], 2.7);
     door(&mut m, bk1, 3.2, 0.9, "door-single");
@@ -1578,27 +1603,23 @@ pub fn sample() -> Model {
         m.add_site_element(SiteElement { id: 0, kind, pos, pts, rotation: 0.0, variant });
     };
     // Lawn over the whole plot.
-    site(&mut m, SiteKind::Grass, Vec2::new(6.0, 4.0), vec![
-        Vec2::new(-8.0, -6.0), Vec2::new(20.0, -6.0), Vec2::new(20.0, 14.0), Vec2::new(-8.0, 14.0),
-    ], 0);
+    site(
+        &mut m,
+        SiteKind::Grass,
+        Vec2::new(6.0, 4.0),
+        vec![Vec2::new(-8.0, -6.0), Vec2::new(20.0, -6.0), Vec2::new(20.0, 14.0), Vec2::new(-8.0, 14.0)],
+        0,
+    );
     // Picket fence along the south street and the east boundary.
     site(&mut m, SiteKind::Fence, Vec2::ZERO, vec![Vec2::new(-8.0, -6.0), Vec2::new(20.0, -6.0)], 0);
     site(&mut m, SiteKind::Fence, Vec2::ZERO, vec![Vec2::new(20.0, -6.0), Vec2::new(20.0, 14.0)], 0);
     // Drive down to the underground garage (ramp falls west of the house).
-    site(&mut m, SiteKind::Driveway, Vec2::ZERO, vec![
-        Vec2::new(-7.0, 0.8), Vec2::new(-0.6, 0.8), Vec2::new(-0.6, 3.2), Vec2::new(-7.0, 3.2),
-    ], 0);
+    site(&mut m, SiteKind::Driveway, Vec2::ZERO, vec![Vec2::new(-7.0, 0.8), Vec2::new(-0.6, 0.8), Vec2::new(-0.6, 3.2), Vec2::new(-7.0, 3.2)], 0);
     // Path from the street gate to the front door.
-    site(&mut m, SiteKind::Path, Vec2::ZERO, vec![
-        Vec2::new(1.5, -6.0), Vec2::new(2.9, -6.0), Vec2::new(2.9, 0.0), Vec2::new(1.5, 0.0),
-    ], 0);
+    site(&mut m, SiteKind::Path, Vec2::ZERO, vec![Vec2::new(1.5, -6.0), Vec2::new(2.9, -6.0), Vec2::new(2.9, 0.0), Vec2::new(1.5, 0.0)], 0);
     // Flower bed along the south facade (roses + tulips + daisies).
-    site(&mut m, SiteKind::FlowerBed, Vec2::ZERO, vec![
-        Vec2::new(3.4, -1.7), Vec2::new(10.6, -1.7), Vec2::new(10.6, -0.8), Vec2::new(3.4, -0.8),
-    ], 0);
-    site(&mut m, SiteKind::FlowerBed, Vec2::ZERO, vec![
-        Vec2::new(0.6, -1.7), Vec2::new(2.6, -1.7), Vec2::new(2.6, -0.8), Vec2::new(0.6, -0.8),
-    ], 2);
+    site(&mut m, SiteKind::FlowerBed, Vec2::ZERO, vec![Vec2::new(3.4, -1.7), Vec2::new(10.6, -1.7), Vec2::new(10.6, -0.8), Vec2::new(3.4, -0.8)], 0);
+    site(&mut m, SiteKind::FlowerBed, Vec2::ZERO, vec![Vec2::new(0.6, -1.7), Vec2::new(2.6, -1.7), Vec2::new(2.6, -0.8), Vec2::new(0.6, -0.8)], 2);
     // Trees: shade on the west, conifers screening the east, ornamental at
     // the gate.
     site(&mut m, SiteKind::TreeDeciduous6, Vec2::new(-5.5, 10.5), vec![], 3);

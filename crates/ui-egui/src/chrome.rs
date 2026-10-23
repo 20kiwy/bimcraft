@@ -409,7 +409,11 @@ fn properties_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
 /// on top, hard landscape below) + view toggles for derived layers.
 fn landscaping_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
     section(ui, "Entourage", t);
-    ui.label(egui::RichText::new("Pick a kind, then click in the plan (or the 3D ground) to place. R rotates.").font(theme::font_ui(10.5)).color(t.text_dim));
+    ui.label(
+        egui::RichText::new("Pick a kind, then click in the plan (or the 3D ground) to place. R rotates.")
+            .font(theme::font_ui(10.5))
+            .color(t.text_dim),
+    );
     ui.add_space(4.0);
     egui::Grid::new("site_palette_point").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
         for kind in bimcraft_bim::SiteKind::ALL.into_iter().filter(|k| k.shape() == bimcraft_bim::SiteShape::Point) {
@@ -584,8 +588,7 @@ fn level_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id:
     let ch_elev = drag_f64(ui, "Elevation", &mut elev, 0.05, -100.0..=1000.0, " m");
     let ch_h = drag_f64(ui, "Height", &mut height, 0.05, 1.0..=20.0, " m");
     // Level grid shift (aedifex parity): slide this level's datum grid only.
-    let ch_gs = drag_f64(ui, "Grid shift X", &mut gsx, 0.1, -50.0..=50.0, " m")
-        | drag_f64(ui, "Grid shift Y", &mut gsy, 0.1, -50.0..=50.0, " m");
+    let ch_gs = drag_f64(ui, "Grid shift X", &mut gsx, 0.1, -50.0..=50.0, " m") | drag_f64(ui, "Grid shift Y", &mut gsy, 0.1, -50.0..=50.0, " m");
     if ch_elev || ch_h || ch_gs {
         app.session.begin_edit();
         if let Some(l) = app.session.model.level_mut(id) {
@@ -748,7 +751,18 @@ fn wall_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: 
     });
     if let Some(b) = bimcraft_bim::brick_type(&w.finish) {
         let face_area = len * w.effective_height(&app.session.model) * 2.0;
-        caption(ui, t, format!("{} · {} × {} × {} mm · ≈{:.0} bricks (both faces)", b.name, (b.length * 1000.0) as i64, (b.width * 1000.0) as i64, (b.height * 1000.0) as i64, bimcraft_bim::brick::bricks_per_m2(b) * face_area));
+        caption(
+            ui,
+            t,
+            format!(
+                "{} · {} × {} × {} mm · ≈{:.0} bricks (both faces)",
+                b.name,
+                (b.length * 1000.0) as i64,
+                (b.width * 1000.0) as i64,
+                (b.height * 1000.0) as i64,
+                bimcraft_bim::brick::bricks_per_m2(b) * face_area
+            ),
+        );
     }
 
     // Thickness: keep the assembly key in sync (no preset at that thickness = custom).

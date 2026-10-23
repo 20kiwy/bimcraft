@@ -104,7 +104,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bimcraft"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-bim",
  "bimcraft-io",
@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "bimcraft-bim"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-geom",
  "serde",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "bimcraft-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-bim",
  "bimcraft-geom",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "bimcraft-engine"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-bim",
  "bimcraft-geom",
@@ -141,14 +141,14 @@ dependencies = [
 
 [[package]]
 name = "bimcraft-geom"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "bimcraft-io"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-bim",
  "bimcraft-geom",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "bimcraft-mcp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-bim",
  "bimcraft-engine",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "bimcraft-render"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-bim",
  "bimcraft-geom",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "bimcraft-ui-egui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-bim",
  "bimcraft-engine",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "bimcraft-web"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bimcraft-bim",
  "bimcraft-io",

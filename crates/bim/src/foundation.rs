@@ -96,6 +96,10 @@ pub struct Foundation {
     pub sizes: FoundationSizes,
     #[serde(default)]
     pub name: String,
+    /// Reinforcement intent (bar size, spacing, cover, hooks, starters);
+    /// the bars themselves are derived (see `rebar::footing_rebar`).
+    #[serde(default)]
+    pub rebar: crate::rebar::RebarSpec,
 }
 
 /// One resolved size set (every field is the final value in meters).

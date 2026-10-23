@@ -23,15 +23,41 @@ edition and native desktop builds.
 [![Rust CI](https://github.com/20kiwy/bimcraft/actions/workflows/rust.yml/badge.svg)](https://github.com/20kiwy/bimcraft/actions/workflows/rust.yml)
 [![WASM preview](https://github.com/20kiwy/bimcraft/actions/workflows/wasm.yml/badge.svg)](https://github.com/20kiwy/bimcraft/actions/workflows/wasm.yml)
 
+## v0.7.0 — the brick house release
+
+- **Engineer's brick house template** (`sample()`): underground parking level
+  with a poured-concrete bunker room, two brick storeys, flat roof, room
+  annotations, furniture and a landscaped plot — first-run default.
+- **Brick finishes**: ten real brick presets (face, engineering, clinker,
+  Roman, Norwegian, fire, sandlime…); walls carry a finish, the renderer lays
+  stretcher-bond courses with cut bricks and mortar on the exterior face, the
+  Paint tool re-bricks walls, the schedule counts bricks per face area.
+- **DetailCraft rebar engine**: bar table (#3–#11), footing mats (both ways,
+  hooked ends optional), starter bars up stems and L-starters at every wall
+  corner, cut lengths, checks (ACI 318 clear spacing) and a bending schedule —
+  bars are *derived*, never stored; concrete turns see-through when rebar shows.
+- **Floors remember their foundations**: with `auto_foundation` on, the lowest
+  wall-carrying level is grounded automatically (basement underground, slab-on-
+  grade at grade) the moment walls or floors appear.
+- **Landscaping**: trees (5 species), shrubs, hedges, potted plants, fence
+  runs, lawns, flower beds, paths and driveways — plan symbols follow the
+  CadCraft library conventions, 3D renders low-poly entourage.
+- **aedifex parity**: solo level mode (hide other storeys), wall x-ray
+  (translucent walls), per-level grid shift, and 2D + 3D ghost placement
+  previews (window/door placeholder on the hovered wall).
+- **`bimcraft-mcp`**: JSON-RPC 2.0 over stdio with permission groups
+  (`read|edit|save|export`) — 19 tools from `model_describe` to `wall_add`,
+  `site_object_add`, `corner_detail`, `dxf_export`. Every edit is one undo step.
+
 ## Why a Rust edition
 
 | | JavaScript edition | Rust edition (this repo) |
 |---|---|---|
-| Language | Plain ES modules, no bundler | Rust 2021 workspace, 6 crates + 3 apps |
+| Language | Plain ES modules, no bundler | Rust 2021 workspace, 7 crates + 3 apps |
 | UI | Hand-rolled DOM canvas | egui 0.36 + `craft-ui` (storytold craft-libs) |
 | Views | Browser-first | Desktop (Windows/macOS/Linux) + browser WASM + CLI |
-| 3D | DOM canvas projection | Painter-based Z-up perspective with depth sort, real opening cuts, **software z-buffer line occlusion** |
-| Automation | none | `bimcraft-cli` (validate / schedule / sample) |
+| 3D | DOM canvas projection | Painter-based Z-up perspective with **software z-buffer**, real opening cuts, **stretcher-bond brick coursing**, rebar tubes, low-poly landscaping, ghost placement previews (2D + 3D) |
+| Automation | none | `bimcraft-cli` (validate / schedule / sample) + **`bimcraft-mcp`** (JSON-RPC stdio, 19 tools, permission groups) |
 | CI | manual | GitHub Actions: fmt/clippy/test + WASM Pages preview + tagged releases |
 
 The two editions share **no code**. The JavaScript edition is the behavioural

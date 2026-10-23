@@ -236,14 +236,17 @@ mod tests {
     fn v3_roundtrip_keeps_rooms_and_sections() {
         let mut m = sample();
         let lvl = m.levels[0].id;
-        m.add_room(lvl, "Living", bimcraft_geom::Vec2::new(2.0, 2.0));
+        // The template already carries room annotations; add one more and
+        // check the roundtrip preserves every one of them plus the section.
+        let rooms_before = m.rooms.len();
+        m.add_room(lvl, "Sun room", bimcraft_geom::Vec2::new(13.0, 2.0));
         m.add_section(lvl, "Section 1", bimcraft_geom::Vec2::ZERO, bimcraft_geom::Vec2::new(10.0, 0.0), 4.0);
         let json = save_json(&m);
         assert!(json.contains("bimcraft.model/v3"));
         let back = load_json(&json).unwrap();
-        assert_eq!(back.rooms.len(), 1);
+        assert_eq!(back.rooms.len(), rooms_before + 1);
         assert_eq!(back.sections.len(), 1);
-        assert_eq!(back.rooms[0].name, "Living");
+        assert!(back.rooms.iter().any(|r| r.name == "Sun room"));
     }
 
     #[test]
@@ -297,6 +300,9 @@ mod tests {
     #[test]
     fn foundations_roundtrip_through_json() {
         let mut m = sample();
+        // The template auto-grounds itself, so count the delta and find the
+        // added one by id.
+        let before = m.foundations.len();
         let lvl = m.levels[0].id;
         let id = m.add_foundation(bimcraft_bim::Foundation {
             id: 0,
@@ -305,12 +311,13 @@ mod tests {
             seed: bimcraft_geom::Vec2::new(4.0, 2.0),
             sizes: bimcraft_bim::FoundationSizes::default(),
             name: String::new(),
+            rebar: bimcraft_bim::RebarSpec::default(),
         });
         let back = load_json(&save_json(&m)).unwrap();
-        assert_eq!(back.foundations.len(), 1);
-        assert_eq!(back.foundations[0].id, id);
-        assert_eq!(back.foundations[0].kind, bimcraft_bim::FoundationKind::Basement);
-        assert_eq!(back.foundations[0].seed, bimcraft_geom::Vec2::new(4.0, 2.0));
+        assert_eq!(back.foundations.len(), before + 1);
+        let f = back.foundations.iter().find(|f| f.id == id).expect("added foundation survives");
+        assert_eq!(f.kind, bimcraft_bim::FoundationKind::Basement);
+        assert_eq!(f.seed, bimcraft_geom::Vec2::new(4.0, 2.0));
     }
 
     #[test]
@@ -324,6 +331,7 @@ mod tests {
             seed: bimcraft_geom::Vec2::new(50.0, 50.0),
             sizes: bimcraft_bim::FoundationSizes::default(),
             name: String::new(),
+            rebar: bimcraft_bim::RebarSpec::default(),
         });
         let issues = validate(&m);
         assert!(issues.iter().any(|i| i.contains("sits outside every building outline")), "issues: {issues:?}");

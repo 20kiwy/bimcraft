@@ -10,13 +10,19 @@
 //! `model-rooms` → [rooms] + [Room], section/elevation views → [Section],
 //! `model-schedule` → [Model::schedule].
 
+pub mod brick;
 pub mod dxf;
 pub mod formwork;
 pub mod foundation;
+pub mod landscaping;
+pub mod rebar;
 pub mod rooms;
 
 use bimcraft_geom::{dist_point_segment_xy, poly_area, poly_centroid, triangulate, Aabb2, Vec2, Vec3};
+pub use brick::{brick_type, face_bricks, BRICK_TYPES, BrickType};
 pub use foundation::{Foundation, FoundationKind, FoundationPart, FoundationRole, FoundationSizes, ResolvedSizes};
+pub use landscaping::{preset_size, plan_radius, SiteElement, SiteKind, SiteShape};
+pub use rebar::{bending_schedule, corner_starters, footing_rebar, BARS, RebarBar, RebarRole, RebarSet, RebarShape, RebarSpec, RebarRow};
 pub use rooms::{plan_loops, PlanLoops, RoomLoop};
 
 /// Which side of a wall's location line carries a role ("outside" face,
@@ -61,13 +67,18 @@ use serde::{Deserialize, Serialize};
 
 pub type Id = u64;
 
-/// A storey of the building. Elevation and height are in meters.
+/// A storey of the building. Elevation and height are in meters. `grid_shift`
+/// shifts the datum grid on this level's plan only (aedifex-style "level grid
+/// shift" — levels can slide their reference grid without moving walls).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Level {
     pub id: Id,
     pub name: String,
     pub elevation: f64,
     pub height: f64,
+    /// (dx, dy) plan offset applied to the grid on this level (meters).
+    #[serde(default)]
+    pub grid_shift: [f64; 2],
 }
 
 /// A datum line on the plan grid (structural grid, Blender-like reference).
@@ -185,6 +196,10 @@ pub struct Wall {
     /// Which side is the wall's outside face.
     #[serde(default)]
     pub ext_side: Side,
+    /// Brick finish key ([`brick::BRICK_TYPES`]) on the wall faces; empty =
+    /// the plain assembly surface (paint / material color only).
+    #[serde(default)]
+    pub finish: String,
 }
 
 impl Default for Wall {
@@ -200,6 +215,7 @@ impl Default for Wall {
             top_offset: 0.0,
             base_offset: 0.0,
             ext_side: Side::Right,
+            finish: String::new(),
         }
     }
 }
@@ -324,6 +340,15 @@ impl Wall {
             (Some(_top), Some(base), Some(topl)) => (topl.elevation - base.elevation + self.top_offset).max(0.1),
             _ => self.height.max(0.1),
         }
+    }
+
+    /// The brick finish preset, when `finish` names one; falls back to the
+    /// assembly default (a brick wall type gets the matching brick).
+    pub fn brick_finish(&self) -> Option<&'static BrickType> {
+        brick_type(&self.finish).or_else(|| match self.type_key.as_str() {
+            "brick-230" => brick_type("brick-red"),
+            _ => None,
+        })
     }
 
     /// World z of the wall base (level elevation + base offset).
@@ -644,14 +669,49 @@ pub struct Model {
     /// basement), each anchored by a seed point inside its outline.
     #[serde(default)]
     pub foundations: Vec<Foundation>,
+    /// Landscaping: trees, shrubs, hedges, fences, lawns, flower beds.
+    #[serde(default)]
+    pub site: Vec<SiteElement>,
+    /// Wall-corner detailing overrides (DetailCraft-style: store only the
+    /// chosen parameters; the corners themselves are re-derived from walls).
+    #[serde(default)]
+    pub corner_details: Vec<CornerDetail>,
+    /// Automatically give every ground/underground level a foundation when it
+    /// gains walls (floors remember their formwork + foundations).
+    #[serde(default = "default_true")]
+    pub auto_foundation: bool,
     next_id: Id,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A detailed wall corner: which post size and starters to show there.
+/// `at` is the corner vertex (re-matched to the nearest live wall vertex),
+/// so the detail follows wall moves like everything else derived.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CornerDetail {
+    pub id: Id,
+    /// The corner vertex this detail belongs to (plan meters).
+    pub at: Vec2,
+    /// Corner stud / post square side (meters; 0 = formwork default).
+    pub post: f64,
+    /// Draw L starter bars up this corner.
+    pub starters: bool,
+    /// Optional note printed in plan and the schedule.
+    #[serde(default)]
+    pub note: String,
 }
 
 impl Model {
     pub fn new() -> Self {
         let mut m = Self { next_id: 1, ..Default::default() };
+        // Fresh models remember their foundations (the serde default only
+        // applies to files, so set it here for in-memory models too).
+        m.auto_foundation = true;
         let l0 = m.alloc();
-        m.levels.push(Level { id: l0, name: "Level 0".into(), elevation: 0.0, height: 3.0 });
+        m.levels.push(Level { id: l0, name: "Level 0".into(), elevation: 0.0, height: 3.0, grid_shift: [0.0, 0.0] });
         let g0 = m.alloc();
         m.grids.push(Grid { id: g0, name: "A".into(), axis: GridAxis::V, position: 0.0 });
         let g1 = m.alloc();
@@ -845,7 +905,7 @@ impl Model {
 
     pub fn add_level(&mut self, name: &str, elevation: f64, height: f64) -> Id {
         let id = self.alloc();
-        self.levels.push(Level { id, name: name.into(), elevation, height });
+        self.levels.push(Level { id, name: name.into(), elevation, height, grid_shift: [0.0, 0.0] });
         id
     }
 
@@ -931,6 +991,153 @@ impl Model {
 
     pub fn delete_room(&mut self, id: Id) {
         self.rooms.retain(|r| r.id != id);
+    }
+
+    // ------------------------------------------------------------- site --
+
+    /// Add a site/landscaping element (allocates the id when `e.id == 0`).
+    pub fn add_site_element(&mut self, mut e: SiteElement) -> Id {
+        if e.id == 0 {
+            e.id = self.alloc();
+        }
+        let id = e.id;
+        self.site.push(e);
+        id
+    }
+
+    pub fn site_element(&self, id: Id) -> Option<&SiteElement> {
+        self.site.iter().find(|s| s.id == id)
+    }
+
+    pub fn site_element_mut(&mut self, id: Id) -> Option<&mut SiteElement> {
+        self.site.iter_mut().find(|s| s.id == id)
+    }
+
+    pub fn delete_site_element(&mut self, id: Id) {
+        self.site.retain(|s| s.id != id);
+    }
+
+    /// Pick a site element near a plan point (radius by kind).
+    pub fn site_at(&self, p: Vec2) -> Option<Id> {
+        let mut best: Option<(f64, Id)> = None;
+        for s in &self.site {
+            let (c, r) = s.plan_bounds();
+            let d = (p - c).length();
+            if d <= r.max(0.5) && best.map(|(bd, _)| d < bd).unwrap_or(true) {
+                best = Some((d, s.id));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    // -------------------------------------------------- wall corner info --
+
+    /// Corner vertices of one level's walls: every polyline interior vertex
+    /// that bends (plus every vertex shared by two wall ends). Derived — the
+    /// DetailCraft "discover the joints, store only parameters" rule.
+    pub fn wall_corners(&self, level: Id) -> Vec<Vec2> {
+        let mut out: Vec<Vec2> = Vec::new();
+        let eps = 1e-4;
+        let walls: Vec<&Wall> = self.elements.iter().filter_map(|e| match &e.data {
+            ElementData::Wall(w) if w.level == level => Some(w),
+            _ => None,
+        }).collect();
+        for (wi, w) in walls.iter().enumerate() {
+            for (i, v) in w.pts.iter().enumerate() {
+                let interior_bend = i > 0 && i + 1 < w.pts.len() && {
+                    let prev = (*v - w.pts[i - 1]).normalize();
+                    let next = (w.pts[i + 1] - *v).normalize();
+                    prev.dot(next) < 0.999
+                };
+                // A free wall end touching another wall also forms a corner.
+                let touching_end = (i == 0 || i + 1 == w.pts.len())
+                    && walls.iter().enumerate().any(|(oi, o)| oi != wi && o.pts.iter().any(|p| (*p - *v).length() < 0.02));
+                if (interior_bend || touching_end) && !out.iter().any(|c| (*c - *v).length() < eps) {
+                    out.push(*v);
+                }
+            }
+        }
+        out
+    }
+
+    /// The corner detail override at (or within 5 cm of) `at`, if any.
+    pub fn corner_detail_at(&self, at: Vec2) -> Option<&CornerDetail> {
+        self.corner_details.iter().find(|c| (c.at - at).length() < 0.05)
+    }
+
+    /// Set (or replace) a corner detail at `at`.
+    pub fn set_corner_detail(&mut self, at: Vec2, post: f64, starters: bool, note: &str) -> Id {
+        if let Some(existing) = self.corner_detail_at(at) {
+            let id = existing.id;
+            if let Some(c) = self.corner_details.iter_mut().find(|c| c.id == id) {
+                c.post = post;
+                c.starters = starters;
+                if !note.is_empty() {
+                    c.note = note.to_string();
+                }
+            }
+            return id;
+        }
+        let id = self.alloc();
+        self.corner_details.push(CornerDetail { id, at, post, starters, note: note.into() });
+        id
+    }
+
+    // ------------------------------------------- foundation auto-memory --
+
+    /// Make sure every level that carries walls but no foundation gets one
+    /// (the user's "floors automatically remember formworks + foundations").
+    /// Only the lowest wall-carrying level is grounded: underground levels
+    /// (negative elevation) get basements, the ground level gets a
+    /// slab-on-grade; upper storeys are carried by the walls below.
+    /// Returns the ids created.
+    pub fn ensure_foundations(&mut self) -> Vec<Id> {
+        let mut created = Vec::new();
+        if !self.auto_foundation {
+            return created;
+        }
+        // Lowest elevation among levels that carry walls.
+        let ground_elev = self
+            .levels
+            .iter()
+            .filter(|l| self.walls().any(|e| matches!(&e.data, ElementData::Wall(w) if w.level == l.id)))
+            .map(|l| l.elevation)
+            .fold(f64::INFINITY, f64::min);
+        if !ground_elev.is_finite() {
+            return created;
+        }
+        for level in self.levels.clone() {
+            let has_walls = self.walls().any(|e| matches!(&e.data, ElementData::Wall(w) if w.level == level.id));
+            if !has_walls || level.elevation > ground_elev + 1e-6 {
+                continue;
+            }
+            let loops = self.outline_loops_for_level(level.id);
+            // A foundation already covers this level's outline?
+            let covered = self.foundations.iter().any(|f| f.level == level.id && loops.iter().any(|poly| crate::rooms::in_poly(f.seed.x, f.seed.y, poly)));
+            if covered {
+                continue;
+            }
+            // Seed at the centroid of the largest outline loop.
+            let Some(poly) = loops.iter().max_by(|a, b| poly_area(a).abs().total_cmp(&poly_area(b).abs())) else {
+                continue;
+            };
+            let c = poly_center(poly);
+            if !crate::rooms::in_poly(c.x, c.y, poly) {
+                continue;
+            }
+            let kind = if level.elevation < -0.4 { FoundationKind::Basement } else { FoundationKind::Slab };
+            let f = Foundation {
+                id: 0,
+                level: level.id,
+                kind,
+                seed: c,
+                sizes: FoundationSizes::default(),
+                name: String::new(),
+                rebar: RebarSpec::default(),
+            };
+            created.push(self.add_foundation(f));
+        }
+        created
     }
 
     /// Move an element by `delta` in plan space (walls, plates, items).
@@ -1063,13 +1270,43 @@ impl Model {
         if room_count > 0 {
             rows.push(ScheduleRow { group: "Rooms".into(), name: "Rooms (net)".into(), count: room_count, unit: "m²".into(), quantity: room_area });
         }
-        // Foundations: one row per foundation with its concrete volume.
+        // Foundations: one row per foundation with its concrete volume + rebar.
         for f in &self.foundations {
             let vol = self
                 .foundation_resolved(f)
                 .map(|(p, outline)| foundation::foundation_concrete_volume(&foundation::foundation_geometry(&outline, &p)))
                 .unwrap_or(0.0);
             rows.push(ScheduleRow { group: "Foundations".into(), name: f.name.clone(), count: 1, unit: "m³".into(), quantity: vol });
+            // Rebar: derive the bars and report steel mass + bar count.
+            if let Some((p, outline)) = self.foundation_resolved(f) {
+                let set = rebar::footing_rebar(&foundation::foundation_geometry(&outline, &p), &p, &f.rebar, 0.0);
+                if !set.bars.is_empty() {
+                    rows.push(ScheduleRow { group: "Rebar".into(), name: format!("{} — bars", f.name), count: set.bars.len(), unit: "pcs".into(), quantity: set.bars.len() as f64 });
+                    rows.push(ScheduleRow { group: "Rebar".into(), name: format!("{} — steel", f.name), count: set.bars.len(), unit: "kg".into(), quantity: set.total_mass() });
+                }
+            }
+        }
+        // Wall corner details (DetailCraft-style corner schedule).
+        if !self.corner_details.is_empty() {
+            rows.push(ScheduleRow { group: "Detailing".into(), name: "Detailed corners".into(), count: self.corner_details.len(), unit: "pcs".into(), quantity: self.corner_details.len() as f64 });
+        }
+        // Landscaping: counts per kind + areas for the flat kinds.
+        for kind in SiteKind::ALL {
+            let n = self.site.iter().filter(|s| s.kind == kind).count();
+            if n == 0 {
+                continue;
+            }
+            match kind.shape() {
+                SiteShape::Point => rows.push(ScheduleRow { group: "Landscaping".into(), name: kind.name().into(), count: n, unit: "pcs".into(), quantity: n as f64 }),
+                SiteShape::Chain => {
+                    let len: f64 = self.site.iter().filter(|s| s.kind == kind).map(|s| s.chain_length()).sum();
+                    rows.push(ScheduleRow { group: "Landscaping".into(), name: kind.name().into(), count: n, unit: "m".into(), quantity: len });
+                }
+                SiteShape::Polygon => {
+                    let area: f64 = self.site.iter().filter(|s| s.kind == kind).map(|s| s.area()).sum();
+                    rows.push(ScheduleRow { group: "Landscaping".into(), name: kind.name().into(), count: n, unit: "m²".into(), quantity: area });
+                }
+            }
         }
         rows
     }
@@ -1126,6 +1363,12 @@ impl Model {
                 any = true;
             }
         }
+        // Site elements sit on the ground plane (trees reach up).
+        for s in &self.site {
+            let (c, r) = s.plan_bounds();
+            grow(Vec2::new(c.x - r, c.y - r), 0.0, preset_size(s.kind).2, &mut min, &mut max);
+            any = true;
+        }
         any.then_some((min, max))
     }
 }
@@ -1162,101 +1405,218 @@ pub fn poly_center(pts: &[Vec2]) -> Vec2 {
     poly_centroid(pts)
 }
 
-/// The sample house shown on first run (parity: `new-model.js`).
+/// The sample house shown on first run — the "engineer's brick house"
+/// template: an underground parking level with a concrete bunker room, two
+/// brick storeys, real coursing finishes, auto-foundations, formwork, corner
+/// detailing and a landscaped site (fence, lawn, beds, path, drive, trees).
 pub fn sample() -> Model {
     let mut m = Model::new();
-    let l0 = m.levels[0].id;
+    let l0 = m.levels[0].id; // ground, elevation 0.0
+    let lb = m.add_level("Basement", -2.7, 2.7); // underground parking + bunker
     let l1 = m.add_level("Level 1", 3.0, 3.0);
 
-    // Datum grids A–E / 1–4.
-    let grid_names = ["A", "B", "C", "D"];
-    for (i, x) in [0.0, 3.0, 6.0, 9.0].into_iter().enumerate() {
+    // Datum grids A–E / 1–4 over the 12 × 9 footprint.
+    let grid_names = ["A", "B", "C", "D", "E"];
+    for (i, x) in [0.0, 3.0, 6.0, 9.0, 12.0].into_iter().enumerate() {
         m.add_grid(grid_names[i], GridAxis::V, x);
     }
-    for (i, y) in [0.0, 3.5, 7.0].into_iter().enumerate() {
+    for (i, y) in [0.0, 3.0, 6.0, 9.0].into_iter().enumerate() {
         m.add_grid(&(i + 1).to_string(), GridAxis::H, y);
     }
 
-    let thk = 0.2;
-    let h = 3.0;
-    // Outer walls (polyline rectangles).
-    let outer = vec![Vec2::new(0.0, 0.0), Vec2::new(9.0, 0.0), Vec2::new(9.0, 7.0), Vec2::new(0.0, 7.0), Vec2::new(0.0, 0.0)];
-    let south = m.add_wall(l0, vec![Vec2::new(0.0, 0.0), Vec2::new(9.0, 0.0)], thk, h);
-    let east = m.add_wall(l0, vec![Vec2::new(9.0, 0.0), Vec2::new(9.0, 7.0)], thk, h);
-    let north = m.add_wall(l0, vec![Vec2::new(9.0, 7.0), Vec2::new(0.0, 7.0)], thk, h);
-    let west = m.add_wall(l0, vec![Vec2::new(0.0, 7.0), Vec2::new(0.0, 0.0)], thk, h);
-    let _ = outer;
-    // Interior wall with door gap nearby.
-    let int1 = m.add_wall(l0, vec![Vec2::new(6.0, 0.0), Vec2::new(6.0, 4.2)], thk, h);
-    let int2 = m.add_wall(l0, vec![Vec2::new(6.0, 4.2), Vec2::new(0.0, 4.2)], thk, h);
-    let _ = int1;
-    let _ = int2;
+    // Wall helpers: exterior brick (engineers lay a 230 course with a red
+    // face brick), concrete for the underground level, light interior studs.
+    fn brick_wall(m: &mut Model, level: Id, pts: Vec<Vec2>, h: f64) -> Id {
+        let id = m.add_wall(level, pts, 0.23, h);
+        if let Some(e) = m.element_mut(id) {
+            if let ElementData::Wall(w) = &mut e.data {
+                w.type_key = "brick-230".into();
+                w.finish = "brick-red".into();
+            }
+        }
+        id
+    }
+    fn concrete_wall(m: &mut Model, level: Id, pts: Vec<Vec2>, h: f64) -> Id {
+        let id = m.add_wall(level, pts, 0.25, h);
+        if let Some(e) = m.element_mut(id) {
+            if let ElementData::Wall(w) = &mut e.data {
+                w.type_key = "concrete-250".into();
+            }
+        }
+        id
+    }
+    fn stud_wall(m: &mut Model, level: Id, pts: Vec<Vec2>, h: f64) -> Id {
+        m.add_wall(level, pts, 0.12, h)
+    }
+    fn door(m: &mut Model, wall: Id, s: f64, w: f64, type_key: &str) {
+        m.add_opening(ElementKind::Door, Opening { wall, s, width: w, height: 2.1, sill: 0.0, type_key: type_key.into(), ..Opening::default() });
+    }
+    fn window(m: &mut Model, wall: Id, s: f64, w: f64, h: f64, sill: f64, type_key: &str) {
+        m.add_opening(ElementKind::Window, Opening { wall, s, width: w, height: h, sill, type_key: type_key.into(), ..Opening::default() });
+    }
 
-    // Openings: front door + windows (type keys, hinge side, swing face).
-    m.add_opening(
-        ElementKind::Door,
-        Opening { wall: south, s: 1.4, width: 1.0, height: 2.1, sill: 0.0, type_key: "door-single".into(), hand: 'a', face: 'a' },
-    );
-    m.add_opening(
-        ElementKind::Door,
-        Opening { wall: int2, s: 1.2, width: 0.9, height: 2.1, sill: 0.0, type_key: "door-single".into(), hand: 'a', face: 'a' },
-    );
-    m.add_opening(
-        ElementKind::Window,
-        Opening { wall: south, s: 4.5, width: 1.6, height: 1.4, sill: 0.9, type_key: "win-double".into(), hand: 'a', face: 'a' },
-    );
-    m.add_opening(
-        ElementKind::Window,
-        Opening { wall: south, s: 7.6, width: 1.2, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
-    );
-    m.add_opening(
-        ElementKind::Window,
-        Opening { wall: east, s: 2.0, width: 1.4, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
-    );
-    m.add_opening(
-        ElementKind::Window,
-        Opening { wall: east, s: 5.2, width: 1.4, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
-    );
-    m.add_opening(
-        ElementKind::Window,
-        Opening { wall: west, s: 5.0, width: 1.4, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
-    );
+    // ---------------------------------------------------------- basement --
+    // Underground parking: the same 12 × 9 footprint in concrete, with a
+    // garage door on the west ramp wall and a poured-concrete bunker in the
+    // north-east corner (real-life panic-room practice: 250 concrete all
+    // round, one steel door, no windows).
+    let bs = concrete_wall(&mut m, lb, vec![Vec2::new(0.0, 0.0), Vec2::new(12.0, 0.0)], 2.7);
+    let be = concrete_wall(&mut m, lb, vec![Vec2::new(12.0, 0.0), Vec2::new(12.0, 9.0)], 2.7);
+    let bn = concrete_wall(&mut m, lb, vec![Vec2::new(12.0, 9.0), Vec2::new(0.0, 9.0)], 2.7);
+    let bw = concrete_wall(&mut m, lb, vec![Vec2::new(0.0, 9.0), Vec2::new(0.0, 0.0)], 2.7);
+    door(&mut m, bw, 7.0, 2.4, "door-garage"); // ramp entrance from the drive
+    // Bunker walls (8..12 × 6..9 room).
+    let bk1 = concrete_wall(&mut m, lb, vec![Vec2::new(8.0, 6.0), Vec2::new(12.0, 6.0)], 2.7);
+    let bk2 = concrete_wall(&mut m, lb, vec![Vec2::new(8.0, 6.0), Vec2::new(8.0, 9.0)], 2.7);
+    door(&mut m, bk1, 3.2, 0.9, "door-single");
+    let _ = (bs, be, bn, bk2);
 
-    // Floor slab + ceiling on level 0; slab on level 1.
-    let footprint = Model::rect_poly(Vec2::new(-0.1, -0.1), Vec2::new(9.1, 7.1));
+    // ------------------------------------------------------- ground floor --
+    // Brick envelope: four running courses with quoined corners.
+    let south = brick_wall(&mut m, l0, vec![Vec2::new(0.0, 0.0), Vec2::new(12.0, 0.0)], 3.0);
+    let east = brick_wall(&mut m, l0, vec![Vec2::new(12.0, 0.0), Vec2::new(12.0, 9.0)], 3.0);
+    let north = brick_wall(&mut m, l0, vec![Vec2::new(12.0, 9.0), Vec2::new(0.0, 9.0)], 3.0);
+    let west = brick_wall(&mut m, l0, vec![Vec2::new(0.0, 9.0), Vec2::new(0.0, 0.0)], 3.0);
+    // Interior partitions: cross walls make living / kitchen / office / dining.
+    let gx = stud_wall(&mut m, l0, vec![Vec2::new(6.0, 0.0), Vec2::new(6.0, 5.5)], 3.0);
+    let gy = stud_wall(&mut m, l0, vec![Vec2::new(0.0, 5.5), Vec2::new(12.0, 5.5)], 3.0);
+    let _gy2 = stud_wall(&mut m, l0, vec![Vec2::new(6.0, 5.5), Vec2::new(6.0, 9.0)], 3.0);
+    door(&mut m, south, 2.2, 1.0, "door-single"); // front door under the path
+    door(&mut m, gy, 2.6, 0.9, "door-single"); // hall ↔ living
+    door(&mut m, gy, 9.4, 0.9, "door-single"); // hall ↔ dining
+    door(&mut m, gx, 2.4, 1.2, "door-sliding"); // living ↔ kitchen
+    window(&mut m, south, 4.6, 1.8, 1.4, 0.9, "win-double");
+    window(&mut m, south, 9.0, 1.2, 1.4, 0.9, "win-single");
+    window(&mut m, east, 2.2, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, east, 7.4, 2.4, 1.4, 0.9, "win-picture");
+    window(&mut m, north, 3.0, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, north, 8.6, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, west, 2.2, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, west, 7.2, 1.4, 1.4, 0.9, "win-single");
+
+    // -------------------------------------------------------- upper floor --
+    let us = brick_wall(&mut m, l1, vec![Vec2::new(0.0, 0.0), Vec2::new(12.0, 0.0)], 3.0);
+    let ue = brick_wall(&mut m, l1, vec![Vec2::new(12.0, 0.0), Vec2::new(12.0, 9.0)], 3.0);
+    let un = brick_wall(&mut m, l1, vec![Vec2::new(12.0, 9.0), Vec2::new(0.0, 9.0)], 3.0);
+    let uw = brick_wall(&mut m, l1, vec![Vec2::new(0.0, 9.0), Vec2::new(0.0, 0.0)], 3.0);
+    let ux = stud_wall(&mut m, l1, vec![Vec2::new(6.0, 0.0), Vec2::new(6.0, 9.0)], 3.0);
+    let uy = stud_wall(&mut m, l1, vec![Vec2::new(0.0, 4.5), Vec2::new(6.0, 4.5)], 3.0);
+    let ub = stud_wall(&mut m, l1, vec![Vec2::new(0.0, 6.5), Vec2::new(3.0, 6.5)], 3.0);
+    door(&mut m, ux, 2.2, 0.9, "door-single"); // landing ↔ master
+    door(&mut m, ux, 6.8, 0.9, "door-single"); // landing ↔ bedroom 2
+    door(&mut m, uy, 1.5, 0.8, "door-single"); // landing ↔ bath corridor
+    door(&mut m, ub, 0.8, 0.8, "door-single"); // corridor ↔ bathroom
+    window(&mut m, us, 1.6, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, us, 4.4, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, us, 8.0, 1.8, 1.4, 0.9, "win-double");
+    window(&mut m, ue, 2.4, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, ue, 6.6, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, un, 2.6, 1.2, 1.4, 1.3, "win-single"); // bathroom
+    window(&mut m, un, 8.4, 1.4, 1.4, 0.9, "win-single");
+    window(&mut m, uw, 2.0, 1.4, 1.4, 0.9, "win-single");
+    let _ = (us, ue, un, uw);
+
+    // Slabs + ceilings. The ground slab sits on the auto-foundation; the
+    // upper slab spans to the brick course below; a flat roof slab closes
+    // the top (parapet look comes from the brick walls).
+    let footprint = Model::rect_poly(Vec2::new(-0.12, -0.12), Vec2::new(12.12, 9.12));
     m.add_slab(l0, footprint.clone(), 0.25, 0.0);
     m.add_ceiling(l0, footprint.clone(), 0.1, 2.8);
-    m.add_slab(l1, footprint, 0.25, 0.0);
+    m.add_slab(l1, footprint.clone(), 0.25, 0.0);
+    m.add_ceiling(l1, footprint.clone(), 0.1, 2.8);
+    m.add_slab(l1, footprint, 0.22, 3.0); // roof
 
-    // Upper floor bedroom walls.
-    m.add_wall(l1, vec![Vec2::new(0.0, 0.0), Vec2::new(9.0, 0.0)], thk, h);
-    m.add_wall(l1, vec![Vec2::new(9.0, 0.0), Vec2::new(9.0, 7.0)], thk, h);
-    m.add_wall(l1, vec![Vec2::new(9.0, 7.0), Vec2::new(0.0, 7.0)], thk, h);
-    m.add_wall(l1, vec![Vec2::new(0.0, 7.0), Vec2::new(0.0, 0.0)], thk, h);
-    let w_up = m.add_wall(l1, vec![Vec2::new(4.5, 0.0), Vec2::new(4.5, 7.0)], thk, h);
-    m.add_opening(
-        ElementKind::Door,
-        Opening { wall: w_up, s: 2.2, width: 0.9, height: 2.1, sill: 0.0, type_key: "door-single".into(), hand: 'a', face: 'a' },
-    );
-    m.add_opening(
-        ElementKind::Window,
-        Opening { wall: north, s: 2.0, width: 1.4, height: 1.4, sill: 0.9, type_key: "win-single".into(), hand: 'a', face: 'a' },
-    );
+    // Rooms (annotations over the detected loops).
+    m.add_room(lb, "Parking", Vec2::new(3.5, 2.0));
+    m.add_room(lb, "Bunker", Vec2::new(10.0, 7.5));
+    m.add_room(l0, "Living", Vec2::new(2.6, 2.4));
+    m.add_room(l0, "Kitchen", Vec2::new(9.2, 2.4));
+    m.add_room(l0, "Office", Vec2::new(2.8, 7.4));
+    m.add_room(l0, "Dining", Vec2::new(9.0, 7.4));
+    m.add_room(l1, "Master bedroom", Vec2::new(2.8, 2.2));
+    m.add_room(l1, "Bedroom 2", Vec2::new(9.2, 2.2));
+    m.add_room(l1, "Bathroom", Vec2::new(1.6, 5.6));
+    m.add_room(l1, "Landing", Vec2::new(4.6, 5.6));
 
-    // Items: living room + kitchen + bedroom.
-    m.add_item(l0, ItemKind::Sofa, Vec2::new(2.2, 5.6), 0.0);
-    m.add_item(l0, ItemKind::Table, Vec2::new(2.2, 2.2), 0.0);
-    m.add_item(l0, ItemKind::Chair, Vec2::new(1.4, 2.2), std::f64::consts::FRAC_PI_2);
-    m.add_item(l0, ItemKind::Chair, Vec2::new(3.0, 2.2), -std::f64::consts::FRAC_PI_2);
-    m.add_item(l0, ItemKind::KitchenUnit, Vec2::new(7.9, 1.2), 0.0);
-    m.add_item(l0, ItemKind::Fridge, Vec2::new(7.9, 2.4), 0.0);
-    m.add_item(l0, ItemKind::Stove, Vec2::new(7.9, 0.4), 0.0);
-    m.add_item(l0, ItemKind::Sink, Vec2::new(8.4, 6.4), std::f64::consts::FRAC_PI_2);
-    m.add_item(l0, ItemKind::Toilet, Vec2::new(1.0, 6.3), 0.0);
-    m.add_item(l0, ItemKind::Bathtub, Vec2::new(2.6, 6.4), 0.0);
-    m.add_item(l0, ItemKind::Plant, Vec2::new(8.4, 5.2), 0.0);
-    m.add_item(l1, ItemKind::Bed, Vec2::new(6.8, 5.6), 0.0);
-    m.add_item(l1, ItemKind::Wardrobe, Vec2::new(6.8, 1.0), 0.0);
+    // Furnish.
+    m.add_item(l0, ItemKind::Sofa, Vec2::new(2.6, 4.4), 0.0);
+    m.add_item(l0, ItemKind::Table, Vec2::new(2.6, 2.2), 0.0);
+    m.add_item(l0, ItemKind::Chair, Vec2::new(1.6, 2.2), std::f64::consts::FRAC_PI_2);
+    m.add_item(l0, ItemKind::Chair, Vec2::new(3.6, 2.2), -std::f64::consts::FRAC_PI_2);
+    m.add_item(l0, ItemKind::Plant, Vec2::new(0.8, 4.8), 0.0);
+    m.add_item(l0, ItemKind::KitchenUnit, Vec2::new(10.6, 0.7), 0.0);
+    m.add_item(l0, ItemKind::KitchenUnit, Vec2::new(9.4, 0.7), 0.0);
+    m.add_item(l0, ItemKind::Fridge, Vec2::new(11.3, 1.8), 0.0);
+    m.add_item(l0, ItemKind::Stove, Vec2::new(9.8, 0.7), 0.0);
+    m.add_item(l0, ItemKind::Sink, Vec2::new(11.2, 4.6), std::f64::consts::FRAC_PI_2);
+    m.add_item(l0, ItemKind::Table, Vec2::new(9.2, 7.2), 0.0);
+    m.add_item(l0, ItemKind::Chair, Vec2::new(8.2, 7.2), std::f64::consts::FRAC_PI_2);
+    m.add_item(l0, ItemKind::Chair, Vec2::new(10.2, 7.2), -std::f64::consts::FRAC_PI_2);
+    m.add_item(l0, ItemKind::Toilet, Vec2::new(0.7, 6.2), 0.0);
+    m.add_item(l0, ItemKind::Bathtub, Vec2::new(2.4, 8.3), 0.0);
+    m.add_item(l1, ItemKind::Bed, Vec2::new(2.8, 2.0), 0.0);
+    m.add_item(l1, ItemKind::Wardrobe, Vec2::new(5.2, 1.0), 0.0);
+    m.add_item(l1, ItemKind::Bed, Vec2::new(9.2, 2.0), 0.0);
+    m.add_item(l1, ItemKind::Wardrobe, Vec2::new(11.2, 1.0), 0.0);
+    m.add_item(l1, ItemKind::Sink, Vec2::new(0.8, 6.2), 0.0);
+    m.add_item(l1, ItemKind::Toilet, Vec2::new(2.0, 8.2), 0.0);
+    m.add_item(l1, ItemKind::Plant, Vec2::new(5.4, 8.4), 0.0);
+
+    // Corner detailing (DetailCraft rule: discover the corners, store the
+    // parameters). Quoins on the four brick corners.
+    for (x, y) in [(0.0, 0.0), (12.0, 0.0), (12.0, 9.0), (0.0, 9.0)] {
+        m.set_corner_detail(Vec2::new(x, y), 0.10, true, "Brick quoin corner");
+    }
+    // The bunker gets heavy corner starters too.
+    for (x, y) in [(8.0, 6.0), (8.0, 9.0), (12.0, 6.0)] {
+        m.set_corner_detail(Vec2::new(x, y), 0.12, true, "Bunker corner");
+    }
+
+    // ------------------------------------------------------ landscaping --
+    use landscaping::{SiteElement, SiteKind};
+    let site = |m: &mut Model, kind: SiteKind, pos: Vec2, pts: Vec<Vec2>, variant: u32| {
+        m.add_site_element(SiteElement { id: 0, kind, pos, pts, rotation: 0.0, variant });
+    };
+    // Lawn over the whole plot.
+    site(&mut m, SiteKind::Grass, Vec2::new(6.0, 4.0), vec![
+        Vec2::new(-8.0, -6.0), Vec2::new(20.0, -6.0), Vec2::new(20.0, 14.0), Vec2::new(-8.0, 14.0),
+    ], 0);
+    // Picket fence along the south street and the east boundary.
+    site(&mut m, SiteKind::Fence, Vec2::ZERO, vec![Vec2::new(-8.0, -6.0), Vec2::new(20.0, -6.0)], 0);
+    site(&mut m, SiteKind::Fence, Vec2::ZERO, vec![Vec2::new(20.0, -6.0), Vec2::new(20.0, 14.0)], 0);
+    // Drive down to the underground garage (ramp falls west of the house).
+    site(&mut m, SiteKind::Driveway, Vec2::ZERO, vec![
+        Vec2::new(-7.0, 0.8), Vec2::new(-0.6, 0.8), Vec2::new(-0.6, 3.2), Vec2::new(-7.0, 3.2),
+    ], 0);
+    // Path from the street gate to the front door.
+    site(&mut m, SiteKind::Path, Vec2::ZERO, vec![
+        Vec2::new(1.5, -6.0), Vec2::new(2.9, -6.0), Vec2::new(2.9, 0.0), Vec2::new(1.5, 0.0),
+    ], 0);
+    // Flower bed along the south facade (roses + tulips + daisies).
+    site(&mut m, SiteKind::FlowerBed, Vec2::ZERO, vec![
+        Vec2::new(3.4, -1.7), Vec2::new(10.6, -1.7), Vec2::new(10.6, -0.8), Vec2::new(3.4, -0.8),
+    ], 0);
+    site(&mut m, SiteKind::FlowerBed, Vec2::ZERO, vec![
+        Vec2::new(0.6, -1.7), Vec2::new(2.6, -1.7), Vec2::new(2.6, -0.8), Vec2::new(0.6, -0.8),
+    ], 2);
+    // Trees: shade on the west, conifers screening the east, ornamental at
+    // the gate.
+    site(&mut m, SiteKind::TreeDeciduous6, Vec2::new(-5.5, 10.5), vec![], 3);
+    site(&mut m, SiteKind::TreeDeciduous10, Vec2::new(16.0, 12.0), vec![], 7);
+    site(&mut m, SiteKind::TreeConifer8, Vec2::new(17.2, 1.5), vec![], 1);
+    site(&mut m, SiteKind::TreeColumnar7, Vec2::new(-6.2, 5.5), vec![], 2);
+    site(&mut m, SiteKind::TreeOrnamental4, Vec2::new(4.6, -8.0), vec![], 5);
+    // Shrubs along the facade, hedge screening the north boundary.
+    site(&mut m, SiteKind::ShrubRound, Vec2::new(11.6, -2.2), vec![], 0);
+    site(&mut m, SiteKind::ShrubSmall, Vec2::new(12.6, -2.4), vec![], 1);
+    site(&mut m, SiteKind::Hedge, Vec2::new(0.0, 10.4), vec![], 0);
+    site(&mut m, SiteKind::Hedge, Vec2::new(3.0, 10.4), vec![], 1);
+    site(&mut m, SiteKind::Hedge, Vec2::new(6.0, 10.4), vec![], 2);
+    site(&mut m, SiteKind::PottedPlant, Vec2::new(3.5, 0.5), vec![], 0);
+
+    // Floors remember their foundations: the basement gets a basement
+    // foundation (footings + walls + slab), the ground level a slab-on-grade.
+    m.ensure_foundations();
     m
 }
 
@@ -1401,6 +1761,7 @@ mod tests {
             seed: Vec2::new(4.0, 2.0),
             sizes: FoundationSizes::default(),
             name: String::new(),
+            rebar: RebarSpec::default(),
         });
         let f = m.foundation(id).unwrap().clone();
         assert!(!f.name.is_empty());
@@ -1417,6 +1778,7 @@ mod tests {
             seed: Vec2::new(50.0, 50.0),
             sizes: FoundationSizes::default(),
             name: String::new(),
+            rebar: RebarSpec::default(),
         };
         assert!(m.foundation_resolved(&outside).is_none());
         // Schedule gains a foundations row.

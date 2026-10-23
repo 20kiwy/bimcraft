@@ -17,6 +17,17 @@ fn info(show_formwork: bool, eye: bimcraft_geom::Vec3) -> ViewInfo {
         light: true,
         show_formwork,
         eye,
+        solo: false,
+        xray: false,
+        show_rebar: false,
+        tool: bimcraft_render::PreviewTool::Select,
+        cursor: bimcraft_geom::Vec3::ZERO,
+        site_kind: bimcraft_bim::SiteKind::TreeDeciduous6,
+        item_kind: bimcraft_bim::ItemKind::Table,
+        pending: 0,
+        pending_pts: Vec::new(),
+        ghost_host: None,
+        rotation: 0.0,
     }
 }
 
@@ -74,7 +85,7 @@ fn no_streaks_in_typical_models() {
     for (name, kind) in
         [("Slab", FoundationKind::Slab), ("Stem", FoundationKind::StemSlab), ("Crawl", FoundationKind::Crawl), ("Base", FoundationKind::Basement)]
     {
-        m3.add_foundation(Foundation { id: 0, level: lvl, kind, seed: Vec2::new(4.0, 3.0), sizes: FoundationSizes::default(), name: name.into() });
+        m3.add_foundation(Foundation { id: 0, level: lvl, kind, seed: Vec2::new(4.0, 3.0), sizes: FoundationSizes::default(), name: name.into(), rebar: bimcraft_bim::RebarSpec::default() });
     }
     scan("foundations", &m3, &info(true, eye));
 

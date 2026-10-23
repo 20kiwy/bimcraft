@@ -16,6 +16,25 @@ fn info_for(m: &bimcraft_bim::Model, eye: Vec3) -> bimcraft_render::ViewInfo {
         light: false,
         show_formwork: false,
         eye,
+        solo: false,
+        xray: false,
+        show_rebar: false,
+        tool: bimcraft_render::PreviewTool::Select,
+        cursor: Vec3::ZERO,
+        site_kind: bimcraft_bim::SiteKind::TreeDeciduous6,
+        item_kind: bimcraft_bim::ItemKind::Table,
+        pending: 0,
+        pending_pts: Vec::new(),
+        ghost_host: None,
+        rotation: 0.0,
+    }
+}
+
+/// Vertical extent of the whole model (+ a small margin for helpers).
+fn z_limits(m: &bimcraft_bim::Model) -> (f64, f64) {
+    match m.bounds() {
+        Some((min, max)) => (min.z - 1.5, max.z + 2.0),
+        None => (-0.5, 8.6),
     }
 }
 
@@ -23,15 +42,16 @@ fn info_for(m: &bimcraft_bim::Model, eye: Vec3) -> bimcraft_render::ViewInfo {
 fn no_geometry_taller_than_the_axes() {
     let m = bimcraft_bim::sample();
     let dl = bimcraft_render::build(&m, &info_for(&m, Vec3::ZERO));
+    let (zlo, zhi) = z_limits(&m);
     for (i, l) in dl.lines.iter().enumerate() {
         let zmax = l.a.z.max(l.b.z);
         let zmin = l.a.z.min(l.b.z);
-        assert!(zmax <= 8.6, "line #{i} reaches z={zmax:.2} (axis cap is 8 m)");
-        assert!(zmin >= -0.5, "line #{i} dips to z={zmin:.2}");
+        assert!(zmax <= zhi, "line #{i} reaches z={zmax:.2} (model tops out at {zhi:.2})");
+        assert!(zmin >= zlo, "line #{i} dips to z={zmin:.2} (model bottoms out at {zlo:.2})");
     }
     for (i, t) in dl.tris.iter().enumerate() {
         let zmax = t.pts.iter().map(|p| p.z).fold(f64::NEG_INFINITY, f64::max);
-        assert!(zmax <= 8.6, "tri #{i} reaches z={zmax:.2}");
+        assert!(zmax <= zhi, "tri #{i} reaches z={zmax:.2}");
     }
 }
 
@@ -49,11 +69,11 @@ fn far_field_dissolves_with_distance() {
         if d > 31.0 && l.a.z < 1.6 && l.b.z < 1.6 {
             // Ground-level line far beyond the fade radius (30 m) must be
             // either full-alpha model geometry (walls/slabs/axes are opaque)
-            // or short (<= 10 m: model feature edges — the sample's longest
-            // wall bottom edge is 9 m — and cut helpers), never a long
+            // or short (<= 13 m: model feature edges — the template's longest
+            // wall/slab edge is ~12.3 m — and cut helpers), never a long
             // translucent helper sweep.
             let len = (l.b - l.a).length();
-            assert!(len <= 10.0 || l.color.a() == 255, "long ground line at d={d:.1} (len {len:.1}) should have been faded out");
+            assert!(len <= 13.0 || l.color.a() == 255, "long ground line at d={d:.1} (len {len:.1}) should have been faded out");
         }
     }
 }

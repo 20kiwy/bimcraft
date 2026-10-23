@@ -38,18 +38,20 @@ pub enum DockTab {
     Properties,
     Levels,
     Library,
+    Landscaping,
     Schedule,
     Foundation,
     Model,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 6] = [DockTab::Properties, DockTab::Levels, DockTab::Library, DockTab::Schedule, DockTab::Foundation, DockTab::Model];
+    pub const ALL: [DockTab; 7] = [DockTab::Properties, DockTab::Levels, DockTab::Library, DockTab::Landscaping, DockTab::Schedule, DockTab::Foundation, DockTab::Model];
     pub fn label(self) -> &'static str {
         match self {
             DockTab::Properties => "Properties",
             DockTab::Levels => "Levels",
             DockTab::Library => "Library",
+            DockTab::Landscaping => "Landscape",
             DockTab::Schedule => "Schedule",
             DockTab::Foundation => "Foundation",
             DockTab::Model => "Model",
@@ -156,7 +158,7 @@ impl BimcraftApp {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::Key;
-        let (w, d, n, f, c, s, b, i, m, x, p, v, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
+        let (w, d, n, f, c, s, b, i, m, x, p, l, v, esc, enter, tab, del, z, y, r, g, home, ctrl, shift) = ctx.input(|i| {
             (
                 i.key_pressed(Key::W),
                 i.key_pressed(Key::D),
@@ -169,6 +171,7 @@ impl BimcraftApp {
                 i.key_pressed(Key::M),
                 i.key_pressed(Key::X),
                 i.key_pressed(Key::P),
+                i.key_pressed(Key::L),
                 i.key_pressed(Key::V),
                 i.key_pressed(Key::Escape),
                 i.key_pressed(Key::Enter),
@@ -233,6 +236,10 @@ impl BimcraftApp {
                 self.session.set_tool(Tool::Paint);
                 self.dock_tab = DockTab::Properties;
             }
+            if l {
+                self.session.set_tool(Tool::Site);
+                self.dock_tab = DockTab::Landscaping;
+            }
             if s {
                 if esc && !self.session.pending.is_empty() {
                     // fall through to Esc handling below
@@ -241,10 +248,8 @@ impl BimcraftApp {
                 }
             }
             if r {
-                // Rotate selected item 90° (Shift: 15°).
-                if let Some(id) = self.session.selected_element() {
-                    self.session.rotate_item(id, if shift { 15.0_f64.to_radians() } else { std::f64::consts::FRAC_PI_2 });
-                }
+                // Rotate the selected item or landscaping element 90° (Shift: 15°).
+                self.session.rotate_selected(if shift { 15.0_f64.to_radians() } else { std::f64::consts::FRAC_PI_2 });
             }
             if g {
                 self.session.snap_grid = !self.session.snap_grid;
@@ -252,7 +257,7 @@ impl BimcraftApp {
             }
         }
         if esc {
-            if matches!(self.session.tool, Tool::Paint | Tool::Foundation) {
+            if matches!(self.session.tool, Tool::Paint | Tool::Foundation | Tool::Site) {
                 self.session.set_tool(Tool::Select);
             } else if !self.session.pending.is_empty() || self.session.measure.is_some() {
                 self.session.cancel_pending();

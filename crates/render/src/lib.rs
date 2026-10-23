@@ -5,7 +5,7 @@
 //! implemented. 3D geometry is shaded with a fixed light and drawn back-to-front
 //! by the UI layer; openings cut real holes into wall faces (no overlay quads).
 
-use bimcraft_bim::{formwork, foundation, ElementData, ElementKind, FoundationKind, FoundationPart, FoundationRole, GridAxis, ItemKind, Model};
+use bimcraft_bim::{formwork, foundation, plan_radius, ElementData, ElementKind, FoundationKind, FoundationPart, FoundationRole, GridAxis, ItemKind, Model};
 use bimcraft_geom::{Vec2, Vec3};
 use egui::{Color32, Stroke};
 
@@ -173,6 +173,55 @@ fn selected(color: Color32, is_sel: bool) -> Color32 {
     }
 }
 
+/// 0xRRGGBB → Color32 (opaque).
+fn color32(v: u32) -> Color32 {
+    Color32::from_rgb((v >> 16) as u8, ((v >> 8) & 0xff) as u8, (v & 0xff) as u8)
+}
+
+/// Scale an opaque color toward white (light-mode dimming helper).
+fn scale_color(c: Color32, k: f32) -> Color32 {
+    let mix = |v: u8| (255.0 - (255.0 - v as f32) * k).round() as u8;
+    Color32::from_rgb(mix(c.r()), mix(c.g()), mix(c.b()))
+}
+
+/// Accent color per site kind (flower dots, fence posts…).
+fn accent_of(kind: bimcraft_bim::SiteKind) -> Color32 {
+    color32(kind.colors().accent)
+}
+
+/// Even flower positions inside a bed polygon: a jittered grid clipped to
+/// the polygon, seeded by the caller-provided spacing.
+fn flower_points(poly: &[bimcraft_geom::Vec2], spacing: f64) -> Vec<(f64, f64)> {
+    use bimcraft_bim::rooms::in_poly;
+    let mut out = Vec::new();
+    if poly.len() < 3 || spacing <= 1e-3 {
+        return out;
+    }
+    let mut min = (f64::INFINITY, f64::INFINITY);
+    let mut max = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in poly {
+        min.0 = min.0.min(p.x);
+        min.1 = min.1.min(p.y);
+        max.0 = max.0.max(p.x);
+        max.1 = max.1.max(p.y);
+    }
+    let mut row = 0usize;
+    let mut y = min.1 + spacing / 2.0;
+    while y < max.1 {
+        let offset = if row % 2 == 1 { spacing / 2.0 } else { 0.0 };
+        let mut x = min.0 + spacing / 2.0 + offset;
+        while x < max.0 {
+            if in_poly(x, y, poly) {
+                out.push((x, y));
+            }
+            x += spacing;
+        }
+        y += spacing;
+        row += 1;
+    }
+    out
+}
+
 /// Element paint override (Paint tool) over a palette fallback (opaque).
 fn paint_or(paint: Option<u32>, fallback: Color32) -> Color32 {
     match paint {
@@ -190,14 +239,16 @@ fn paint_fill(paint: Option<u32>, fallback: Color32, alpha: u8) -> Color32 {
 }
 
 /// Fixed hemisphere + sun lighting (Z-up): ambient from the sky/ground mix
-/// plus a directional sun term. Signed (unlike the old abs() shading) so
-/// faces pointing away from the sun read darker — objects get visible form.
+/// plus a directional sun term and a soft fill from the opposite side, so
+/// faces pointing away from the sun still read (no dead-black walls).
 fn shade(normal: Vec3, base: Color32) -> Color32 {
     let n = normal.normalize();
     let sun = Vec3::new(0.42, -0.48, 0.76).normalize();
+    let fill = Vec3::new(-0.5, 0.42, 0.28).normalize();
     let lambert = n.dot(sun).max(0.0);
+    let fill_term = n.dot(fill).max(0.0) * 0.14;
     let hemi = 0.58 + 0.16 * n.z.clamp(-1.0, 1.0); // sky above, ground below
-    let k = (hemi + lambert * 0.52).clamp(0.30, 1.06) as f32;
+    let k = (hemi + lambert * 0.52 + fill_term).clamp(0.32, 1.08) as f32;
     Color32::from_rgba_unmultiplied(
         (base.r() as f32 * k).round() as u8,
         (base.g() as f32 * k).round() as u8,
@@ -226,6 +277,47 @@ pub struct ViewInfo {
     /// 3D camera eye (walk or orbit) used for the ground-grid distance fade.
     /// Plan builds ignore it.
     pub eye: Vec3,
+    /// Solo level presentation (aedifex parity): only the active level's
+    /// solids are drawn; foundations, site and helpers stay.
+    pub solo: bool,
+    /// Wall x-ray: walls render translucent so interiors read through.
+    pub xray: bool,
+    /// Draw derived rebar in foundations (and corner starters on walls).
+    pub show_rebar: bool,
+    /// Active tool (ghost placement previews, 2D + 3D parity).
+    pub tool: PreviewTool,
+    /// World cursor (3D: ground pick; plan: snapped plan point).
+    pub cursor: Vec3,
+    /// Kind the Site tool would place (ghost preview + plan symbols).
+    pub site_kind: bimcraft_bim::SiteKind,
+    /// Kind the Item tool would place (ghost preview).
+    pub item_kind: ItemKind,
+    /// Pending click count of the active tool (chain preview).
+    pub pending: usize,
+    /// The pending click points (chain preview rubber band).
+    pub pending_pts: Vec<Vec2>,
+    /// Whether an opening ghost is currently hosted (tool hovers a wall).
+    pub ghost_host: Option<(u64, f64)>,
+    /// Pending placement rotation (items, site point kinds).
+    pub rotation: f64,
+}
+
+/// Tool mirror so the renderer can draw placement ghosts without depending
+/// on the engine crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewTool {
+    Select,
+    Wall,
+    Door,
+    Window,
+    Floor,
+    Ceiling,
+    Item,
+    Measure,
+    SectionLine,
+    Paint,
+    Foundation,
+    Site,
 }
 
 /// View-mode mirror to avoid an engine dependency in render.
@@ -503,19 +595,32 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
         dl.line(Vec3::new(-he, i as f64, z_active), Vec3::new(he, i as f64, z_active), c, if strong { 1.0 } else { 0.6 });
     }
 
-    // Datum grids with bubbles.
+    // Datum grids with bubbles — shifted by the active level's grid offset
+    // (aedifex "level grid shift": each level slides its reference grid).
+    let grid_shift = model
+        .level(info.active_level)
+        .map(|l| l.grid_shift)
+        .unwrap_or([0.0, 0.0]);
     for g in &model.grids {
         let (a, b) = match g.axis {
-            GridAxis::V => (Vec3::new(g.position, -he, z_active), Vec3::new(g.position, he, z_active)),
-            GridAxis::H => (Vec3::new(-he, g.position, z_active), Vec3::new(he, g.position, z_active)),
+            GridAxis::V => (Vec3::new(g.position + grid_shift[0], -he, z_active), Vec3::new(g.position + grid_shift[0], he, z_active)),
+            GridAxis::H => (Vec3::new(-he, g.position + grid_shift[1], z_active), Vec3::new(he, g.position + grid_shift[1], z_active)),
         };
         let col = if is_selected(info, g.id) { SELECT } else { dim(Color32::from_rgb(0x6b, 0x7a, 0x92)) };
         dl.dashed(a, b, col, 1.4);
         let bpos = match g.axis {
-            GridAxis::V => Vec3::new(g.position, he - 1.2, z_active),
-            GridAxis::H => Vec3::new(he - 1.2, g.position, z_active),
+            GridAxis::V => Vec3::new(g.position + grid_shift[0], he - 1.2, z_active),
+            GridAxis::H => Vec3::new(he - 1.2, g.position + grid_shift[1], z_active),
         };
         dl.text(bpos, g.name.clone(), 13.0, col);
+    }
+    if grid_shift != [0.0, 0.0] {
+        dl.text(
+            Vec3::new(-he + 0.4, he - 0.6, z_active),
+            format!("grid shifted ({:+.1}, {:+.1})", grid_shift[0], grid_shift[1]),
+            10.0,
+            dim(Color32::from_rgb(0x8a, 0x93, 0xa3)),
+        );
     }
 
     // XYZ axes on the plan too (short, Blender-style).
@@ -561,6 +666,37 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
                 None => format!("{:.1} m²", r.area),
             };
             dl.text(Vec3::new(r.label.x, r.label.y, z_active), label, 11.0, dim(with_alpha(Color32::from_rgb(0x99, 0xa2, 0xb2), 220)));
+        }
+    }
+
+    // Landscaping plan symbols (library conventions: green PLANTING layer,
+    // canopy circle + trunk cross for trees, line symbols for runs).
+    for s in &model.site {
+        let sel = is_selected(info, s.id);
+        draw_site_plan(dl, s, z_active, sel, info.light);
+    }
+
+    // Corner-detail markers: small square + note at detailed wall corners.
+    for c in &model.corner_details {
+        let sel = is_selected(info, c.id);
+        let col = if sel { SELECT } else { with_alpha(FORM_POST_2D, 210) };
+        let h = 0.14;
+        let quad = [
+            Vec3::new(c.at.x - h, c.at.y - h, z_active),
+            Vec3::new(c.at.x + h, c.at.y - h, z_active),
+            Vec3::new(c.at.x + h, c.at.y + h, z_active),
+            Vec3::new(c.at.x - h, c.at.y + h, z_active),
+        ];
+        for k in 0..4 {
+            dl.line(quad[k], quad[(k + 1) % 4], col, 1.0);
+        }
+        if sel || info.half_extent < 14.0 {
+            dl.text(
+                Vec3::new(c.at.x, c.at.y - 0.34, z_active),
+                if c.note.is_empty() { "corner".to_string() } else { c.note.clone() },
+                9.0,
+                col,
+            );
         }
     }
 
@@ -672,6 +808,56 @@ fn build_plan(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
             }
         }
     }
+
+    // Pending chain preview (wall / plate / fence / lawn drafting): rubber
+    // band from the last click to the snapped cursor.
+    if info.pending > 0 {
+        let cur = info.cursor.xy();
+        let preview_col = with_alpha(SELECT, 200);
+        for k in 1..info.pending {
+            if let Some(pa) = info.pending_pts.get(k - 1).copied() {
+                let pb = info.pending_pts.get(k).copied().unwrap_or(cur);
+                dl.line(pa.to3(z_active), pb.to3(z_active), preview_col, 1.4);
+            }
+        }
+        if let Some(last) = info.pending_pts.last().copied() {
+            dl.line(last.to3(z_active), cur.to3(z_active), with_alpha(SELECT, 130), 1.2);
+            for p in &info.pending_pts {
+                let p = *p;
+                dl.line((p - Vec2::new(0.08, 0.0)).to3(z_active), (p + Vec2::new(0.08, 0.0)).to3(z_active), preview_col, 1.4);
+                dl.line((p - Vec2::new(0.0, 0.08)).to3(z_active), (p + Vec2::new(0.0, 0.08)).to3(z_active), preview_col, 1.4);
+            }
+        }
+        // Closed-polygon site kinds close the rubber band back to the start.
+        if info.tool == PreviewTool::Site && info.pending >= 2 {
+            if let Some(first) = info.pending_pts.first().copied() {
+                dl.line(first.to3(z_active), cur.to3(z_active), with_alpha(SELECT, 90), 1.0);
+            }
+        }
+    }
+
+    // Placement ghost on plan (2D half of the 2D/3D placement parity): the
+    // item / site kind footprint follows the cursor as a faint placeholder.
+    match info.tool {
+        PreviewTool::Item => {
+            let (w, d, _) = info.item_kind.preset();
+            let c = info.cursor.xy();
+            let pts = [
+                Vec2::new(c.x - w / 2.0, c.y - d / 2.0),
+                Vec2::new(c.x + w / 2.0, c.y - d / 2.0),
+                Vec2::new(c.x + w / 2.0, c.y + d / 2.0),
+                Vec2::new(c.x - w / 2.0, c.y + d / 2.0),
+            ]
+            .map(|p| c + (p - c).rotate(info.rotation));
+            let gcol = with_alpha(SELECT, 150);
+            for k in 0..4 {
+                dl.line(pts[k].to3(z_active), pts[(k + 1) % 4].to3(z_active), gcol, 1.2);
+            }
+            fill_poly_plan(dl, pts.as_ref(), with_alpha(SELECT, 36));
+        }
+        PreviewTool::Site => draw_site_plan_ghost(dl, info, z_active),
+        _ => {}
+    }
 }
 
 /// One foundation part on the plan: slabs fill + dashed outline, ring parts
@@ -709,6 +895,109 @@ fn foundation_kind_short(k: FoundationKind) -> &'static str {
         FoundationKind::StemSlab => "stem",
         FoundationKind::Crawl => "crawl",
         FoundationKind::Basement => "bsmt",
+    }
+}
+
+// ------------------------------------------------------------------ site --
+
+/// Plan symbol for one landscaping element (library conventions: green
+/// PLANTING layer, canopy blob + trunk cross for trees, line symbols for
+/// runs, hatched fill for lawns and beds).
+fn draw_site_plan(dl: &mut DisplayList, s: &bimcraft_bim::SiteElement, z: f64, sel: bool, light: bool) {
+    let colors = s.kind.colors();
+    let leaf = color32(colors.leaf);
+    let trunk = color32(colors.trunk);
+    let dim = |c: Color32| if light { scale_color(c, 0.62) } else { c };
+    let col = if sel { SELECT } else { dim(leaf) };
+    let accent = if sel { SELECT } else { dim(accent_of(s.kind)) };
+    match s.kind.shape() {
+        bimcraft_bim::SiteShape::Point => {
+            let r = plan_radius(s.kind).unwrap_or(0.5);
+            // Canopy circle (two arcs approximated with short chords).
+            let n = 24;
+            for k in 0..n {
+                let a0 = k as f64 / n as f64 * std::f64::consts::TAU;
+                let a1 = (k + 1) as f64 / n as f64 * std::f64::consts::TAU;
+                let p0 = Vec2::new(s.pos.x + r * a0.cos(), s.pos.y + r * a0.sin());
+                let p1 = Vec2::new(s.pos.x + r * a1.cos(), s.pos.y + r * a1.sin());
+                dl.line(p0.to3(z), p1.to3(z), col, 1.2);
+            }
+            // Trunk circle + cross ticks (detail layer).
+            let tr = (r / 8.0).clamp(0.08, 0.3);
+            for k in 0..12 {
+                let a0 = k as f64 / 12.0 * std::f64::consts::TAU;
+                let a1 = (k + 1) as f64 / 12.0 * std::f64::consts::TAU;
+                dl.line(
+                    Vec2::new(s.pos.x + tr * a0.cos(), s.pos.y + tr * a0.sin()).to3(z),
+                    Vec2::new(s.pos.x + tr * a1.cos(), s.pos.y + tr * a1.sin()).to3(z),
+                    trunk,
+                    1.0,
+                );
+            }
+            let t = tr * 2.2;
+            dl.line(Vec2::new(s.pos.x - t, s.pos.y).to3(z), Vec2::new(s.pos.x + t, s.pos.y).to3(z), trunk, 0.9);
+            dl.line(Vec2::new(s.pos.x, s.pos.y - t).to3(z), Vec2::new(s.pos.x, s.pos.y + t).to3(z), trunk, 0.9);
+        }
+        bimcraft_bim::SiteShape::Chain => {
+            // Fence run: line + post ticks at panel breaks.
+            for (a, b) in s.fence_runs() {
+                dl.line(a.to3(z), b.to3(z), col, 1.4);
+                dl.line(a.to3(z), (a + (b - a) * 0.12).to3(z), accent, 2.0);
+            }
+            let _ = trunk;
+        }
+        bimcraft_bim::SiteShape::Polygon => {
+            if s.pts.len() < 3 {
+                for w in s.pts.windows(2) {
+                    dl.line(w[0].to3(z), w[1].to3(z), col, 1.2);
+                }
+                return;
+            }
+            let fill = match s.kind {
+                bimcraft_bim::SiteKind::Grass => Color32::from_rgba_unmultiplied(0x5d, 0x8a, 0x3f, 60),
+                bimcraft_bim::SiteKind::FlowerBed => Color32::from_rgba_unmultiplied(0x6b, 0x4a, 0x2f, 70),
+                bimcraft_bim::SiteKind::Path => Color32::from_rgba_unmultiplied(0xb8, 0xb0, 0xa2, 80),
+                _ => Color32::from_rgba_unmultiplied(0x8e, 0x8c, 0x88, 80),
+            };
+            fill_poly_plan(dl, &s.pts, fill);
+            outline_poly_plan(dl, &s.pts, col, true);
+            // Flower dots on beds.
+            if s.kind == bimcraft_bim::SiteKind::FlowerBed {
+                for (idx, (cx, cy)) in flower_points(&s.pts, 1.1).into_iter().enumerate() {
+                    let c = color32(bimcraft_bim::landscaping::FLOWER_COLORS[(s.variant as usize + idx) % 4]);
+                    dl.line(Vec2::new(cx - 0.09, cy).to3(z), Vec2::new(cx + 0.09, cy).to3(z), c, 1.6);
+                    dl.line(Vec2::new(cx, cy - 0.09).to3(z), Vec2::new(cx, cy + 0.09).to3(z), c, 1.6);
+                }
+            }
+        }
+    }
+}
+
+/// Ghost symbol the Site tool drags along the cursor (plan).
+fn draw_site_plan_ghost(dl: &mut DisplayList, info: &ViewInfo, z: f64) {
+    let kind = info.site_kind;
+    let c = info.cursor.xy();
+    let col = with_alpha(SELECT, 170);
+    match kind.shape() {
+        bimcraft_bim::SiteShape::Point => {
+            let r = plan_radius(kind).unwrap_or(0.5);
+            let n = 20;
+            for k in 0..n {
+                let a0 = k as f64 / n as f64 * std::f64::consts::TAU;
+                let a1 = (k + 1) as f64 / n as f64 * std::f64::consts::TAU;
+                dl.line(
+                    Vec2::new(c.x + r * a0.cos(), c.y + r * a0.sin()).to3(z),
+                    Vec2::new(c.x + r * a1.cos(), c.y + r * a1.sin()).to3(z),
+                    col,
+                    1.1,
+                );
+            }
+        }
+        _ => {
+            dl.line(Vec2::new(c.x - 0.15, c.y).to3(z), Vec2::new(c.x + 0.15, c.y).to3(z), col, 1.3);
+            dl.line(Vec2::new(c.x, c.y - 0.15).to3(z), Vec2::new(c.x, c.y + 0.15).to3(z), col, 1.3);
+            dl.text(c.to3(z), kind.name(), 10.0, col);
+        }
     }
 }
 
@@ -894,21 +1183,63 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
 
     // Foundations under the building: drawn before every other solid so they
     // stay underneath (parity: the JS edition's 3D foundation preview).
+    // With rebar shown the concrete turns see-through (DetailCraft footing
+    // style) so the steel reads inside it.
     for f in &model.foundations {
         let Some((resolved, outline)) = model.foundation_resolved(f) else { continue };
         let level_z = model.level(f.level).map(|l| l.elevation).unwrap_or(0.0);
         let sel = is_selected(info, f.id);
-        for part in foundation::foundation_geometry(&outline, &resolved) {
-            draw_foundation_part_3d(dl, &part, level_z, sel);
+        let parts = foundation::foundation_geometry(&outline, &resolved);
+        for part in &parts {
+            draw_foundation_part_3d(dl, part, level_z, sel, info.show_rebar);
+        }
+        if info.show_rebar {
+            let set = bimcraft_bim::footing_rebar(&parts, &resolved, &f.rebar, level_z);
+            draw_rebar_3d(dl, &set.bars);
         }
     }
 
-    // Walls as extruded prisms with real opening cuts.
+    // Walls as extruded prisms with real opening cuts. Solo hides other
+    // levels; x-ray draws them translucent; brick finishes add coursing.
     for e in model.walls() {
         let sel = is_selected(info, e.id);
         if let ElementData::Wall(w) = &e.data {
-            draw_wall_3d(dl, model, w, e.id, e.paint, sel);
+            let on_active = model.level(w.level).map(|l| l.id) == Some(info.active_level);
+            if info.solo && !on_active && !sel {
+                continue;
+            }
+            draw_wall_3d(dl, model, w, e.id, e.paint, sel, info);
         }
+    }
+
+    // Corner detailing: L starter bars rise at every wall corner of the
+    // active level when rebar is on (DetailCraft: derive, never store).
+    if info.show_rebar && !info.solo || info.show_rebar && info.solo {
+        let walls: Vec<&bimcraft_bim::Wall> = model
+            .elements
+            .iter()
+            .filter_map(|e| match &e.data {
+                ElementData::Wall(w) if w.level == info.active_level => Some(w),
+                _ => None,
+            })
+            .collect();
+        let spec = bimcraft_bim::RebarSpec { bar: 1, ..Default::default() };
+        let mut bars = Vec::new();
+        for w in &walls {
+            let (z0, z1) = (w.base_z(model), w.top_z(model));
+            let corner_bars = bimcraft_bim::corner_starters(&[w], z0, z1, &spec);
+            for b in corner_bars {
+                // Honor the stored corner detail (skip starters when the
+                // corner explicitly turns them off).
+                if let Some(cd) = model.corner_detail_at(b.pts[1]) {
+                    if !cd.starters {
+                        continue;
+                    }
+                }
+                bars.push(b);
+            }
+        }
+        draw_rebar_3d(dl, &bars);
     }
 
     // Slabs and ceilings as prisms.
@@ -916,6 +1247,10 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
         let sel = is_selected(info, e.id);
         match &e.data {
             ElementData::Slab(s) => {
+                let on_active = model.level(s.level).map(|l| l.id) == Some(info.active_level);
+                if info.solo && !on_active && !sel {
+                    continue;
+                }
                 let base = model.level(s.level).map(|l| l.elevation).unwrap_or(0.0);
                 let col = selected(paint_or(e.paint, floor_color(&s.kind)), sel);
                 prism(dl, &s.pts, base + s.elevation - s.thickness, base + s.elevation, col, true, false);
@@ -926,6 +1261,10 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
             }
             ElementData::Ceiling(c) => {
                 if info.show_ceilings_3d || sel {
+                    let on_active = model.level(c.level).map(|l| l.id) == Some(info.active_level);
+                    if info.solo && !on_active && !sel {
+                        continue;
+                    }
                     let base = model.level(c.level).map(|l| l.elevation).unwrap_or(0.0);
                     let col = selected(paint_or(e.paint, PAL3D.ceiling), sel);
                     // The underside is the visible face from below; without it
@@ -935,12 +1274,27 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
                 }
             }
             ElementData::Item(i) => {
+                let on_active = model.level(i.level).map(|l| l.id) == Some(info.active_level);
+                if info.solo && !on_active && !sel {
+                    continue;
+                }
                 let z0 = model.level(i.level).map(|l| l.elevation).unwrap_or(0.0);
                 draw_item_3d(dl, i, e.paint, z0, sel);
             }
             _ => {}
         }
     }
+
+    // Landscaping 3D: trees, shrubs, hedges, fences, lawns, beds, paths —
+    // always on the ground plane so the site reads in every view.
+    for s in &model.site {
+        let sel = is_selected(info, s.id);
+        draw_site_3d(dl, s, sel);
+    }
+
+    // Placement ghosts in 3D (the other half of the 2D/3D placement parity):
+    // a translucent placeholder shows how the next click will land.
+    draw_place_ghosts_3d(dl, model, info);
 
     // Wall formwork: sheathing sheets just outside the active level's walls
     // (drawn after the walls so the amber panels stay visible) + corner studs.
@@ -971,14 +1325,19 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
 /// One concrete foundation part in 3D (z relative to the level floor).
 /// Slabs extrude the outer polygon; rings also extrude the inner boundary
 /// (normal inward) and cap the band with top quads between the loops.
-fn draw_foundation_part_3d(dl: &mut DisplayList, part: &FoundationPart, level_z: f64, sel: bool) {
+/// With `see_through` (rebar shown) the concrete renders translucent so the
+/// steel inside reads — DetailCraft's footing treatment.
+fn draw_foundation_part_3d(dl: &mut DisplayList, part: &FoundationPart, level_z: f64, sel: bool, see_through: bool) {
     let z0 = level_z + part.z0;
     let z1 = level_z + part.z1;
     if z1 <= z0 {
         return;
     }
+    let alpha = if see_through { 80 } else { 255 };
     let side_col = if sel { SELECT } else { FOUND_3D_SIDE };
     let top_col = if sel { SELECT } else { FOUND_3D_TOP };
+    let side_col = with_alpha(side_col, alpha.clamp(90, 160));
+    let top_col = with_alpha(top_col, alpha.clamp(90, 140));
     let up = Vec3::new(0.0, 0.0, 1.0);
     let outer = &part.outer;
     // Outer side quads (normal outward for the anticlockwise loop).
@@ -1035,7 +1394,351 @@ fn draw_corner_post_3d(dl: &mut DisplayList, post: &formwork::CornerPost) {
     }
 }
 
-fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wall_id: u64, paint: Option<u32>, sel: bool) {
+/// Rebar as thin square tubes (db/2 radius) — the DetailCraft red steel.
+/// Each polyline leg becomes a 4-sided prism, vertical tails included.
+fn draw_rebar_3d(dl: &mut DisplayList, bars: &[bimcraft_bim::RebarBar]) {
+    const REBAR: Color32 = Color32::from_rgb(0xb3, 0x12, 0x2e);
+    for b in bars {
+        let db = bimcraft_bim::BARS.get(b.bar).map(|s| s.db).unwrap_or(0.0127);
+        let r = (db / 2.0).max(0.006);
+        let legs: Vec<Vec2> = b.pts.to_vec();
+        for w in legs.windows(2) {
+            draw_tube(dl, w[0], w[1], b.z, b.z, r, REBAR);
+        }
+        if b.z_top > b.z {
+            if let Some(top) = legs.last() {
+                draw_tube(dl, *top, *top, b.z, b.z_top, r, REBAR);
+            }
+        }
+    }
+}
+
+/// One tube segment between plan points a→b from z_a to z_b (square section).
+fn draw_tube(dl: &mut DisplayList, a: Vec2, b: Vec2, za: f64, zb: f64, r: f64, col: Color32) {
+    let dir = (b - a).normalize();
+    let n = dir.perp() * r;
+    let d = dir * r;
+    let sect = |p: Vec2, _z: f64| [p + n, p - n, p + d, p - d];
+    let sa = sect(a, za);
+    let sb = sect(b, zb);
+    for k in 0..4 {
+        let k2 = (k + 1) % 4;
+        let p0 = Vec3::new(sa[k].x, sa[k].y, za);
+        let p1 = Vec3::new(sa[k2].x, sa[k2].y, za);
+        let p2 = Vec3::new(sb[k2].x, sb[k2].y, zb);
+        let p3 = Vec3::new(sb[k].x, sb[k].y, zb);
+        let nrm = face_normal(p0, p1, p2);
+        dl.quad([p0, p1, p2, p3], shade(nrm, col));
+    }
+}
+
+/// Landscaping in 3D: low-poly entourage on the ground plane — trunk +
+/// canopy blobs for trees, boxes for shrubs/hedges, posts and rails for
+/// fences, triangulated fills for lawns/beds/paths.
+fn draw_site_3d(dl: &mut DisplayList, s: &bimcraft_bim::SiteElement, sel: bool) {
+    use bimcraft_bim::{SiteKind, SiteShape};
+    let colors = s.kind.colors();
+    let (leaf, trunk, accent) = (color32(colors.leaf), color32(colors.trunk), color32(colors.accent));
+    let leaf = if sel { SELECT } else { leaf };
+    let trunk = if sel { SELECT } else { trunk };
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let (w, d, h) = bimcraft_bim::preset_size(s.kind);
+    // Deterministic pseudo-random from the variant: same tree always looks
+    // the same, two trees differ.
+    let jitter = |k: u32| ((s.variant.wrapping_mul(2654435761).wrapping_add(k * 97)) % 1000) as f64 / 1000.0;
+    match (s.kind.shape(), s.kind) {
+        (SiteShape::Point, SiteKind::TreeDeciduous6 | SiteKind::TreeDeciduous10 | SiteKind::TreeOrnamental4) => {
+            let trunk_h = h * 0.42;
+            draw_trunk(dl, s.pos, trunk_h, (w * 0.05).clamp(0.09, 0.22), trunk);
+            // Canopy: 2–3 squashed spheres (octahedra) stacked and offset.
+            let layers = 2 + (jitter(1) * 2.0).round() as usize;
+            for li in 0..layers {
+                let t = li as f64 / layers as f64;
+                let r = w * 0.5 * (1.0 - t * 0.55) * (0.85 + 0.3 * jitter(2 + li as u32));
+                let cz = trunk_h + t * (h - trunk_h) * 0.75 + r * 0.35;
+                let c = Vec2::new(s.pos.x + (jitter(5 + li as u32) - 0.5) * r * 0.4, s.pos.y + (jitter(9 + li as u32) - 0.5) * r * 0.4);
+                draw_blob(dl, c, r, r * 0.85, cz, leaf, up);
+            }
+        }
+        (SiteShape::Point, SiteKind::TreeConifer8) => {
+            let trunk_h = h * 0.18;
+            draw_trunk(dl, s.pos, trunk_h, 0.10, trunk);
+            // Three stacked cones (fan of triangles).
+            for li in 0..3 {
+                let t = li as f64 / 3.0;
+                let r = w * 0.5 * (1.0 - t * 0.62);
+                let z0 = trunk_h + t * (h - trunk_h) * 0.8;
+                let z1 = z0 + (h - trunk_h) * 0.42;
+                draw_cone(dl, s.pos, r, z0, z1, leaf);
+            }
+        }
+        (SiteShape::Point, SiteKind::TreeColumnar7) => {
+            let trunk_h = h * 0.3;
+            draw_trunk(dl, s.pos, trunk_h, 0.09, trunk);
+            draw_blob(dl, s.pos, w * 0.32, w * 0.32, trunk_h + (h - trunk_h) * 0.45, leaf, up);
+            draw_blob(dl, s.pos, w * 0.24, w * 0.24, trunk_h + (h - trunk_h) * 0.8, leaf, up);
+        }
+        (SiteShape::Point, SiteKind::ShrubRound) | (SiteShape::Point, SiteKind::ShrubSmall) => {
+            draw_blob(dl, s.pos, w * 0.5, d * 0.5, h * 0.5, leaf, up);
+        }
+        (SiteShape::Point, SiteKind::Hedge) => {
+            // A 2 m run oriented by rotation (extend by chaining more hedges).
+            let c = s.pos;
+            let dir = Vec2::new(s.rotation.cos(), s.rotation.sin());
+            let a = c - dir * (w / 2.0);
+            let b = c + dir * (w / 2.0);
+            draw_hedge_box(dl, a, b, d, h, leaf, trunk);
+        }
+        (SiteShape::Point, SiteKind::PottedPlant) => {
+            // Pot: tapered prism; foliage: small blob.
+            let r0 = w * 0.42;
+            let pot_h = h * 0.42;
+            for k in 0..8 {
+                let a0 = k as f64 / 8.0 * std::f64::consts::TAU;
+                let a1 = (k + 1) as f64 / 8.0 * std::f64::consts::TAU;
+                let p00 = Vec2::new(s.pos.x + r0 * a0.cos(), s.pos.y + r0 * a0.sin());
+                let p01 = Vec2::new(s.pos.x + r0 * a1.cos(), s.pos.y + r0 * a1.sin());
+                let p10 = Vec2::new(s.pos.x + r0 * 0.7 * a0.cos(), s.pos.y + r0 * 0.7 * a0.sin()).to3(pot_h);
+                let p11 = Vec2::new(s.pos.x + r0 * 0.7 * a1.cos(), s.pos.y + r0 * 0.7 * a1.sin()).to3(pot_h);
+                let q0 = p00.to3(0.0);
+                let q1 = p01.to3(0.0);
+                dl.quad([q0, q1, p11, p10], shade(face_normal(q0, q1, p11), trunk));
+            }
+            draw_blob(dl, s.pos, w * 0.4, w * 0.4, pot_h + h * 0.34, leaf, up);
+        }
+        (SiteShape::Chain, SiteKind::Fence) => {
+            // Posts at every panel break + two rails per panel + pickets.
+            let (_pw, _pd, fh) = (w, d, h);
+            let (pw, _, _) = bimcraft_bim::preset_size(SiteKind::Fence);
+            for (a, b) in s.fence_runs() {
+                let dir = (b - a).normalize();
+                let n = dir.perp() * 0.045;
+                for (p, z0, z1, r) in [(a, 0.0, fh, 0.055), (b, 0.0, fh, 0.055)] {
+                    let _ = r;
+                    let sect = |z: f64| [Vec3::new(p.x + n.x, p.y + n.y, z), Vec3::new(p.x - n.x, p.y - n.y, z), Vec3::new(p.x + dir.x * 0.05, p.y + dir.y * 0.05, z), Vec3::new(p.x - dir.x * 0.05, p.y - dir.y * 0.05, z)];
+                    let sa = sect(z0);
+                    let sb = sect(z1);
+                    for k in 0..4 {
+                        let k2 = (k + 1) % 4;
+                        dl.quad([sa[k], sa[k2], sb[k2], sb[k]], shade(face_normal(sa[k], sa[k2], sb[k2]), trunk));
+                    }
+                }
+                // Rails + pickets (simplified: 2 rails + 5 pickets per panel).
+                for z in [fh * 0.18, fh * 0.62, fh * 0.88] {
+                    let q0 = Vec3::new(a.x + n.x, a.y + n.y, z);
+                    let q1 = Vec3::new(b.x + n.x, b.y + n.y, z);
+                    let q2 = Vec3::new(b.x - n.x, b.y - n.y, z);
+                    let q3 = Vec3::new(a.x - n.x, a.y - n.y, z);
+                    dl.quad([q0, q1, q2, q3], shade(face_normal(q0, q1, q2), accent));
+                }
+                for k in 1..5 {
+                    let t = k as f64 / 5.0;
+                    let p = a + (b - a) * t;
+                    let pa = p + n * 0.6;
+                    let pb = p - n * 0.6;
+                    dl.quad([pa.to3(fh * 0.1), pb.to3(fh * 0.1), pb.to3(fh * 0.95), pa.to3(fh * 0.95)], shade(face_normal(pa.to3(0.0), pb.to3(0.0), pb.to3(1.0)), accent));
+                }
+                let _ = pw;
+            }
+        }
+        (SiteShape::Polygon, SiteKind::Grass) => {
+            // Lawn: slightly raised triangulated fill in two tones.
+            for (i, t) in bimcraft_bim::poly_tris_world(&s.pts, 0.02).into_iter().enumerate() {
+                let tone = if i % 2 == 0 { leaf } else { color32(bimcraft_bim::landscaping::GRASS_TONES[(s.variant as usize + i) % 3]) };
+                dl.tri(t, shade(up, with_alpha(tone, 235)));
+            }
+        }
+        (SiteShape::Polygon, SiteKind::FlowerBed) => {
+            // Soil box + flowers as tiny colored blobs on a grid.
+            prism(dl, &s.pts, 0.0, bimcraft_bim::landscaping::FLOWER_BED_H, shade(up, trunk), true, false);
+            for (idx, (fx, fy)) in flower_points(&s.pts, 0.9).into_iter().enumerate() {
+                let c = color32(bimcraft_bim::landscaping::FLOWER_COLORS[(s.variant as usize + idx) % 4]);
+                draw_blob(dl, Vec2::new(fx, fy), 0.10, 0.10, bimcraft_bim::landscaping::FLOWER_BED_H + 0.12, c, up);
+            }
+        }
+        (SiteShape::Polygon, _) => {
+            // Path / driveway: thin paved slab.
+            let z = if s.kind == SiteKind::Driveway { 0.04 } else { 0.03 };
+            for t in bimcraft_bim::poly_tris_world(&s.pts, z) {
+                dl.tri(t, shade(up, with_alpha(trunk, 240)));
+            }
+            for w2 in s.pts.windows(2) {
+                dl.line(w2[0].to3(z + 0.005), w2[1].to3(z + 0.005), with_alpha(accent, 140), 0.8);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Trunk: small 6-sided prism.
+fn draw_trunk(dl: &mut DisplayList, c: Vec2, h: f64, r: f64, col: Color32) {
+    for k in 0..6 {
+        let a0 = k as f64 / 6.0 * std::f64::consts::TAU;
+        let a1 = (k + 1) as f64 / 6.0 * std::f64::consts::TAU;
+        let p0 = Vec2::new(c.x + r * a0.cos(), c.y + r * a0.sin()).to3(0.0);
+        let p1 = Vec2::new(c.x + r * a1.cos(), c.y + r * a1.sin()).to3(0.0);
+        let p2 = Vec2::new(c.x + r * a1.cos(), c.y + r * a1.sin()).to3(h);
+        let p3 = Vec2::new(c.x + r * a0.cos(), c.y + r * a0.sin()).to3(h);
+        dl.quad([p0, p1, p2, p3], shade(face_normal(p0, p1, p2), col));
+    }
+}
+
+/// Cone (fan of side triangles + base ring).
+fn draw_cone(dl: &mut DisplayList, c: Vec2, r: f64, z0: f64, z1: f64, col: Color32) {
+    let n = 10;
+    for k in 0..n {
+        let a0 = k as f64 / n as f64 * std::f64::consts::TAU;
+        let a1 = (k + 1) as f64 / n as f64 * std::f64::consts::TAU;
+        let p0 = Vec3::new(c.x + r * a0.cos(), c.y + r * a0.sin(), z0);
+        let p1 = Vec3::new(c.x + r * a1.cos(), c.y + r * a1.sin(), z0);
+        let tip = Vec3::new(c.x, c.y, z1);
+        dl.tri([p0, p1, tip], shade(face_normal(p0, p1, tip), col));
+    }
+}
+
+/// A squashed sphere approximation: octahedron-ish blob (6 vertices, 8 tris).
+fn draw_blob(dl: &mut DisplayList, c: Vec2, rx: f64, ry: f64, cz: f64, col: Color32, up: Vec3) {
+    let top = Vec3::new(c.x, c.y, cz + ry);
+    let bottom = Vec3::new(c.x, c.y, cz - ry);
+    let ring: Vec<Vec3> = (0..8)
+        .map(|k| {
+            let a = k as f64 / 8.0 * std::f64::consts::TAU;
+            Vec3::new(c.x + rx * a.cos(), c.y + ry * a.sin(), cz)
+        })
+        .collect();
+    let _ = up;
+    for k in 0..8 {
+        let k2 = (k + 1) % 8;
+        dl.tri([ring[k], ring[k2], top], shade(face_normal(ring[k], ring[k2], top), col));
+        dl.tri([ring[k2], ring[k], bottom], shade(face_normal(ring[k2], ring[k], bottom), col));
+    }
+}
+
+/// Hedge: rounded box row between two plan points (side quads + top).
+fn draw_hedge_box(dl: &mut DisplayList, a: Vec2, b: Vec2, depth: f64, h: f64, leaf: Color32, _edge: Color32) {
+    let dir = (b - a).normalize();
+    let n = dir.perp() * (depth / 2.0);
+    let z0 = 0.0;
+    for (p0, p1) in [(a + n, b + n), (b - n, a - n)] {
+        let q0 = p0.to3(z0);
+        let q1 = p1.to3(z0);
+        let q2 = p1.to3(h);
+        let q3 = p0.to3(h);
+        dl.quad([q0, q1, q2, q3], shade(face_normal(q0, q1, q2), leaf));
+    }
+    for p in [a, b] {
+        let q0 = (p + n).to3(z0);
+        let q1 = (p - n).to3(z0);
+        let q2 = (p - n).to3(h);
+        let q3 = (p + n).to3(h);
+        dl.quad([q0, q1, q2, q3], shade(face_normal(q0, q1, q2), leaf));
+    }
+    let top = [a + n, b + n, b - n, a - n];
+    dl.poly(std::array::from_fn::<_, 4, _>(|i| top[i].to3(h)).as_ref(), shade(up_hedge(), leaf));
+}
+
+fn up_hedge() -> Vec3 {
+    Vec3::new(0.0, 0.0, 1.0)
+}
+
+/// 3D half of the 2D/3D placement parity: translucent placeholders showing
+/// how the next click lands (aedifex ghost + window placeholder parity).
+fn draw_place_ghosts_3d(dl: &mut DisplayList, model: &Model, info: &ViewInfo) {
+    let cur = info.cursor;
+    match info.tool {
+        PreviewTool::Door | PreviewTool::Window => {
+            // Ghost opening on the hovered wall (info.ghost_host from the UI).
+            if let Some((wall_id, s)) = info.ghost_host {
+                if let Some(w) = model.wall(wall_id) {
+                    let (c, seg) = w.point_at(s);
+                    let segs: Vec<(Vec2, Vec2)> = w.segments().collect();
+                    let dir = segs.get(seg).map(|(a, b)| (*b - *a).normalize()).unwrap_or_else(|| Vec2::new(1.0, 0.0));
+                    let is_door = info.tool == PreviewTool::Door;
+                    let (gw, gh, sill) = if is_door { (0.9, 2.1, 0.0) } else { (1.2, 1.4, 0.9) };
+                    let half = gw / 2.0;
+                    let z0 = w.base_z(model);
+                    let p0 = c - dir * half;
+                    let p1 = c + dir * half;
+                    let zb = z0 + sill;
+                    let zt = zb + gh;
+                    let glass = if is_door {
+                        Color32::from_rgba_unmultiplied(0xc9, 0x8a, 0x4a, 110)
+                    } else {
+                        Color32::from_rgba_unmultiplied(0x5b, 0xc8, 0xd8, 110)
+                    };
+                    let nrm = face_normal(p0.to3(zb), p1.to3(zb), p1.to3(zt));
+                    dl.quad([p0.to3(zb), p1.to3(zb), p1.to3(zt), p0.to3(zt)], shade(nrm, glass));
+                    // Frame edges.
+                    let ec = with_alpha(SELECT, 220);
+                    dl.line(p0.to3(zb), p1.to3(zb), ec, 1.4);
+                    dl.line(p1.to3(zt), p0.to3(zt), ec, 1.4);
+                    dl.line(p0.to3(zb), p0.to3(zt), ec, 1.4);
+                    dl.line(p1.to3(zb), p1.to3(zt), ec, 1.4);
+                    if !is_door {
+                        let m0 = (p0.to3(zb) + p0.to3(zt)) * 0.5;
+                        let m1 = (p1.to3(zb) + p1.to3(zt)) * 0.5;
+                        dl.line(m0, m1, with_alpha(SELECT, 160), 1.0);
+                        dl.line(p0.to3(zb + gh / 2.0), p1.to3(zb + gh / 2.0), with_alpha(SELECT, 160), 1.0);
+                    }
+                }
+            }
+        }
+        PreviewTool::Item => {
+            let (w, d, h) = info.item_kind.preset();
+            let c = cur.xy();
+            let pts = [
+                Vec2::new(c.x - w / 2.0, c.y - d / 2.0),
+                Vec2::new(c.x + w / 2.0, c.y - d / 2.0),
+                Vec2::new(c.x + w / 2.0, c.y + d / 2.0),
+                Vec2::new(c.x - w / 2.0, c.y + d / 2.0),
+            ]
+            .map(|p| c + (p - c).rotate(info.rotation));
+            let gcol = Color32::from_rgba_unmultiplied(0xf0, 0x8a, 0x2c, 60);
+            prism(dl, pts.as_ref(), cur.z, cur.z + h, gcol, true, false);
+            outline_loop(dl, pts.as_ref(), cur.z + h + 0.005, with_alpha(SELECT, 200), 1.0);
+        }
+        PreviewTool::Site => {
+            let kind = info.site_kind;
+            let c = cur.xy();
+            let ghost = bimcraft_bim::SiteElement { id: 0, kind, pos: c, pts: Vec::new(), rotation: info.rotation, variant: 0 };
+            if kind.shape() == bimcraft_bim::SiteShape::Point {
+                draw_site_3d(dl, &ghost, false);
+                // Selection ring under the ghost.
+                let r = plan_radius(kind).unwrap_or(0.5);
+                for k in 0..16 {
+                    let a0 = k as f64 / 16.0 * std::f64::consts::TAU;
+                    let a1 = (k + 1) as f64 / 16.0 * std::f64::consts::TAU;
+                    dl.line(
+                        Vec2::new(c.x + r * a0.cos(), c.y + r * a0.sin()).to3(0.02),
+                        Vec2::new(c.x + r * a1.cos(), c.y + r * a1.sin()).to3(0.02),
+                        with_alpha(SELECT, 200),
+                        1.2,
+                    );
+                }
+            } else {
+                dl.text(cur, kind.name(), 11.0, with_alpha(SELECT, 220));
+            }
+        }
+        PreviewTool::Foundation => {
+            // Translucent slab quad under the cursor when inside an outline.
+            let p = cur.xy();
+            for f in &model.foundations {
+                if let Some(poly) = model.foundation_outline(f) {
+                    if bimcraft_bim::rooms::in_poly(p.x, p.y, &poly) {
+                        for t in bimcraft_bim::poly_tris_world(&poly, 0.01) {
+                            dl.tri(t, Color32::from_rgba_unmultiplied(0x9a, 0xb4, 0xc8, 40));
+                        }
+                        outline_loop(dl, &poly, 0.02, with_alpha(SELECT, 160), 1.0);
+                        break;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wall_id: u64, paint: Option<u32>, sel: bool, info: &ViewInfo) {
     if w.pts.len() < 2 {
         return;
     }
@@ -1048,7 +1751,17 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
     }
     let outline = w.outline();
     let (left_chain, right_chain) = w.side_chains();
-    let face = selected(paint_or(paint, PAL3D.wall_face), sel);
+    let mut face = selected(paint_or(paint, PAL3D.wall_face), sel);
+    // X-ray (aedifex ghost parity): walls go translucent so the plan reads
+    // through them; the canvas blends translucent tris without depth writes.
+    if info.xray && !sel {
+        face = with_alpha(face, 64);
+    }
+    // A brick finish repaints the outside face in mortar with coursing on top.
+    let brick = w.brick_finish();
+    let mortar_col = brick.map(|b| color32(b.mortar));
+    // Which side chain faces outside (ext_side names the outside face side).
+    let ext_is_left = w.ext_side == bimcraft_bim::Side::Left;
 
     // Top face: outline polygon at z1 (ear-clipped so concave works).
     let top_tris = bimcraft_bim::poly_tris_world(&outline, z1);
@@ -1085,7 +1798,9 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
     // Side faces along the mitered chains: adjacent segments share the corner
     // vertex, so the faces meet cleanly (the old per-segment ±thickness/2
     // quads left wedge gaps at every corner).
-    for chain in [&left_chain, &right_chain] {
+    for (ci, chain) in [&left_chain, &right_chain].into_iter().enumerate() {
+        let is_ext = (ci == 0) == ext_is_left;
+        let chain_face = if is_ext { mortar_col.unwrap_or(face) } else { face };
         for j in 0..chain.len().saturating_sub(1) {
             let (ca, cb) = (chain[j], chain[j + 1]);
             let dir = (cb - ca).normalize();
@@ -1098,7 +1813,34 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
             for (s0, s1, pz0, pz1) in subtract_cuts(seg_len, z0, z1, cuts) {
                 let w0 = ca + dir * s0;
                 let w1 = ca + dir * s1;
-                dl.quad([w0.to3(pz0), w1.to3(pz0), w1.to3(pz1), w0.to3(pz1)], shade(nrm, face));
+                dl.quad([w0.to3(pz0), w1.to3(pz0), w1.to3(pz1), w0.to3(pz1)], shade(nrm, chain_face));
+            }
+            // Brick coursing on the exterior face: stretcher bond from the
+            // brick preset, cells inset 6 mm so they never z-fight the face,
+            // skipping the opening cuts. Capped for the display list.
+            if let (Some(bt), true) = (brick, is_ext) {
+                let cells = bimcraft_bim::face_bricks(seg_len, z1 - z0, bt, 9000);
+                let brick_col = paint.map(|_| face).unwrap_or_else(|| color32(bt.color));
+                let inward = -nrm.normalize();
+                for [u0, cz0, du, dz] in cells {
+                    let a = ca + dir * u0;
+                    let b = ca + dir * (u0 + du);
+                    let za = z0 + cz0 + 0.004;
+                    let zb = z0 + cz0 + dz - 0.004;
+                    if zb <= za {
+                        continue;
+                    }
+                    // Skip cells crossing an opening cut band.
+                    if cuts.iter().any(|(cs0, cs1, czb, czt)| u0 < *cs1 && u0 + du > *cs0 && za < *czt && zb > *czb) {
+                        continue;
+                    }
+                    let o = inward * 0.006;
+                    let p0 = a.to3(za) + o;
+                    let p1 = b.to3(za) + o;
+                    let p2 = b.to3(zb) + o;
+                    let p3 = a.to3(zb) + o;
+                    dl.quad([p0, p1, p2, p3], shade(nrm, brick_col));
+                }
             }
         }
     }
@@ -1320,6 +2062,33 @@ mod tests {
     use bimcraft_bim::{sample, Model, Opening};
     use bimcraft_geom::Vec2;
 
+    /// Test ViewInfo with sensible defaults (new fields filled in).
+    fn vinfo(mode: ViewModeKind, active_level: u64, half_extent: f64) -> ViewInfo {
+        ViewInfo {
+            mode,
+            active_level,
+            selection: vec![],
+            half_extent,
+            ground_extent: 20.0,
+            show_ceilings_3d: true,
+            show_items_2d: true,
+            light: false,
+            show_formwork: false,
+            eye: Vec3::ZERO,
+            solo: false,
+            xray: false,
+            show_rebar: false,
+            tool: PreviewTool::Select,
+            cursor: Vec3::ZERO,
+            site_kind: bimcraft_bim::SiteKind::TreeDeciduous6,
+            item_kind: ItemKind::Table,
+            pending: 0,
+            pending_pts: Vec::new(),
+            ghost_host: None,
+            rotation: 0.0,
+        }
+    }
+
     #[test]
     fn section_build_cuts_walls() {
         let mut m = sample();
@@ -1354,18 +2123,7 @@ mod tests {
     #[test]
     fn plan_build_runs() {
         let m = sample();
-        let info = ViewInfo {
-            mode: ViewModeKind::Plan2D,
-            active_level: m.levels[0].id,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 20.0,
-            show_ceilings_3d: true,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { vinfo(ViewModeKind::Plan2D, m.levels[0].id, 20.0) };
         let dl = build(&m, &info);
         assert!(!dl.lines.is_empty());
     }
@@ -1373,18 +2131,7 @@ mod tests {
     #[test]
     fn plan_light_mode_swaps_grid_colors() {
         let m = sample();
-        let info = |light: bool| ViewInfo {
-            mode: ViewModeKind::Plan2D,
-            active_level: m.levels[0].id,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 20.0,
-            show_ceilings_3d: true,
-            show_items_2d: true,
-            light,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = |light: bool| { let mut vi = vinfo(ViewModeKind::Plan2D, m.levels[0].id, 20.0); vi.light = light; vi };
         let dark = build(&m, &info(false));
         let light = build(&m, &info(true));
         assert!(dark.lines.iter().any(|l| l.color == GRID_LINE), "dark grid expected");
@@ -1394,20 +2141,15 @@ mod tests {
 
     #[test]
     fn plan_foundations_draw_parts_and_label() {
-        let mut m = sample();
+        // A bare rectangle (the template auto-grounds itself, so it already
+        // carries foundations).
+        let mut m = Model::new();
         let lvl = m.levels[0].id;
-        let info = ViewInfo {
-            mode: ViewModeKind::Plan2D,
-            active_level: lvl,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 20.0,
-            show_ceilings_3d: true,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        m.add_wall(lvl, vec![Vec2::new(0.0, 0.0), Vec2::new(8.0, 0.0)], 0.2, 3.0);
+        m.add_wall(lvl, vec![Vec2::new(8.0, 0.0), Vec2::new(8.0, 6.0)], 0.2, 3.0);
+        m.add_wall(lvl, vec![Vec2::new(8.0, 6.0), Vec2::new(0.0, 6.0)], 0.2, 3.0);
+        m.add_wall(lvl, vec![Vec2::new(0.0, 6.0), Vec2::new(0.0, 0.0)], 0.2, 3.0);
+        let info = {  vinfo(ViewModeKind::Plan2D, lvl, 20.0) };
         let without = build(&m, &info);
         assert!(without.lines.iter().all(|l| l.color != FOUND_2D), "no foundation edges before the pass");
         m.add_foundation(bimcraft_bim::Foundation {
@@ -1417,6 +2159,7 @@ mod tests {
             seed: Vec2::new(4.5, 3.5),
             sizes: bimcraft_bim::FoundationSizes::default(),
             name: String::new(),
+            rebar: bimcraft_bim::RebarSpec::default(),
         });
         let dl = build(&m, &info);
         // Ring edges use the foundation color; the seed label names the kind.
@@ -1430,18 +2173,7 @@ mod tests {
     #[test]
     fn plan_formwork_overlay_zoom_gated() {
         let m = sample();
-        let info = |fw: bool, he: f64| ViewInfo {
-            mode: ViewModeKind::Plan2D,
-            active_level: m.levels[0].id,
-            selection: vec![],
-            half_extent: he,
-            ground_extent: 20.0,
-            show_ceilings_3d: true,
-            show_items_2d: true,
-            light: false,
-            show_formwork: fw,
-            eye: Vec3::ZERO,
-        };
+        let info = |fw: bool, he: f64| { let mut vi = vinfo(ViewModeKind::Plan2D, m.levels[0].id, he); vi.show_formwork = fw; vi };
         let base = build(&m, &info(false, 10.0));
         let on = build(&m, &info(true, 10.0));
         assert!(on.lines.len() > base.lines.len(), "formwork ticks appear when zoomed in");
@@ -1454,18 +2186,7 @@ mod tests {
     #[test]
     fn three_d_build_runs() {
         let m = sample();
-        let info = ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: m.levels[0].id,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: true,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, m.levels[0].id, 20.0); vi.ground_extent = 30.0; vi };
         let dl = build(&m, &info);
         assert!(!dl.tris.is_empty());
     }
@@ -1478,18 +2199,7 @@ mod tests {
         m.add_wall(lvl, vec![Vec2::new(8.0, 0.0), Vec2::new(8.0, 6.0)], 0.2, 3.0);
         m.add_wall(lvl, vec![Vec2::new(8.0, 6.0), Vec2::new(0.0, 6.0)], 0.2, 3.0);
         m.add_wall(lvl, vec![Vec2::new(0.0, 6.0), Vec2::new(0.0, 0.0)], 0.2, 3.0);
-        let info = ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: lvl,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: false,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
         let base_count = build(&m, &info).tris.len();
         m.add_foundation(bimcraft_bim::Foundation {
             id: 0,
@@ -1498,6 +2208,7 @@ mod tests {
             seed: Vec2::new(4.0, 3.0),
             sizes: bimcraft_bim::FoundationSizes::default(),
             name: String::new(),
+            rebar: bimcraft_bim::RebarSpec::default(),
         });
         let dl = build(&m, &info);
         assert!(dl.tris.len() > base_count, "adding a foundation grows the triangle list");
@@ -1508,18 +2219,7 @@ mod tests {
     #[test]
     fn three_d_formwork_adds_sheathing_and_posts() {
         let m = sample();
-        let info = |fw: bool| ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: m.levels[0].id,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: false,
-            show_items_2d: true,
-            light: false,
-            show_formwork: fw,
-            eye: Vec3::ZERO,
-        };
+        let info = |fw: bool| { let mut vi = vinfo(ViewModeKind::Perspective3D, m.levels[0].id, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi.show_formwork = fw; vi };
         let plain = build(&m, &info(false));
         let with = build(&m, &info(true));
         assert!(with.tris.len() > plain.tris.len(), "sheathing quads add triangles");
@@ -1542,18 +2242,7 @@ mod tests {
             }
         }
         m.add_opening(ElementKind::Window, Opening { wall: w, s: 3.0, width: 1.2, height: 1.4, sill: 0.9, ..Opening::default() });
-        let info = ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: l0,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: false,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, l0, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
         let dl = build(&m, &info);
         // base_z = 0.0 + 0.5; top_z = base_z + (Level 1 delta 3.4 + 0.2) = 4.1
         // (the effective-height contract: the top offset rides on the wall base).
@@ -1573,18 +2262,7 @@ mod tests {
         let wid = m.walls().next().unwrap().id;
         let wall = m.element_mut(wid).unwrap();
         wall.paint = Some(0xcc4a2a);
-        let info = ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: lvl,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: false,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
         let dl = build(&m, &info);
         // Some shaded triangle now carries the paint hue (shading scales RGB,
         // so check the red dominance pattern of #cc4a2a).
@@ -1594,9 +2272,14 @@ mod tests {
         };
         let painted = dl.tris.iter().any(|t| warm(t.color));
         assert!(painted, "painted wall should tint the 3D geometry");
-        // Unpainted models keep the neutral palette (no such tri when cleared).
-        m.element_mut(wid).unwrap().paint = None;
-        let dl2 = build(&m, &info);
+        // A plain unpainted wall keeps the neutral palette (no such tri).
+        // (The brick house template legitimately has warm brick faces, so the
+        // neutral check runs on a fresh model.)
+        let mut plain_m = Model::new();
+        let plvl = plain_m.levels[0].id;
+        plain_m.add_wall(plvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
+        let info_plain = { let mut vi = vinfo(ViewModeKind::Perspective3D, plvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
+        let dl2 = build(&plain_m, &info_plain);
         let painted2 = dl2.tris.iter().any(|t| warm(t.color) && t.pts.iter().all(|p| p.z > 0.1));
         assert!(!painted2, "neutral palette has no terracotta wall faces");
     }
@@ -1607,23 +2290,104 @@ mod tests {
         let lvl = m.levels[0].id;
         let w = m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
         m.add_opening(ElementKind::Window, Opening { wall: w, s: 2.5, width: 1.2, height: 1.4, sill: 0.9, ..Opening::default() });
-        let info = ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: lvl,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: false,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
         let dl = build(&m, &info);
         // The wall (5 m × 3 m face) minus a 1.2 m gap must produce more than
         // two side pieces: full pieces + below/above sill pieces.
         let side_pieces = dl.tris.iter().filter(|t| (t.pts[0].z - t.pts[1].z).abs() < 3.2).count();
         assert!(side_pieces > 8);
+    }
+
+    #[test]
+    fn brick_finish_draws_courses_on_the_exterior_face() {
+        let mut m = Model::new();
+        let lvl = m.levels[0].id;
+        // South wall of a room, exterior face on the -Y side (ext_side Right).
+        let wid = m.add_wall(lvl, vec![Vec2::new(0.0, 0.0), Vec2::new(12.0, 0.0)], 0.23, 3.0);
+        if let Some(ElementData::Wall(w)) = m.element_mut(wid).map(|e| &mut e.data) {
+            w.type_key = "brick-230".into();
+            w.finish = "brick-red".into();
+        }
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi };
+        let dl = build(&m, &info);
+        // Shading scales RGB uniformly, so match by channel *ratios*: brick
+        // red 0x9b4f3a has r ≈ 2·g ≈ 2.7·b; mortar 0xb6ada2 is near-neutral.
+        let ratio = |t: &DTri| {
+            let (r, g, b) = (t.color.r() as f32, t.color.g() as f32, t.color.b() as f32);
+            (r / g.max(1.0), r / b.max(1.0))
+        };
+        let bricks = dl.tris.iter().filter(|t| {
+            let (rg, rb) = ratio(t);
+            (rg - 1.96).abs() < 0.35 && (rb - 2.67).abs() < 0.5
+        }).count();
+        assert!(bricks > 200, "stretcher-bond bricks expected, got {bricks}");
+        let mortar = dl.tris.iter().filter(|t| {
+            let (rg, rb) = ratio(t);
+            (rg - 1.06).abs() < 0.12 && (rb - 1.13).abs() < 0.12 && t.pts.iter().all(|p| p.z >= 0.0 && p.z <= 3.0)
+        }).count();
+        assert!(mortar > 8, "mortar face expected, got {mortar}");
+        // Cells sit inset from the face and within the wall height.
+        assert!(dl.tris.iter().filter(|t| {
+            let (rg, rb) = ratio(t);
+            (rg - 1.96).abs() < 0.35 && (rb - 2.67).abs() < 0.5
+        }).all(|t| t.pts.iter().all(|p| p.z > 0.0 && p.z < 3.0)));
+    }
+
+    #[test]
+    fn solo_hides_other_levels_but_keeps_site_and_foundations() {
+        let m = sample();
+        let _ground = m.levels.iter().find(|l| l.name == "Level 0").unwrap().id;
+        let upper = m.levels.iter().find(|l| l.name == "Level 1").unwrap().id;
+        let mut info = vinfo(ViewModeKind::Perspective3D, upper, 20.0);
+        info.solo = true;
+        info.ground_extent = 30.0;
+        let dl = build(&m, &info);
+        // Upper walls present (elevation 3.0). The ground storey must vanish:
+        // count tris inside the building footprint between the floors (site
+        // geometry lives outside it or below 3 cm).
+        let inside = |t: &DTri| t.pts.iter().all(|p| p.x > -0.5 && p.x < 12.5 && p.y > -0.5 && p.y < 9.5);
+        let band = |z_lo: f64, z_hi: f64| dl.tris.iter().filter(|t| inside(t) && t.pts.iter().any(|p| p.z >= z_lo && p.z <= z_hi)).count();
+        assert!(band(3.0, 6.0) > 0, "solo keeps the active level");
+        // Mid-height band of the ground storey: only walls reach here (the
+        // potted plant by the door stays under 0.5 m).
+        assert_eq!(band(1.0, 2.5), 0, "solo hides lower levels");
+        // Site (trees/fence on the ground plane) still draws.
+        assert!(!dl.tris.is_empty());
+    }
+
+    #[test]
+    fn xray_makes_wall_faces_translucent() {
+        let mut m = Model::new();
+        let lvl = m.levels[0].id;
+        m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
+        let mut info = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+        info.xray = true;
+        let dl = build(&m, &info);
+        let face_tris = dl.tris.iter().filter(|t| t.pts.iter().all(|p| p.z >= 0.0 && p.z <= 3.0)).count();
+        assert!(face_tris > 0);
+        assert!(dl.tris.iter().any(|t| t.color.a() < 255), "x-ray walls render translucent");
+    }
+
+    #[test]
+    fn rebar_and_site_draw_in_3d() {
+        let m = sample();
+        let lvl = m.levels[0].id;
+        let mut info = vinfo(ViewModeKind::Perspective3D, lvl, 20.0);
+        info.show_rebar = true;
+        let dl = build(&m, &info);
+        // Rebar red steel (0xb3122e shaded): r ≫ g, b between them.
+        let rebar = dl.tris.iter().filter(|t| {
+            let (r, g, b) = (t.color.r() as f32, t.color.g() as f32, t.color.b() as f32);
+            r > 60.0 && g < r * 0.25 && b > g && b < r * 0.45
+        }).count();
+        assert!(rebar > 20, "rebar tubes expected, got {rebar}");
+        // Ghost preview: window placeholder on the hovered wall.
+        info.tool = PreviewTool::Window;
+        let south = m.walls().next().unwrap().id;
+        info.ghost_host = Some((south, 2.0));
+        info.cursor = Vec3::new(2.0, 0.0, 0.0);
+        let dl2 = build(&m, &info);
+        assert!(dl2.tris.iter().any(|t| t.color.a() == 110), "ghost opening quad expected");
     }
 
     #[test]
@@ -1643,18 +2407,7 @@ mod tests {
         let mut m = Model::new();
         let lvl = m.levels[0].id;
         m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(5.0, 0.0)], 0.2, 3.0);
-        let info = ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: lvl,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: false,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
         let dl = build(&m, &info);
         let cap_at = |x: f64| dl.tris.iter().any(|t| t.pts.iter().all(|p| (p.x - x).abs() < 1e-6));
         assert!(cap_at(0.0), "start end cap expected (vertical quad at x=0)");
@@ -1668,18 +2421,7 @@ mod tests {
         let mut m = Model::new();
         let lvl = m.levels[0].id;
         m.add_wall(lvl, vec![Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(4.0, 3.0)], 0.2, 3.0);
-        let info = ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: lvl,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: false,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi.show_ceilings_3d = false; vi };
         let dl = build(&m, &info);
         // Left chain miter corner for thickness 0.2 sits at (4 - 0.1, 0.1);
         // right chain at (4.1, -0.1).
@@ -1696,18 +2438,7 @@ mod tests {
         let lvl = m.levels[0].id;
         let pts = vec![Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(4.0, 3.0), Vec2::new(0.0, 3.0)];
         m.add_ceiling(lvl, pts.clone(), 0.1, 3.0);
-        let info = ViewInfo {
-            mode: ViewModeKind::Perspective3D,
-            active_level: lvl,
-            selection: vec![],
-            half_extent: 20.0,
-            ground_extent: 30.0,
-            show_ceilings_3d: true,
-            show_items_2d: true,
-            light: false,
-            show_formwork: false,
-            eye: Vec3::ZERO,
-        };
+        let info = { let mut vi = vinfo(ViewModeKind::Perspective3D, lvl, 20.0); vi.ground_extent = 30.0; vi };
         let dl = build(&m, &info);
         let z_bottom = 3.0;
         let has_bottom = dl.tris.iter().any(|t| t.pts.iter().all(|p| (p.z - z_bottom).abs() < 1e-6));

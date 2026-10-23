@@ -157,6 +157,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bimcraft-mcp"
+version = "0.6.0"
+dependencies = [
+ "bimcraft-bim",
+ "bimcraft-engine",
+ "bimcraft-geom",
+ "bimcraft-io",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bimcraft-render"
 version = "0.6.0"
 dependencies = [

@@ -31,20 +31,65 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
                 ViewMode::Walk => app.session.walk.eye(app.session.level_elevation()),
                 _ => app.session.camera.eye(),
             };
-            let info = ViewInfo {
-                mode,
-                active_level: app.session.active_level_id(),
-                selection: match app.session.selection {
-                    Selection::Element(id) => vec![id],
-                    _ => vec![],
-                },
-                half_extent: plan_half_extent(app.session.plan.zoom, rect.width()),
-                ground_extent: 40.0,
-                show_ceilings_3d: app.show_ceilings_3d,
-                show_items_2d: app.show_items_2d,
-                light: t.is_light(),
-                show_formwork: app.session.show_formwork,
-                eye,
+            let info = {
+                // Ghost host for the 3D opening placeholder: wall under the
+                // cursor + arclength (only when placing doors/windows).
+                let ghost_host = match app.session.tool {
+                    bimcraft_engine::Tool::Door | bimcraft_engine::Tool::Window => {
+                        let p = app.session.cursor.xy();
+                        app.session.model.host_wall_at(p, 1.0).map(|(id, _)| {
+                            let (s, _) = app.session.model.wall(id).map(|w| w.project(p)).unwrap_or((0.0, 0.0));
+                            (id, s)
+                        })
+                    }
+                    _ => None,
+                };
+                let pending_pts = if app.session.tool == bimcraft_engine::Tool::Site {
+                    app.session.pending.clone()
+                } else {
+                    Vec::new()
+                };
+                ViewInfo {
+                    mode,
+                    active_level: app.session.active_level_id(),
+                    selection: match app.session.selection {
+                        Selection::Element(id) => vec![id],
+                        Selection::Site(id) => vec![id],
+                        Selection::Foundation(id) => vec![id],
+                        _ => vec![],
+                    },
+                    half_extent: plan_half_extent(app.session.plan.zoom, rect.width()),
+                    ground_extent: 40.0,
+                    show_ceilings_3d: app.show_ceilings_3d,
+                    show_items_2d: app.show_items_2d,
+                    light: t.is_light(),
+                    show_formwork: app.session.show_formwork,
+                    eye,
+                    solo: app.session.solo_level,
+                    xray: app.session.xray,
+                    show_rebar: app.session.show_rebar,
+                    tool: match app.session.tool {
+                        bimcraft_engine::Tool::Select => bimcraft_render::PreviewTool::Select,
+                        bimcraft_engine::Tool::Wall => bimcraft_render::PreviewTool::Wall,
+                        bimcraft_engine::Tool::Door => bimcraft_render::PreviewTool::Door,
+                        bimcraft_engine::Tool::Window => bimcraft_render::PreviewTool::Window,
+                        bimcraft_engine::Tool::Floor => bimcraft_render::PreviewTool::Floor,
+                        bimcraft_engine::Tool::Ceiling => bimcraft_render::PreviewTool::Ceiling,
+                        bimcraft_engine::Tool::Item => bimcraft_render::PreviewTool::Item,
+                        bimcraft_engine::Tool::Measure => bimcraft_render::PreviewTool::Measure,
+                        bimcraft_engine::Tool::SectionLine => bimcraft_render::PreviewTool::SectionLine,
+                        bimcraft_engine::Tool::Paint => bimcraft_render::PreviewTool::Paint,
+                        bimcraft_engine::Tool::Foundation => bimcraft_render::PreviewTool::Foundation,
+                        bimcraft_engine::Tool::Site => bimcraft_render::PreviewTool::Site,
+                    },
+                    cursor: app.session.cursor,
+                    site_kind: app.session.site_kind,
+                    item_kind: app.session.item_kind,
+                    pending: app.session.pending.len(),
+                    pending_pts,
+                    ghost_host,
+                    rotation: app.session.item_rotation,
+                }
             };
             let dl = build(&app.session.model, &info);
             match app.session.view {

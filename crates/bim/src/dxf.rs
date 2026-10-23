@@ -665,9 +665,12 @@ mod tests {
         m.add_section(l1, "S", Vec2::ZERO, Vec2::new(1.0, 0.0), 2.0);
         m.add_room(l1, "Bedroom", Vec2::new(2.0, 2.0));
         let n_elements = m.elements.len();
+        let rooms_before = m.rooms.len();
         m.delete_level(l1);
         assert!(m.sections.is_empty());
-        assert!(m.rooms.is_empty());
+        // The template carries rooms on other levels too; level 1's are gone.
+        assert!(m.rooms.len() < rooms_before);
+        assert!(!m.rooms.iter().any(|r| r.level == l1));
         assert!(m.elements.len() < n_elements);
     }
 

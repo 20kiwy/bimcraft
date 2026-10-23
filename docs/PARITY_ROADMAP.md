@@ -6,7 +6,7 @@
 > engine**, while keeping BIM semantics: levels, grids, parametric walls,
 > doors, windows, floor slabs, ceilings, items, schedules.
 >
-> **Status: Phase 3 landed + v0.5.0 UI parity wave 2 (full properties panel, foundations, formwork, light mode)** — on top of Phase 2 (polyline walls, shiftable
+> **Status: v0.7.0 — brick house + DetailCraft rebar + landscaping + aedifex view modes + `bimcraft-mcp` (on top of Phase 3 + v0.5.0 parity waves)** — on top of Phase 2 (polyline walls, shiftable
 > openings, free polygon floors/ceilings, item library, measure, snapping,
 > schedule, native JSON I/O, CLI, craft-libs adoption (`craft-ui`), egui 0.36,
 > Rust-only repo with the JavaScript edition as the `clone/bimcraft-js`
@@ -15,7 +15,7 @@
 > line tool, projected cut view with punched openings) and **DXF R12
 > exchange** (clean-room layered wireframe export + plan-sketch import).
 
-Last updated: 2026-10-22 · Target: v1.0.0 Rust edition parity
+Last updated: 2026-10-23 · Target: v1.0.0 Rust edition parity
 
 ---
 

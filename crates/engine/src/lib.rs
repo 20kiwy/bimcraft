@@ -5,7 +5,7 @@
 //! snapshot-based history. The parity roadmap (docs/PARITY_ROADMAP.md) maps
 //! how this grows toward `cadcraft-engine`'s role.
 
-use bimcraft_bim::{ElementData, ElementKind, Foundation, GridAxis, Id, ItemKind, Model, Opening};
+use bimcraft_bim::{ElementData, ElementKind, Foundation, GridAxis, Id, ItemKind, Model, Opening, RebarSpec, SiteElement, SiteKind, SiteShape};
 use bimcraft_geom::{dist_point_segment_xy, ray_ground, Vec2, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +33,9 @@ pub enum Tool {
     SectionLine,
     Paint,
     Foundation,
+    /// Landscaping: place trees/shrubs (point), fence (chain), lawns / beds
+    /// / paths / drives (polygon) — the kind comes from [Session::site_kind].
+    Site,
 }
 
 impl Tool {
@@ -49,6 +52,7 @@ impl Tool {
             Tool::SectionLine => "Section",
             Tool::Paint => "Paint",
             Tool::Foundation => "Foundation",
+            Tool::Site => "Landscaping",
         }
     }
 
@@ -63,6 +67,7 @@ impl Tool {
             Tool::SectionLine => "Click two points: section line, then open the Section view",
             Tool::Paint => "Click an element to paint it · pick a color in Properties · Esc: back to Select",
             Tool::Foundation => "Click inside a building outline: foundation under the walls · Esc: back",
+            Tool::Site => "Pick a kind in Landscaping · trees: click to place · fence/lawn/bed: chain points, Enter to finish",
         }
     }
 }
@@ -191,6 +196,8 @@ pub enum Selection {
     Section(Id),
     /// A foundation picked by its id (its outline follows the walls).
     Foundation(u64),
+    /// A landscaping element picked by its id.
+    Site(Id),
     None,
 }
 
@@ -249,6 +256,19 @@ pub struct Session {
     pub show_formwork: bool,
     /// Restrict formwork drawing to the selected wall.
     pub formwork_selected_only: bool,
+    /// Level presentation mode (aedifex parity): show only the active level
+    /// (other levels vanish, foundations + site stay).
+    pub solo_level: bool,
+    /// Wall x-ray: walls drawn translucent so the interior reads through.
+    pub xray: bool,
+    /// Draw derived rebar inside foundations (steel tubes in see-through
+    /// concrete, DetailCraft-style).
+    pub show_rebar: bool,
+    /// Kind placed by the next Site tool click (Landscaping dock).
+    pub site_kind: SiteKind,
+    /// Brick finish applied by the Paint tool when non-empty (paints brick
+    /// types on walls); empty = color paint ([Session::paint]).
+    pub paint_brick: String,
     pub status: String,
 }
 
@@ -282,7 +302,12 @@ impl Default for Session {
             foundation_sizes: bimcraft_bim::FoundationSizes::default(),
             show_formwork: true,
             formwork_selected_only: false,
-            status: "Sample house loaded — New Model starts empty".into(),
+            solo_level: false,
+            xray: false,
+            show_rebar: true,
+            site_kind: SiteKind::TreeDeciduous6,
+            paint_brick: String::new(),
+            status: "Brick house loaded — New Model starts empty".into(),
         }
     }
 }
@@ -328,6 +353,11 @@ impl Session {
         match self.selection {
             Selection::Element(id) => {
                 if self.model.element(id).is_none() {
+                    self.selection = Selection::None;
+                }
+            }
+            Selection::Site(id) => {
+                if self.model.site_element(id).is_none() {
                     self.selection = Selection::None;
                 }
             }
@@ -383,13 +413,24 @@ impl Session {
         self.drag_anchor = None;
     }
 
-    /// Apply the current paint color to an element (Paint tool click).
-    /// Selects the element so the Properties dock shows it immediately.
+    /// Apply the current paint to an element (Paint tool click). With a
+    /// brick finish selected in Properties this paints the brick type on a
+    /// wall; otherwise it sets the paint color. Selects the element so the
+    /// Properties dock shows it immediately.
     pub fn apply_paint(&mut self, id: Id) {
         self.snapshot();
         if let Some(e) = self.model.elements.iter_mut().find(|e| e.id == id) {
-            e.paint = Some(self.paint);
-            self.status = format!("{} painted", e.name);
+            let is_wall = e.kind == ElementKind::Wall;
+            let brick = self.paint_brick.clone();
+            if is_wall && !brick.is_empty() {
+                if let ElementData::Wall(w) = &mut e.data {
+                    w.finish = brick;
+                }
+                self.status = format!("{} re-bricked", e.name);
+            } else {
+                e.paint = Some(self.paint);
+                self.status = format!("{} painted", e.name);
+            }
         }
         self.select(Selection::Element(id));
     }
@@ -491,8 +532,15 @@ impl Session {
         let lvl = self.active_level_id();
         self.snapshot();
         let id = self.model.add_wall(lvl, pts, 0.2, self.level_height());
+        // Floors remember their foundations: grounding the lowest level is
+        // automatic when auto_foundation is on.
+        let created = self.model.ensure_foundations();
         self.selection = Selection::Element(id);
-        self.status = format!("Wall {id} added");
+        self.status = if created.is_empty() {
+            format!("Wall {id} added")
+        } else {
+            format!("Wall {id} added — {} foundation auto-placed", created.len())
+        };
     }
 
     pub fn place_opening(&mut self, kind: ElementKind, world: Vec2) {
@@ -535,8 +583,47 @@ impl Session {
             ElementKind::Slab => self.model.add_slab(lvl, pts, 0.25, 0.0),
             _ => self.model.add_ceiling(lvl, pts, 0.1, self.level_height() - 0.1),
         };
+        // A new floor remembers its formwork + foundation (auto memory).
+        self.model.ensure_foundations();
         self.selection = Selection::Element(id);
         self.status = format!("{} added", self.model.element(id).map(|e| e.name.clone()).unwrap_or_default());
+    }
+
+    /// Place a landscaping element at a plan point (point kinds).
+    pub fn place_site(&mut self, world: Vec2) {
+        if self.site_kind.shape() != SiteShape::Point {
+            return; // chains/polygons go through pending + finish_draft
+        }
+        self.snapshot();
+        let id = self.model.add_site_element(SiteElement {
+            id: 0,
+            kind: self.site_kind,
+            pos: world,
+            pts: Vec::new(),
+            rotation: self.item_rotation,
+            variant: (self.model.site.len() as u32) * 7 + 1,
+        });
+        self.selection = Selection::Site(id);
+        self.status = format!("{} placed — R rotates", self.site_kind.name());
+    }
+
+    /// Finish a fence chain or closed lawn/bed/path/drive polygon.
+    fn finish_site_chain(&mut self, pts: Vec<Vec2>) {
+        let kind = self.site_kind;
+        let ok = match kind.shape() {
+            SiteShape::Chain => pts.len() >= 2,
+            SiteShape::Polygon => Model::poly_valid(&pts),
+            SiteShape::Point => false,
+        };
+        if !ok {
+            self.status = "Not enough points for this landscaping kind".into();
+            return;
+        }
+        self.snapshot();
+        let pos = pts.iter().fold(Vec2::ZERO, |a, p| a + *p) / pts.len() as f64;
+        let id = self.model.add_site_element(SiteElement { id: 0, kind, pos, pts, rotation: 0.0, variant: (self.model.site.len() as u32) * 7 + 1 });
+        self.selection = Selection::Site(id);
+        self.status = format!("{} added", kind.name());
     }
 
     pub fn place_item(&mut self, world: Vec2) {
@@ -565,6 +652,7 @@ impl Session {
             seed,
             sizes: self.foundation_sizes,
             name: String::new(),
+            rebar: RebarSpec::default(),
         });
         self.selection = Selection::Foundation(id);
         self.status = format!("{} placed — click more or pick Select", self.foundation_kind.label());
@@ -576,6 +664,23 @@ impl Session {
         }
         if let Some(ElementData::Item(i)) = self.model.element_mut(id).map(|e| &mut e.data) {
             i.rotation += by;
+        }
+    }
+
+    /// Rotate whatever the R key means to rotate: a selected item or a
+    /// selected point-kind landscaping element.
+    pub fn rotate_selected(&mut self, by: f64) {
+        match self.selection {
+            Selection::Element(id) => self.rotate_item(id, by),
+            Selection::Site(id) => {
+                if self.drag_anchor.is_none() {
+                    self.snapshot();
+                }
+                if let Some(s) = self.model.site_element_mut(id) {
+                    s.rotation += by;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -607,6 +712,13 @@ impl Session {
                 self.model.delete_foundation(id);
                 self.selection = Selection::None;
                 self.status = "Foundation deleted".into();
+                return;
+            }
+            Selection::Site(id) => {
+                self.snapshot();
+                self.model.delete_site_element(id);
+                self.selection = Selection::None;
+                self.status = "Landscaping deleted".into();
                 return;
             }
             _ => return,
@@ -690,6 +802,9 @@ impl Session {
                     Selection::Foundation(id) => {
                         format!("Selected {}", self.model.foundation(id).map(|f| f.name.clone()).unwrap_or_else(|| "foundation".into()))
                     }
+                    Selection::Site(id) => {
+                        format!("Selected {}", self.model.site_element(id).map(|s| format!("{} {}", s.kind.name(), s.id)).unwrap_or_else(|| "landscaping".into()))
+                    }
                     Selection::None => "Nothing selected".into(),
                 };
             }
@@ -705,6 +820,13 @@ impl Session {
                     format!("{}: {} points — Enter to close", if self.tool == Tool::Floor { "Floor" } else { "Ceiling" }, self.pending.len());
             }
             Tool::Item => self.place_item(p),
+            Tool::Site => match self.site_kind.shape() {
+                SiteShape::Point => self.place_site(p),
+                _ => {
+                    self.pending.push(p);
+                    self.status = format!("{}: {} points — Enter to {}", self.site_kind.name(), self.pending.len(), if self.site_kind.shape() == SiteShape::Chain { "finish" } else { "close" });
+                }
+            },
             Tool::SectionLine => {
                 if self.pending.is_empty() {
                     self.pending.push(p);
@@ -760,6 +882,12 @@ impl Session {
                 let kind = if self.tool == Tool::Floor { ElementKind::Slab } else { ElementKind::Ceiling };
                 self.add_plate(kind, pts);
             }
+            Tool::Site => {
+                let pts = std::mem::take(&mut self.pending);
+                if !pts.is_empty() {
+                    self.finish_site_chain(pts);
+                }
+            }
             _ => {}
         }
     }
@@ -770,9 +898,9 @@ impl Session {
             return false;
         }
         match self.selection {
-            Selection::Element(_) | Selection::Foundation(_) => {
+            Selection::Element(_) | Selection::Foundation(_) | Selection::Site(_) => {
                 // Openings shift along their host wall; everything else moves
-                // (a foundation moves its seed).
+                // (a foundation moves its seed, landscaping its points).
                 self.snapshot();
                 self.drag_anchor = Some(world);
                 true
@@ -785,6 +913,18 @@ impl Session {
     /// its host wall ("windows to be shifted").
     pub fn drag_to(&mut self, world: Vec2) {
         let Some(anchor) = self.drag_anchor else { return };
+        if let Selection::Site(id) = self.selection {
+            let delta = world - anchor;
+            if delta.length() > 1e-9 {
+                if let Some(s) = self.model.site_element_mut(id) {
+                    s.pos = s.pos + delta;
+                    s.pts.iter_mut().for_each(|p| *p = *p + delta);
+                }
+                self.drag_anchor = Some(world);
+                self.status = "Moved".into();
+            }
+            return;
+        }
         if let Selection::Foundation(id) = self.selection {
             // A foundation stores only its seed; translating it re-derives the
             // outline from the walls on the next read.
@@ -895,6 +1035,10 @@ impl Session {
         if let Some((id, _)) = best {
             return Selection::Element(id);
         }
+        // Landscaping (radius pick by kind) before the datum grids.
+        if let Some(id) = self.model.site_at(p) {
+            return Selection::Site(id);
+        }
         // Datum grids (near the dashed line).
         for g in &self.model.grids {
             let d = match g.axis {
@@ -942,6 +1086,18 @@ pub fn point_in_poly(p: Vec2, pts: &[Vec2]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session over a bare model with one 8×6 wall rectangle (no sample
+    /// foundations, no sample furniture — for foundation/paint unit tests).
+    fn plain_session() -> Session {
+        let mut m = Model::new();
+        let lvl = m.levels[0].id;
+        m.add_wall(lvl, vec![Vec2::new(0.0, 0.0), Vec2::new(8.0, 0.0)], 0.2, 3.0);
+        m.add_wall(lvl, vec![Vec2::new(8.0, 0.0), Vec2::new(8.0, 6.0)], 0.2, 3.0);
+        m.add_wall(lvl, vec![Vec2::new(8.0, 6.0), Vec2::new(0.0, 6.0)], 0.2, 3.0);
+        m.add_wall(lvl, vec![Vec2::new(0.0, 6.0), Vec2::new(0.0, 0.0)], 0.2, 3.0);
+        Session::with_model(m)
+    }
 
     #[test]
     fn undo_restores_model() {
@@ -1078,7 +1234,7 @@ mod tests {
 
     #[test]
     fn place_foundation_on_sample() {
-        let mut s = Session::default();
+        let mut s = plain_session();
         assert!(s.model.foundations.is_empty());
         s.set_tool(Tool::Foundation);
         s.click_plan(Vec2::new(4.0, 2.0));
@@ -1094,7 +1250,7 @@ mod tests {
 
     #[test]
     fn place_foundation_outside_fails() {
-        let mut s = Session::default();
+        let mut s = plain_session();
         s.set_tool(Tool::Foundation);
         s.click_plan(Vec2::new(50.0, 50.0));
         assert!(s.model.foundations.is_empty());
@@ -1104,7 +1260,7 @@ mod tests {
 
     #[test]
     fn delete_foundation_via_delete_selected() {
-        let mut s = Session::default();
+        let mut s = plain_session();
         s.place_foundation(Vec2::new(4.0, 2.0));
         let id = s.model.foundations[0].id;
         s.delete_selected();
@@ -1118,9 +1274,9 @@ mod tests {
 
     #[test]
     fn foundation_pick_wins_over_slab() {
-        let mut s = Session::default();
-        // An explicit slab covering the seed point (the sample already has one,
-        // this keeps the priority test self-contained).
+        let mut s = plain_session();
+        // An explicit slab covering the seed point keeps the priority test
+        // self-contained.
         s.model.add_slab(s.active_level_id(), vec![Vec2::new(1.0, 1.0), Vec2::new(8.0, 1.0), Vec2::new(8.0, 6.0), Vec2::new(1.0, 6.0)], 0.25, 0.0);
         s.place_foundation(Vec2::new(4.0, 2.0));
         let id = s.model.foundations[0].id;
@@ -1129,7 +1285,7 @@ mod tests {
 
     #[test]
     fn foundation_drag_moves_seed() {
-        let mut s = Session::default();
+        let mut s = plain_session();
         s.place_foundation(Vec2::new(4.0, 2.0));
         let id = s.model.foundations[0].id;
         s.set_tool(Tool::Select);
@@ -1146,10 +1302,10 @@ mod tests {
 
     #[test]
     fn paint_applies_picks_and_clears() {
-        let mut s = Session::default();
+        let mut s = plain_session();
         s.set_tool(Tool::Paint);
         s.paint = 0xff8800;
-        // Click the south wall of the sample house.
+        // Click the south wall of the plain rectangle.
         s.click_plan(Vec2::new(4.0, 0.0));
         let id = s.selected_element().expect("wall picked");
         assert_eq!(s.model.element(id).unwrap().paint, Some(0xff8800));

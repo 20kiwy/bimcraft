@@ -202,7 +202,7 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
         ui.add_space(6.0);
         let style = theme::icon_button_style(&t);
         use craft_ui::buttons::IconButton;
-        let tools: [(Tool, &str); 11] = [
+        let tools: [(Tool, &str); 12] = [
             (Tool::Select, "Select / move (S)"),
             (Tool::Wall, "Wall — chain polyline (W)"),
             (Tool::Door, "Place door (D)"),
@@ -211,6 +211,7 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             (Tool::Ceiling, "Ceiling polygon (C)"),
             (Tool::Foundation, "Foundation under a building outline (B)"),
             (Tool::Item, "Place item (I)"),
+            (Tool::Site, "Landscaping — trees, fences, lawns, beds (L)"),
             (Tool::Measure, "Measure distance (M)"),
             (Tool::SectionLine, "Section line — two clicks (X)"),
             (Tool::Paint, "Paint elements — pick a color in Properties (P)"),
@@ -306,6 +307,13 @@ pub fn draw_tool_icon(p: &egui::Painter, c: egui::Pos2, tool: Tool, color: Color
             p.line_segment([c + Vec2::new(1.5, 1.0), c + Vec2::new(1.5, 6.0)], fill);
             p.circle_filled(c + Vec2::new(1.5, 7.2), 1.3, color);
         }
+        Tool::Site => {
+            // Tree glyph: trunk + canopy arcs + ground line.
+            p.line_segment([c + Vec2::new(-6.0, 5.0), c + Vec2::new(6.0, 5.0)], fill);
+            p.line_segment([c + Vec2::new(0.0, 5.0), c + Vec2::new(0.0, 0.0)], s);
+            p.circle_filled(c + Vec2::new(0.0, -2.6), 3.4, color.gamma_multiply(0.55));
+            p.circle_stroke(c + Vec2::new(0.0, -2.6), 3.4, s);
+        }
         Tool::Foundation => {
             // Ground slab (edge-on line pair) + footing trapezoid + wall stub.
             p.line_segment([c + Vec2::new(-6.0, 1.0), c + Vec2::new(6.0, 1.0)], s);
@@ -339,6 +347,7 @@ pub fn dock(ui: &mut egui::Ui, app: &mut crate::BimcraftApp) {
             crate::DockTab::Properties => properties_ui(ui, app, &t),
             crate::DockTab::Levels => levels_ui(ui, app, &t),
             crate::DockTab::Library => library_ui(ui, app, &t),
+            crate::DockTab::Landscaping => landscaping_ui(ui, app, &t),
             crate::DockTab::Schedule => schedule_ui(ui, app, &t),
             crate::DockTab::Foundation => foundation_ui(ui, app, &t),
             crate::DockTab::Model => model_ui(ui, app, &t),
@@ -392,6 +401,86 @@ fn properties_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
         Selection::Element(id) => element_editor(ui, app, t, id),
         Selection::Section(id) => section_editor(ui, app, t, id),
         Selection::Foundation(id) => foundation_editor(ui, app, t, id),
+        Selection::Site(id) => site_editor(ui, app, t, id),
+    }
+}
+
+/// Landscaping dock tab: the site palette (library conventions — entourage
+/// on top, hard landscape below) + view toggles for derived layers.
+fn landscaping_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
+    section(ui, "Entourage", t);
+    ui.label(egui::RichText::new("Pick a kind, then click in the plan (or the 3D ground) to place. R rotates.").font(theme::font_ui(10.5)).color(t.text_dim));
+    ui.add_space(4.0);
+    egui::Grid::new("site_palette_point").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
+        for kind in bimcraft_bim::SiteKind::ALL.into_iter().filter(|k| k.shape() == bimcraft_bim::SiteShape::Point) {
+            let (w, _d, h) = bimcraft_bim::preset_size(kind);
+            let active = app.session.site_kind == kind && app.session.tool == Tool::Site;
+            let txt = format!("{}  ⌀{:.1}×{:.1}", kind.name(), w, h);
+            let rich = egui::RichText::new(txt).font(theme::font_ui(11.5)).color(if active { t.text_strong } else { t.text });
+            if ui.add(egui::Button::new(rich).fill(if active { t.tool_active } else { t.input }).min_size(Vec2::new(134.0, 0.0))).clicked() {
+                app.session.site_kind = kind;
+                app.session.set_tool(Tool::Site);
+            }
+        }
+    });
+    ui.add_space(8.0);
+    section(ui, "Site work", t);
+    egui::Grid::new("site_palette_linear").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
+        for kind in bimcraft_bim::SiteKind::ALL.into_iter().filter(|k| k.shape() != bimcraft_bim::SiteShape::Point) {
+            let active = app.session.site_kind == kind && app.session.tool == Tool::Site;
+            let how = if kind.shape() == bimcraft_bim::SiteShape::Chain { "chain" } else { "polygon" };
+            let txt = format!("{} ({})", kind.name(), how);
+            let rich = egui::RichText::new(txt).font(theme::font_ui(11.5)).color(if active { t.text_strong } else { t.text });
+            if ui.add(egui::Button::new(rich).fill(if active { t.tool_active } else { t.input }).min_size(Vec2::new(134.0, 0.0))).clicked() {
+                app.session.site_kind = kind;
+                app.session.set_tool(Tool::Site);
+            }
+        }
+    });
+    ui.add_space(10.0);
+    section(ui, "Derived layers", t);
+    ui.checkbox(&mut app.session.show_formwork, "Formwork (sheets + corners)");
+    ui.checkbox(&mut app.session.show_rebar, "Rebar (footings + corner starters)");
+    ui.add_space(6.0);
+    let n = app.session.model.site.len();
+    caption(ui, t, format!("{} landscaping elements on site", n));
+}
+
+/// Selected landscaping element editor.
+fn site_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64) {
+    let Some(el) = app.session.model.site_element(id).cloned() else {
+        app.session.select(Selection::None);
+        return;
+    };
+    section(ui, "Landscaping", t);
+    caption(ui, t, format!("{} · {}", el.kind.name(), el.kind.group()));
+    let (w, d, h) = bimcraft_bim::preset_size(el.kind);
+    match el.kind.shape() {
+        bimcraft_bim::SiteShape::Point => caption(ui, t, format!("⌀ {:.1} × {:.1} m · h {:.1} m", w, d, h)),
+        bimcraft_bim::SiteShape::Chain => caption(ui, t, format!("run length {:.1} m · h {:.1} m", el.chain_length(), h)),
+        bimcraft_bim::SiteShape::Polygon => caption(ui, t, format!("area {:.1} m²", el.area())),
+    }
+    let mut px = el.pos.x;
+    let mut py = el.pos.y;
+    let mut rot_deg = el.rotation.to_degrees();
+    let mut changed = false;
+    changed |= drag_f64(ui, "X", &mut px, 0.1, -1000.0..=1000.0, " m");
+    changed |= drag_f64(ui, "Y", &mut py, 0.1, -1000.0..=1000.0, " m");
+    if el.kind.shape() == bimcraft_bim::SiteShape::Point {
+        changed |= drag_f64(ui, "Rotation", &mut rot_deg, 5.0, -180.0..=180.0, "°");
+    }
+    if changed {
+        app.session.begin_edit();
+        if let Some(s) = app.session.model.site_element_mut(id) {
+            s.pos = bimcraft_geom::Vec2::new(px, py);
+            if el.kind.shape() == bimcraft_bim::SiteShape::Point {
+                s.rotation = rot_deg.to_radians();
+            }
+        }
+    }
+    ui.add_space(4.0);
+    if ui.add(egui::Button::new(egui::RichText::new("Delete").color(t.danger))).clicked() {
+        app.session.delete_selected();
     }
 }
 
@@ -490,13 +579,19 @@ fn level_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id:
     });
     let mut elev = level.elevation;
     let mut height = level.height;
+    let mut gsx = level.grid_shift[0];
+    let mut gsy = level.grid_shift[1];
     let ch_elev = drag_f64(ui, "Elevation", &mut elev, 0.05, -100.0..=1000.0, " m");
     let ch_h = drag_f64(ui, "Height", &mut height, 0.05, 1.0..=20.0, " m");
-    if ch_elev || ch_h {
+    // Level grid shift (aedifex parity): slide this level's datum grid only.
+    let ch_gs = drag_f64(ui, "Grid shift X", &mut gsx, 0.1, -50.0..=50.0, " m")
+        | drag_f64(ui, "Grid shift Y", &mut gsy, 0.1, -50.0..=50.0, " m");
+    if ch_elev || ch_h || ch_gs {
         app.session.begin_edit();
         if let Some(l) = app.session.model.level_mut(id) {
             l.elevation = elev;
             l.height = height;
+            l.grid_shift = [gsx, gsy];
         }
     }
     if ui.add(egui::Button::new(egui::RichText::new("Set as active level")).min_size(Vec2::new(ui.available_width(), 0.0))).clicked() {
@@ -627,6 +722,34 @@ fn wall_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: 
             }
         });
     });
+
+    // Brick finish: paint another brick type on the wall faces (an empty
+    // finish keeps the plain assembly surface).
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Brick").font(theme::font_ui(12.0)));
+        let current = bimcraft_bim::brick_type(&w.finish).map(|b| b.name).unwrap_or("None");
+        egui::ComboBox::from_id_salt("wall_brick").selected_text(current).show_ui(ui, |ui| {
+            if ui.selectable_label(w.finish.is_empty(), "None").clicked() {
+                app.session.begin_edit();
+                if let Some(ElementData::Wall(ww)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                    ww.finish.clear();
+                }
+            }
+            for b in bimcraft_bim::BRICK_TYPES {
+                let on = w.finish == b.key;
+                if ui.selectable_label(on, b.name).clicked() {
+                    app.session.begin_edit();
+                    if let Some(ElementData::Wall(ww)) = app.session.model.element_mut(id).map(|e| &mut e.data) {
+                        ww.finish = b.key.to_string();
+                    }
+                }
+            }
+        });
+    });
+    if let Some(b) = bimcraft_bim::brick_type(&w.finish) {
+        let face_area = len * w.effective_height(&app.session.model) * 2.0;
+        caption(ui, t, format!("{} · {} × {} × {} mm · ≈{:.0} bricks (both faces)", b.name, (b.length * 1000.0) as i64, (b.width * 1000.0) as i64, (b.height * 1000.0) as i64, bimcraft_bim::brick::bricks_per_m2(b) * face_area));
+    }
 
     // Thickness: keep the assembly key in sync (no preset at that thickness = custom).
     let mut thk = w.thickness;
@@ -1011,7 +1134,7 @@ fn item_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: 
 }
 
 fn foundation_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens, id: u64) {
-    let Some(f) = app.session.model.foundation(id).cloned() else {
+    let Some(mut f) = app.session.model.foundation(id).cloned() else {
         app.session.select(Selection::None);
         return;
     };
@@ -1049,6 +1172,47 @@ fn foundation_editor(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens
                 fo.sizes.stem_drop = 0.0;
             }
             app.session.status = format!("Kind set to {} — depths reset to automatic", k.label());
+        }
+    }
+
+    // Reinforcement intent (bars derive from the geometry on every build).
+    section(ui, "Rebar", t);
+    let mut rb = f.rebar;
+    let mut rb_changed = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Bar").font(theme::font_ui(12.0)));
+        egui::ComboBox::from_id_salt("rebar_bar").selected_text(bimcraft_bim::rebar::bar(rb.bar).label).show_ui(ui, |ui| {
+            for (i, bs) in bimcraft_bim::BARS.iter().enumerate() {
+                if ui.selectable_label(rb.bar == i, format!("{} (⌀{} mm)", bs.label, (bs.db * 1000.0) as i64)).clicked() {
+                    rb.bar = i;
+                    rb_changed = true;
+                }
+            }
+        });
+    });
+    rb_changed |= drag_f64(ui, "Spacing", &mut rb.spacing, 0.025, 0.05..=0.6, " m");
+    rb_changed |= drag_f64(ui, "Cover", &mut rb.cover, 0.005, 0.02..=0.15, " m");
+    rb_changed |= ui.checkbox(&mut rb.hooks, "Hooked ends").changed();
+    rb_changed |= ui.checkbox(&mut rb.starters, "Starters").changed();
+    if rb_changed {
+        app.session.begin_edit();
+        if let Some(fo) = app.session.model.foundation_mut(id) {
+            fo.rebar = rb;
+        }
+        f = app.session.model.foundation(id).cloned().unwrap_or(f);
+    }
+    // Derived summary: bar count + steel mass + warnings (DetailCraft checks).
+    if let Some((p, outline)) = app.session.model.foundation_resolved(&f) {
+        let parts = bimcraft_bim::foundation::foundation_geometry(&outline, &p);
+        let set = bimcraft_bim::footing_rebar(&parts, &p, &f.rebar, app.session.model.level(f.level).map(|l| l.elevation).unwrap_or(0.0));
+        if !set.bars.is_empty() {
+            caption(ui, t, format!("{} bars · {:.0} kg steel", set.bars.len(), set.total_mass()));
+        }
+        for warn in &set.warnings {
+            caption(ui, t, format!("⚠ {warn}"));
+        }
+        for prob in &set.problems {
+            caption(ui, t, format!("✗ {prob}"));
         }
     }
 
@@ -1147,6 +1311,9 @@ fn levels_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
     section(ui, "View toggles", t);
     ui.checkbox(&mut app.show_items_2d, "Show items in plan");
     ui.checkbox(&mut app.show_ceilings_3d, "Show ceilings in 3D");
+    ui.checkbox(&mut app.session.solo_level, "Solo level (hide other storeys)");
+    ui.checkbox(&mut app.session.xray, "Wall x-ray (translucent walls)");
+    ui.checkbox(&mut app.session.show_rebar, "Rebar (footings + corner starters)");
     ui.add_space(10.0);
     section(ui, "Snapping", t);
     ui.checkbox(&mut app.session.snap_grid, "Grid snap (0.5 m, G)");

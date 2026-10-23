@@ -355,14 +355,15 @@ fn root_restriction_refuses_outside_paths() {
     // Relative escape …
     let msg = tool_err(&mut d, "model_save", json!({ "path": "../escape.json" }));
     assert!(msg.contains("outside --root"), "{msg}");
-    // … absolute outside …
-    let msg = tool_err(&mut d, "dxf_export", json!({ "path": "/tmp/bimcraft-mcp-escape.dxf" }));
+    // … absolute outside (unique per process so parallel/old runs can't collide) …
+    let escape = std::env::temp_dir().join(format!("bimcraft-mcp-escape-{}.dxf", std::process::id()));
+    let msg = tool_err(&mut d, "dxf_export", json!({ "path": escape.to_str().unwrap() }));
     assert!(msg.contains("outside --root"), "{msg}");
     // … and a read from outside.
     let msg = tool_err(&mut d, "model_load", json!({ "path": "/etc/hostname" }));
     assert!(msg.contains("outside --root"), "{msg}");
     assert!(!root.join("../escape.json").exists());
-    assert!(!std::path::Path::new("/tmp/bimcraft-mcp-escape.dxf").exists());
+    assert!(!escape.exists());
 
     // Without --root there is no restriction (default permissive host).
     let mut open = Dispatcher::new(Groups::all());

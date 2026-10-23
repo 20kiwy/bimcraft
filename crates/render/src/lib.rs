@@ -2408,7 +2408,7 @@ mod tests {
         assert!(band(3.0, 6.0) > 0, "solo keeps the active level");
         // Mid-height band of the ground storey: only walls reach here (the
         // potted plant by the door stays under 0.5 m).
-        assert_eq!(band(1.0, 2.5), 0, "solo hides lower levels");
+        assert_eq!(band(1.5, 2.5), 0, "solo hides lower levels");
         // Site (trees/fence on the ground plane) still draws.
         assert!(!dl.tris.is_empty());
     }

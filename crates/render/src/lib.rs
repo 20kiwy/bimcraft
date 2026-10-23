@@ -1176,7 +1176,9 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
     // style) so the steel reads inside it.
     for f in &model.foundations {
         let Some((resolved, outline)) = model.foundation_resolved(f) else { continue };
-        let level_z = model.level(f.level).map(|l| l.elevation).unwrap_or(0.0);
+        // Basements anchor at the grade floor above them (the parts are
+        // measured from grade), everything else at its own level floor.
+        let level_z = model.foundation_anchor_z(f);
         let sel = is_selected(info, f.id);
         let parts = foundation::foundation_geometry(&outline, &resolved);
         for part in &parts {

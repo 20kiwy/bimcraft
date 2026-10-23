@@ -869,6 +869,34 @@ impl Model {
         Some((p, outline))
     }
 
+    /// World z the foundation's derived parts anchor to. Heights are measured
+    /// from the *grade* floor, so a basement under an underground level
+    /// anchors at the ground storey above it (its stem walls run up to grade);
+    /// every other foundation anchors at its own level's floor.
+    pub fn foundation_anchor_z(&self, f: &Foundation) -> f64 {
+        let own = self.level(f.level).map(|l| l.elevation).unwrap_or(0.0);
+        if f.kind == FoundationKind::Basement && own < -0.4 {
+            let grade = self.levels.iter().map(|l| l.elevation).filter(|e| *e >= -0.4).fold(f64::INFINITY, f64::min);
+            if grade.is_finite() {
+                grade
+            } else {
+                own
+            }
+        } else {
+            own
+        }
+    }
+
+    /// How far below the anchor the foundation reaches (footing underside).
+    pub fn foundation_depth_below_anchor(&self, f: &Foundation) -> f64 {
+        let Some((p, _)) = self.foundation_resolved(f) else { return 0.0 };
+        if p.kind == FoundationKind::Basement {
+            p.stem_drop + p.basement_h + p.slab_t + p.foot_d + 0.05
+        } else {
+            p.bottom
+        }
+    }
+
     /// (stories, heavy) for a level: how many levels from here up carry walls,
     /// and whether any wall is masonry or concrete (heavier footings).
     pub fn loads_on_level(&self, level: Id) -> (u32, bool) {
@@ -1381,9 +1409,11 @@ impl Model {
         }
         // Foundations reach below the floor; include their outline + depth.
         for f in &self.foundations {
-            if let Some((p, outline)) = self.foundation_resolved(f) {
+            if let Some((_p, outline)) = self.foundation_resolved(f) {
+                let anchor = self.foundation_anchor_z(f);
+                let depth = self.foundation_depth_below_anchor(f);
                 for pt in &outline {
-                    grow(*pt, -p.bottom, 0.0, &mut min, &mut max);
+                    grow(*pt, anchor - depth, anchor, &mut min, &mut max);
                 }
                 any = true;
             }

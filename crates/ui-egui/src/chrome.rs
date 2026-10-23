@@ -416,7 +416,7 @@ fn landscaping_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
     );
     ui.add_space(4.0);
     egui::Grid::new("site_palette_point").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
-        for kind in bimcraft_bim::SiteKind::ALL.into_iter().filter(|k| k.shape() == bimcraft_bim::SiteShape::Point) {
+        for (i, kind) in bimcraft_bim::SiteKind::ALL.into_iter().filter(|k| k.shape() == bimcraft_bim::SiteShape::Point).enumerate() {
             let (w, _d, h) = bimcraft_bim::preset_size(kind);
             let active = app.session.site_kind == kind && app.session.tool == Tool::Site;
             let txt = format!("{}  ⌀{:.1}×{:.1}", kind.name(), w, h);
@@ -425,12 +425,16 @@ fn landscaping_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
                 app.session.site_kind = kind;
                 app.session.set_tool(Tool::Site);
             }
+            if i % 2 == 1 {
+                ui.end_row();
+            }
         }
+        ui.end_row();
     });
     ui.add_space(8.0);
     section(ui, "Site work", t);
     egui::Grid::new("site_palette_linear").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
-        for kind in bimcraft_bim::SiteKind::ALL.into_iter().filter(|k| k.shape() != bimcraft_bim::SiteShape::Point) {
+        for (i, kind) in bimcraft_bim::SiteKind::ALL.into_iter().filter(|k| k.shape() != bimcraft_bim::SiteShape::Point).enumerate() {
             let active = app.session.site_kind == kind && app.session.tool == Tool::Site;
             let how = if kind.shape() == bimcraft_bim::SiteShape::Chain { "chain" } else { "polygon" };
             let txt = format!("{} ({})", kind.name(), how);
@@ -439,7 +443,11 @@ fn landscaping_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
                 app.session.site_kind = kind;
                 app.session.set_tool(Tool::Site);
             }
+            if i % 2 == 1 {
+                ui.end_row();
+            }
         }
+        ui.end_row();
     });
     ui.add_space(10.0);
     section(ui, "Derived layers", t);
@@ -1404,7 +1412,7 @@ fn library_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
     ui.label(egui::RichText::new("Pick a kind, then click in the plan to place. R rotates.").font(theme::font_ui(11.0)).color(t.text_dim));
     ui.add_space(4.0);
     egui::Grid::new("item_library").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
-        for kind in ItemKind::ALL {
+        for (i, kind) in ItemKind::ALL.into_iter().enumerate() {
             let (w, d, h) = kind.preset();
             let active = app.session.item_kind == kind && app.session.tool == Tool::Item;
             let txt = format!("{}  {:.1}×{:.1}×{:.1}", kind.name(), w, d, h);
@@ -1413,7 +1421,11 @@ fn library_ui(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, t: &Tokens) {
                 app.session.item_kind = kind;
                 app.session.set_tool(Tool::Item);
             }
+            if i % 2 == 1 {
+                ui.end_row();
+            }
         }
+        ui.end_row();
     });
 }
 

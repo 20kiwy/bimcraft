@@ -128,26 +128,42 @@ const FORM_3D_POST: Color32 = Color32::from_rgb(0xa8, 0x7c, 0x3f);
 const FORMWORK_PLAN_ZOOM: f64 = 25.0;
 
 struct Palette3D {
-    wall_top: Color32,
-    wall_side_a: Color32,
-    wall_side_b: Color32,
+    wall_face: Color32,
     slab: Color32,
     ceiling: Color32,
     door: Color32,
+    door_frame: Color32,
     window_glass: Color32,
     item: Color32,
+    /// Warm dark gray for feature edges (silhouette/corner glyphs, JS-parity).
+    edge: Color32,
 }
 
+// Cadcraft-style palette: warm off-white faces (the JS edition's
+// DEFAULT_FACE #e6e3dc), warm concrete floors, bluish glass. Form comes from
+// the signed hemisphere+sun shading, not from per-side tints.
 const PAL3D: Palette3D = Palette3D {
-    wall_top: Color32::from_rgb(0xcf, 0xd6, 0xe2),
-    wall_side_a: Color32::from_rgb(0xb4, 0xbd, 0xcc),
-    wall_side_b: Color32::from_rgb(0x9a, 0xa4, 0xb5),
-    slab: Color32::from_rgb(0x8f, 0xa6, 0xb8),
-    ceiling: Color32::from_rgb(0xc2, 0xc9, 0xd6),
-    door: Color32::from_rgb(0x9a, 0x62, 0x2e),
-    window_glass: Color32::from_rgb(0x9f, 0xd8, 0xe4),
-    item: Color32::from_rgb(0xa8, 0x94, 0x74),
+    wall_face: Color32::from_rgb(0xe6, 0xe3, 0xdc),
+    slab: Color32::from_rgb(0xcd, 0xcc, 0xc6),
+    ceiling: Color32::from_rgb(0xef, 0xed, 0xe7),
+    door: Color32::from_rgb(0x9a, 0x6a, 0x38),
+    door_frame: Color32::from_rgb(0x6a, 0x6f, 0x78),
+    window_glass: Color32::from_rgb(0xb9, 0xd9, 0xe6),
+    item: Color32::from_rgb(0xb0, 0xa2, 0x84),
+    edge: Color32::from_rgb(0x6b, 0x67, 0x5e),
 };
+
+/// Floor finish colors (FLOOR_KINDS), cadcraft warm neutrals.
+fn floor_color(kind: &str) -> Color32 {
+    match kind.to_ascii_lowercase().as_str() {
+        "wood" => Color32::from_rgb(0xc9, 0xa8, 0x77),
+        "tile" => Color32::from_rgb(0xd8, 0xdc, 0xdc),
+        "stone" => Color32::from_rgb(0xc2, 0xc0, 0xb8),
+        "carpet" => Color32::from_rgb(0xcf, 0xc4, 0xb2),
+        "vinyl" => Color32::from_rgb(0xd6, 0xd2, 0xc4),
+        _ => PAL3D.slab, // concrete + custom keys
+    }
+}
 
 fn selected(color: Color32, is_sel: bool) -> Color32 {
     if is_sel {
@@ -173,14 +189,19 @@ fn paint_fill(paint: Option<u32>, fallback: Color32, alpha: u8) -> Color32 {
     }
 }
 
-/// Fixed light direction for cheap lambert shading (Z-up).
+/// Fixed hemisphere + sun lighting (Z-up): ambient from the sky/ground mix
+/// plus a directional sun term. Signed (unlike the old abs() shading) so
+/// faces pointing away from the sun read darker — objects get visible form.
 fn shade(normal: Vec3, base: Color32) -> Color32 {
-    let l = Vec3::new(0.45, -0.5, 0.74).normalize();
-    let d = normal.dot(l).abs().clamp(0.25, 1.0);
+    let n = normal.normalize();
+    let sun = Vec3::new(0.42, -0.48, 0.76).normalize();
+    let lambert = n.dot(sun).max(0.0);
+    let hemi = 0.58 + 0.16 * n.z.clamp(-1.0, 1.0); // sky above, ground below
+    let k = (hemi + lambert * 0.52).clamp(0.30, 1.06) as f32;
     Color32::from_rgba_unmultiplied(
-        (base.r() as f32 * d as f32).round() as u8,
-        (base.g() as f32 * d as f32).round() as u8,
-        (base.b() as f32 * d as f32).round() as u8,
+        (base.r() as f32 * k).round() as u8,
+        (base.g() as f32 * k).round() as u8,
+        (base.b() as f32 * k).round() as u8,
         base.a(),
     )
 }
@@ -804,14 +825,14 @@ fn outline_poly_plan(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], color: C
 fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
     let ext = info.ground_extent.max(10.0);
 
-    // Distance fade: helper geometry dissolves with distance from the eye so
-    // long lines never sweep the screen (they also get occluded by the
-    // canvas z-buffer; this keeps the far field visually quiet).
+    // Distance fade: helper geometry dissolves with TRUE 3D distance from the
+    // eye so long lines never sweep the screen (a ground-distance-only fade
+    // left 40 m sweeps alive on steep cameras — the vertical "streak" bug).
     let eye = info.eye;
     let draw_faded = |dl: &mut DisplayList, a: Vec3, b: Vec3, base: Color32, width: f32| {
         const STEP: f64 = 4.0;
-        const R0: f64 = 16.0; // full alpha up to this ground radius from the eye
-        const R1: f64 = 36.0; // invisible beyond this
+        const R0: f64 = 14.0; // full alpha up to this radius from the eye
+        const R1: f64 = 30.0; // invisible beyond this
         let dir = b - a;
         let len = dir.length();
         if len < 1e-6 {
@@ -824,7 +845,8 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
             let p0 = a + dir * t0;
             let p1 = a + dir * t1;
             let mid = (p0 + p1) * 0.5;
-            let d = ((mid.x - eye.x) * (mid.x - eye.x) + (mid.y - eye.y) * (mid.y - eye.y)).sqrt();
+            let dv = mid - eye;
+            let d = (dv.x * dv.x + dv.y * dv.y + dv.z * dv.z).sqrt();
             if d > R1 {
                 continue;
             }
@@ -895,8 +917,12 @@ fn build_3d(model: &Model, info: &ViewInfo, dl: &mut DisplayList) {
         match &e.data {
             ElementData::Slab(s) => {
                 let base = model.level(s.level).map(|l| l.elevation).unwrap_or(0.0);
-                let col = selected(paint_or(e.paint, PAL3D.slab), sel);
+                let col = selected(paint_or(e.paint, floor_color(&s.kind)), sel);
                 prism(dl, &s.pts, base + s.elevation - s.thickness, base + s.elevation, col, true);
+                // Feature edge: the finished-floor outline (JS-parity glyph).
+                if !sel {
+                    outline_loop(dl, &s.pts, base + s.elevation + 0.005, PAL3D.edge, 1.0);
+                }
             }
             ElementData::Ceiling(c) => {
                 if info.show_ceilings_3d || sel {
@@ -959,6 +985,11 @@ fn draw_foundation_part_3d(dl: &mut DisplayList, part: &FoundationPart, level_z:
         let nrm = face_normal(p0, p1, p1.with_z(z1));
         dl.quad([p0, p1, p1.with_z(z1), p0.with_z(z1)], shade(nrm, side_col));
     }
+    // Top outer feature edge.
+    let ecol = if sel { SELECT } else { with_alpha(PAL3D.edge, 170) };
+    for i in 0..outer.len() {
+        dl.line(outer[i].to3(z1), outer[(i + 1) % outer.len()].to3(z1), ecol, 0.9);
+    }
     let Some(inner) = &part.inner else {
         // Solid slab: top cap only (the bottom is never visible).
         for t in bimcraft_bim::poly_tris_world(outer, z1) {
@@ -1011,14 +1042,12 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
     let z1 = w.top_z(model);
     let half = w.thickness / 2.0;
     let outline = w.outline();
-    let top_col = selected(paint_or(paint, PAL3D.wall_top), sel);
-    let side_a = selected(paint_or(paint, PAL3D.wall_side_a), sel);
-    let side_b = selected(paint_or(paint, PAL3D.wall_side_b), sel);
+    let face = selected(paint_or(paint, PAL3D.wall_face), sel);
 
     // Top face: outline polygon at z1 (ear-clipped so concave works).
     let top_tris = bimcraft_bim::poly_tris_world(&outline, z1);
     for t in top_tris {
-        dl.tri(t, shade(Vec3::new(0.0, 0.0, 1.0), top_col));
+        dl.tri(t, shade(Vec3::new(0.0, 0.0, 1.0), face));
     }
 
     // Side faces per segment, with openings subtracted (real cuts).
@@ -1063,13 +1092,7 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
         for side in 0..2 {
             let (p0, p1) = if side == 0 { (a_l, b_l) } else { (a_r, b_r) };
             let nrm = face_normal(p0.to3(z0), p1.to3(z0), p1.to3(z1));
-            let base_col = if sel {
-                SELECT
-            } else if side == 0 {
-                side_a
-            } else {
-                side_b
-            };
+            let base_col = face;
             let pieces = subtract_cuts(seg_len, z0, z1, &cuts);
             for (s0, s1, pz0, pz1) in pieces {
                 let w0 = p0 + dir * s0;
@@ -1095,7 +1118,7 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
                 }
                 let c0 = *a + dir * s0.max(0.0);
                 let c1 = *a + dir * s1.min(seg_len);
-                let frame_col = if sel { SELECT } else { paint_or(op.paint, Color32::from_rgb(0x5a, 0x60, 0x6c)) };
+                let frame_col = if sel { SELECT } else { paint_or(op.paint, PAL3D.door_frame) };
                 // Jamb + head + sill lines on both sides.
                 for side in 0..2 {
                     let off = if side == 0 { n * (half + 0.01) } else { n * -(half + 0.01) };
@@ -1122,7 +1145,19 @@ fn draw_wall_3d(dl: &mut DisplayList, model: &Model, w: &bimcraft_bim::Wall, wal
                 }
             }
         }
-        let _ = side_b;
+    }
+
+    // Feature edges (JS-parity glyph): vertical corner lines at every outline
+    // vertex plus the top and bottom outline loops, so walls read as solids.
+    if !sel && !outline.is_empty() {
+        let ec = with_alpha(PAL3D.edge, 215);
+        let n = outline.len();
+        for (i, v) in outline.iter().enumerate() {
+            dl.line(v.to3(z0), v.to3(z1), ec, 1.0);
+            let w_next = outline[(i + 1) % n];
+            dl.line(v.to3(z1), w_next.to3(z1), ec, 1.0);
+            dl.line(v.to3(z0), w_next.to3(z0), with_alpha(PAL3D.edge, 150), 0.8);
+        }
     }
 }
 
@@ -1222,6 +1257,21 @@ fn prism(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], z0: f64, z1: f64, co
     if top_face {
         let top: Vec<Vec3> = pts.iter().map(|p| p.to3(z1)).collect();
         dl.poly(&top, shade(Vec3::new(0.0, 0.0, 1.0), color));
+    }
+}
+
+/// Closed horizontal outline loop at height `z` (feature-edge glyph).
+fn outline_loop(dl: &mut DisplayList, pts: &[bimcraft_geom::Vec2], z: f64, color: Color32, width: f32) {
+    let n = pts.len();
+    if n < 2 {
+        return;
+    }
+    for i in 0..n {
+        let a = pts[i].to3(z);
+        let b = pts[(i + 1) % n].to3(z);
+        if (a.x - b.x).abs() > 1e-9 || (a.y - b.y).abs() > 1e-9 {
+            dl.line(a, b, color, width);
+        }
     }
 }
 

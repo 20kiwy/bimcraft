@@ -45,13 +45,15 @@ fn far_field_dissolves_with_distance() {
     let dl = bimcraft_render::build(&m, &info_for(&m, eye));
     for l in &dl.lines {
         let mid = (l.a + l.b) * 0.5;
-        let d = ((mid.x - eye.x).powi(2) + (mid.y - eye.y).powi(2)).sqrt();
-        if d > 37.0 && l.a.z < 1.6 && l.b.z < 1.6 {
-            // Ground-level helper line beyond the fade radius must be either
-            // model geometry (walls/slabs are opaque) or short (<= 8 m, e.g.
-            // model outlines), never a long helper sweep.
+        let d = ((mid.x - eye.x).powi(2) + (mid.y - eye.y).powi(2) + (mid.z - eye.z).powi(2)).sqrt();
+        if d > 31.0 && l.a.z < 1.6 && l.b.z < 1.6 {
+            // Ground-level line far beyond the fade radius (30 m) must be
+            // either full-alpha model geometry (walls/slabs/axes are opaque)
+            // or short (<= 10 m: model feature edges — the sample's longest
+            // wall bottom edge is 9 m — and cut helpers), never a long
+            // translucent helper sweep.
             let len = (l.b - l.a).length();
-            assert!(len <= 8.0 || l.color.a() == 255, "long ground line at d={d:.1} (len {len:.1}) should have been faded out");
+            assert!(len <= 10.0 || l.color.a() == 255, "long ground line at d={d:.1} (len {len:.1}) should have been faded out");
         }
     }
 }

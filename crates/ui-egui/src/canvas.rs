@@ -410,6 +410,13 @@ struct Proj {
 }
 
 impl Proj {
+    /// Project a view-space point (x right, y up, z forward). Used by the line
+    /// and triangle paths after explicit near-plane handling; no screen-bounds
+    /// rejection here (egui clips to the viewport rect).
+    fn project_view(&self, x: f64, y: f64, z: f64) -> (Pos2, f64) {
+        (Pos2::new((self.cx + x / z * self.focal) as f32, (self.cy - y / z * self.focal) as f32), z)
+    }
+
     fn point(&self, p: Vec3, eye: Vec3, r: Vec3, u: Vec3, f: Vec3) -> Option<(Pos2, f64)> {
         let d = p - eye;
         let x = d.dot(r);
@@ -418,13 +425,34 @@ impl Proj {
         if z < 0.08 {
             return None;
         }
-        let sx = self.cx + x / z * self.focal;
-        let sy = self.cy - y / z * self.focal;
-        if sx < -self.w || sx > self.w * 2.0 || sy < -self.h || sy > self.h * 2.0 {
+        let (sp, z) = self.project_view(x, y, z);
+        // Generous cull for isolated points (texts): 3x viewport window.
+        let (wf, hf) = (self.w as f32, self.h as f32);
+        if sp.x < -wf || sp.x > wf * 2.0 || sp.y < -hf || sp.y > hf * 2.0 {
             return None;
         }
-        Some((Pos2::new(sx as f32, sy as f32), z))
+        Some((sp, z))
     }
+}
+
+/// Sutherland–Hodgman clip of a view-space polygon against z >= `near`.
+fn clip_near(poly: &[(f64, f64, f64)], near: f64) -> Vec<(f64, f64, f64)> {
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    let n = poly.len();
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        let a_in = a.2 >= near;
+        let b_in = b.2 >= near;
+        if a_in {
+            out.push(a);
+        }
+        if a_in != b_in && b.2 != a.2 {
+            let t = (near - a.2) / (b.2 - a.2);
+            out.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, near));
+        }
+    }
+    out
 }
 
 fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Painter, rect: Rect, dl: &bimcraft_render::DisplayList, t: &Tokens) {
@@ -447,38 +475,39 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
         h: rect.height() as f64 * ppp,
     };
 
-    // Depth-sorted triangles (keep per-vertex view depth for the z-buffer).
-    let mut tris: Vec<([Pos2; 3], [f64; 3], f64, Color32)> = Vec::with_capacity(dl.tris.len());
+    // Depth-sorted triangles, near-plane clipped in view space (no screen
+    // bounds rejection: the painter clips to the viewport, and dropping whole
+    // triangles because one vertex leaves the window made walls vanish).
+    const NEAR: f64 = 0.08;
+    let mut tris: Vec<(Vec<Pos2>, Vec<f64>, f64, Color32)> = Vec::with_capacity(dl.tris.len());
     for tri in &dl.tris {
-        let mut pts = [Pos2::ZERO; 3];
-        let mut zs = [0.0_f64; 3];
-        let mut ok = true;
-        for k in 0..3 {
-            match proj.point(tri.pts[k], eye, r, u, f) {
-                Some((sp, z)) => {
-                    pts[k] = sp;
-                    zs[k] = z;
-                }
-                None => {
-                    ok = false;
-                    break;
-                }
-            }
+        let mut poly: Vec<(f64, f64, f64)> = Vec::with_capacity(3);
+        for p in &tri.pts {
+            let d = *p - eye;
+            poly.push((d.dot(r), d.dot(u), d.dot(f)));
         }
-        if ok {
-            tris.push((pts, zs, (zs[0] + zs[1] + zs[2]) / 3.0, tri.color));
+        let clipped = clip_near(&poly, NEAR);
+        if clipped.len() < 3 {
+            continue;
         }
+        let pts: Vec<Pos2> = clipped.iter().map(|v| proj.project_view(v.0, v.1, v.2).0).collect();
+        let zs: Vec<f64> = clipped.iter().map(|v| v.2).collect();
+        let zavg = zs.iter().sum::<f64>() / zs.len() as f64;
+        tris.push((pts, zs, zavg, tri.color));
     }
     tris.sort_by(|a, b| b.2.total_cmp(&a.2));
     for (pts, _, _, color) in &tris {
-        painter.add(egui::Shape::convex_polygon(pts.to_vec(), *color, Stroke::NONE));
+        // Fan-triangulate the clipped polygon (3 or 4 vertices) for the fill.
+        for k in 1..pts.len().saturating_sub(1) {
+            painter.add(egui::Shape::convex_polygon(vec![pts[0], pts[k], pts[k + 1]], *color, Stroke::NONE));
+        }
     }
 
-    // Depth buffer of the projected triangles: helper lines (grid, datums,
-    // axes) are then occluded by the model instead of drawing over it.
-    let mut depth = DepthBuf::new(rect.width().ceil() as usize, rect.height().ceil() as usize);
+    let mut depth = DepthBuf::new(rect);
     for (pts, zs, _, _) in &tris {
-        depth.rasterize(*pts, *zs);
+        for k in 1..pts.len().saturating_sub(1) {
+            depth.rasterize([pts[0], pts[k], pts[k + 1]], [zs[0], zs[k], zs[k + 1]]);
+        }
     }
 
     // Lines with occlusion (was: plain wireframe pass on top).
@@ -504,24 +533,32 @@ fn draw_3d(ui: &mut egui::Ui, app: &mut crate::BimcraftApp, painter: &egui::Pain
     painter.text(rect.right_top() + Vec2::new(-14.0, 14.0), egui::Align2::RIGHT_TOP, hint, theme::font_ui(11.0), t.text_dim);
 }
 
-/// Coarse software depth buffer (logical pixels) built from the projected
-/// triangles; used to occlude helper lines against the model.
+/// Coarse software depth buffer over the canvas rect. Coordinates passed in
+/// are absolute egui screen pixels; the buffer is indexed RELATIVE to the
+/// rect origin (`ox`/`oy`) — using absolute values directly sampled the wrong
+/// cells whenever the viewport was offset by the app bar/dock, which broke
+/// every occlusion decision (the "streak" bug).
 struct DepthBuf {
     w: usize,
     h: usize,
+    ox: f32,
+    oy: f32,
     data: Vec<f32>,
 }
 
 impl DepthBuf {
-    fn new(w: usize, h: usize) -> Self {
-        let w = w.max(1);
-        let h = h.max(1);
-        Self { w, h, data: vec![f32::INFINITY; w * h] }
+    fn new(rect: Rect) -> Self {
+        let w = (rect.width().ceil() as usize).max(1);
+        let h = (rect.height().ceil() as usize).max(1);
+        Self { w, h, ox: rect.left(), oy: rect.top(), data: vec![f32::INFINITY; w * h] }
     }
 
-    /// Barycentric rasterization with linearly interpolated view depth.
+    /// Barycentric rasterization with perspective-correct view depth
+    /// (screen-linear 1/z interpolation, then z = 1/w).
     fn rasterize(&mut self, pts: [Pos2; 3], zs: [f64; 3]) {
-        let (p0, p1, p2) = (pts[0], pts[1], pts[2]);
+        let p0 = Pos2::new(pts[0].x - self.ox, pts[0].y - self.oy);
+        let p1 = Pos2::new(pts[1].x - self.ox, pts[1].y - self.oy);
+        let p2 = Pos2::new(pts[2].x - self.ox, pts[2].y - self.oy);
         let area = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
         if area.abs() < 0.01 {
             return;
@@ -534,9 +571,12 @@ impl DepthBuf {
         if minx > maxx || miny > maxy {
             return;
         }
+        // Perspective-correct weights: interpolate 1/z (screen-linear), then
+        // invert. Guards keep far/degenerate corners stable.
+        let inv_z = [1.0 / zs[0], 1.0 / zs[1], 1.0 / zs[2]];
         for y in miny..=maxy {
             let row = y * self.w;
-            for x in minx..=maxx {
+            for x in minx..maxx {
                 let px = x as f32 + 0.5;
                 let py = y as f32 + 0.5;
                 // Signed barycentric weights (orientation-agnostic).
@@ -548,7 +588,8 @@ impl DepthBuf {
                 if !inside {
                     continue;
                 }
-                let z = (w0 as f64) * zs[0] + (w1 as f64) * zs[1] + (w2 as f64) * zs[2];
+                let wi = (w0 as f64) * inv_z[0] + (w1 as f64) * inv_z[1] + (w2 as f64) * inv_z[2];
+                let z = if wi > 1e-9 { 1.0 / wi } else { f64::INFINITY };
                 let slot = &mut self.data[row + x];
                 if (z as f32) < *slot {
                     *slot = z as f32;
@@ -558,8 +599,10 @@ impl DepthBuf {
     }
 
     fn visible(&self, x: f32, y: f32, z: f64) -> bool {
-        let xi = (x.max(0.0) as usize).min(self.w - 1);
-        let yi = (y.max(0.0) as usize).min(self.h - 1);
+        let xr = x - self.ox;
+        let yr = y - self.oy;
+        let xi = (xr.max(0.0) as usize).min(self.w - 1);
+        let yi = (yr.max(0.0) as usize).min(self.h - 1);
         z <= self.data[yi * self.w + xi] as f64 + 0.045
     }
 }
@@ -600,22 +643,17 @@ fn draw_line_occluded(
         by += (ay - by) * t;
         bz = NEAR;
     }
-    // Rebuild clipped 3D endpoints from view-space back to world space.
-    let to_world = |v: (f64, f64, f64)| eye + r * v.0 + u * v.1 + f * v.2;
-    let wa = to_world((ax, ay, az));
-    let wb = to_world((bx, by, bz));
     // Screen span decides the sample count (about one sample per 3 px).
-    let sa = Pos2::new((proj.cx + ax / az * proj.focal) as f32, (proj.cy - ay / az * proj.focal) as f32);
-    let sb = Pos2::new((proj.cx + bx / bz * proj.focal) as f32, (proj.cy - by / bz * proj.focal) as f32);
+    let (sa, _) = proj.project_view(ax, ay, az);
+    let (sb, _) = proj.project_view(bx, by, bz);
     let span = ((sb.x - sa.x).abs().max((sb.y - sa.y).abs()) as usize).clamp(2, 512);
     let mut prev: Option<(Pos2, bool)> = None;
     for k in 0..=span {
         let t = k as f64 / span as f64;
-        let p = wa + (wb - wa) * t;
-        let Some((sp, z)) = proj.point(p, eye, r, u, f) else {
-            prev = None;
-            continue;
-        };
+        let vx = ax + (bx - ax) * t;
+        let vy = ay + (by - ay) * t;
+        let vz = az + (bz - az) * t;
+        let (sp, z) = proj.project_view(vx, vy, vz);
         let vis = depth.visible(sp.x, sp.y, z);
         if let Some((last, last_vis)) = prev {
             if vis && last_vis {
@@ -741,4 +779,37 @@ fn draw_preview_segment(app: &crate::BimcraftApp, painter: &egui::Painter, rect:
         theme::font_mono(10.0),
         color,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_near_keeps_straddling_triangle() {
+        // One vertex behind the camera: the clip yields a quad in front.
+        let tri = [(0.0, 0.0, 1.0), (1.0, 0.0, -1.0), (0.0, 1.0, 2.0)];
+        let out = clip_near(&tri, 0.08);
+        assert_eq!(out.len(), 4);
+        assert!(out.iter().all(|v| v.2 >= 0.08));
+        // Fully in front: unchanged; fully behind: empty.
+        assert_eq!(clip_near(&[(0.0, 0.0, 1.0), (1.0, 0.0, 2.0), (0.0, 1.0, 3.0)], 0.08).len(), 3);
+        assert!(clip_near(&[(0.0, 0.0, -1.0), (1.0, 0.0, -2.0), (0.0, 1.0, -3.0)], 0.08).is_empty());
+    }
+
+    #[test]
+    fn depth_buf_is_rect_relative() {
+        // The viewport sits offset from the window origin (app bar + dock):
+        // occlusion must still index the right cells (the streak bug).
+        let rect = Rect::from_min_size(Pos2::new(300.0, 50.0), egui::vec2(64.0, 64.0));
+        let mut d = DepthBuf::new(rect);
+        let (cx, cy) = (rect.center().x, rect.center().y);
+        let pts = [Pos2::new(cx - 10.0, cy + 10.0), Pos2::new(cx + 10.0, cy + 10.0), Pos2::new(cx, cy - 10.0)];
+        d.rasterize(pts, [2.0, 2.0, 2.0]);
+        // Center: hidden behind the surface, visible at/near it.
+        assert!(!d.visible(cx, cy, 5.0));
+        assert!(d.visible(cx, cy, 2.04));
+        // An offset-buffer bug would read the clamped edge instead.
+        assert!(d.visible(cx - 20.0, cy, 50.0));
+    }
 }
